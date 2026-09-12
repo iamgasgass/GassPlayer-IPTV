@@ -58,7 +58,7 @@ actor XtreamAPIService {
         let url = try endpoint(action: action)
         let (data, response) = try await session.data(from: url)
         try validate(response)
-        return try JSONDecoder().decode([XtreamCategory].self, from: data)
+        return FlexibleArrayDecoder.decode([XtreamCategory].self, from: data)
     }
 
     func fetchStreams(kind: XtreamStreamKind, categoryId: String? = nil) async throws -> [XtreamStream] {
@@ -68,7 +68,7 @@ actor XtreamAPIService {
         let url = try endpoint(action: action, extra: extra)
         let (data, response) = try await session.data(from: url)
         try validate(response)
-        return try JSONDecoder().decode([XtreamStream].self, from: data)
+        return FlexibleArrayDecoder.decode([XtreamStream].self, from: data)
     }
 
     func fetchSeriesInfo(seriesId: Int) async throws -> XtreamSeriesInfo {

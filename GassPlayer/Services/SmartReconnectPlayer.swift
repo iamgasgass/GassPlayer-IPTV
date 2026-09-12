@@ -20,8 +20,18 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         self.url = url
         self.player = AVPlayer(url: url)
         super.init()
+        Self.configureAudioSession()
         player.currentItem?.preferredForwardBufferDuration = preferredBufferSeconds
         observe()
+    }
+
+    private static func configureAudioSession() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            DebugLogger.logAsync(.warning, "Impossibile configurare AVAudioSession: \(error.localizedDescription)")
+        }
     }
 
     private func observe() {

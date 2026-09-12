@@ -4,8 +4,6 @@ import AVFoundation
 import UIKit
 import MediaPlayer
 
-// UNICA definizione di BufferSettingsView / QualityPickerView / TrackPickerView.
-
 struct PlayerView: View {
     let url: URL
     let title: String
@@ -32,7 +30,7 @@ struct PlayerView: View {
                 .ignoresSafeArea()
                 .onAppear { reconnectPlayer.player.play(); Task { await loadMediaSelection() } }
                 .onDisappear { reconnectPlayer.player.pause() }
-                .gesture(dragGesture)
+                .simultaneousGesture(dragGesture)
 
             if showBrightnessHUD { hudOverlay(icon: "sun.max.fill", value: brightnessOverlay) }
             if showVolumeHUD { hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay) }
@@ -103,6 +101,7 @@ struct PlayerView: View {
 
 struct RealPiPPlayerView: UIViewControllerRepresentable {
     let player: AVPlayer
+
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.player = player
@@ -110,16 +109,21 @@ struct RealPiPPlayerView: UIViewControllerRepresentable {
         controller.canStartPictureInPictureAutomaticallyFromInline = true
         return controller
     }
+
     func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {
-        uiViewController.player = player
+        if uiViewController.player !== player {
+            uiViewController.player = player
+        }
     }
 }
 
 enum MPVolumeSlider {
+    private static let sharedVolumeView = MPVolumeView(frame: .zero)
+
     static func currentVolume() -> Float { AVAudioSession.sharedInstance().outputVolume }
+
     static func setVolume(_ value: Float) {
-        let volumeView = MPVolumeView(frame: .zero)
-        if let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first {
+        if let slider = sharedVolumeView.subviews.compactMap({ $0 as? UISlider }).first {
             slider.value = value
         }
     }
