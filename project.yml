@@ -1,4 +1,4 @@
-name: GassPlayer
+project: name: GassPlayer
 options:
   bundleIdPrefix: com.iamgasgass
   deploymentTarget:
@@ -27,6 +27,18 @@ packages:
   KSPlayer:
     url: https://github.com/kingslay/KSPlayer.git
     branch: main
+  WireGuardKit:
+    # Fork di terze parti (non il repo ufficiale WireGuard/wireguard-apple)
+    # che distribuisce il backend Go precompilato come XCFramework binario
+    # via SPM puro. Scelto perche' il repo ufficiale richiede un target
+    # "External Build System" con script di build manuale in Xcode, non
+    # esprimibile in XcodeGen/project.yml e quindi incompatibile con una
+    # build headless via `xcodegen generate` + `xcodebuild` come questa.
+    # Essendo un fork non mantenuto dal team WireGuard, e' una libreria
+    # crittografica di cui non posso garantire l'audit: usata su richiesta
+    # esplicita, valutane l'affidabilita' prima di andare in produzione.
+    url: https://github.com/ridgelineinternational/wireguard-apple-xcframework.git
+    from: "0.0.1"
 
 targets:
   GassPlayer:
@@ -75,6 +87,9 @@ targets:
           - "PacketTunnel.entitlements"
     entitlements:
       path: GassPlayer/PacketTunnel/PacketTunnel.entitlements
+    dependencies:
+      - package: WireGuardKit
+        product: WireGuardKit
     settings:
       base:
         GENERATE_INFOPLIST_FILE: NO
