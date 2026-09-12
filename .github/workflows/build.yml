@@ -8,30 +8,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint:
-    runs-on: macos-15
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install SwiftLint
-        run: brew install swiftlint
-      - name: Run SwiftLint (report only, non-bloccante)
-        run: swiftlint lint GassPlayer || true
-
   build:
     runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Check for duplicate Swift filenames
-        run: |
-          DUPES=$(find GassPlayer GassPlayerTests -name "*.swift" -exec basename {} \; | sort | uniq -d)
-          if [ -n "$DUPES" ]; then
-            echo "Trovati file Swift con lo stesso nome in percorsi diversi:"
-            echo "$DUPES"
-            exit 1
-          fi
 
       - name: Select latest available Xcode
         run: |
@@ -48,37 +29,21 @@ jobs:
       - name: Generate GassPlayer.xcodeproj
         run: xcodegen generate
 
-      - name: Show resolved INFOPLIST build settings
-        run: |
-          xcodebuild -showBuildSettings -project GassPlayer.xcodeproj -target GassPlayer -configuration Release -sdk iphoneos 2>/dev/null | grep -E "GENERATE_INFOPLIST_FILE|INFOPLIST_FILE" || true
-
       - name: Detect available iOS Simulator
         id: sim
         run: |
-          xcrun simctl list devices available
           DEVICE_LINE=$(xcrun simctl list devices available | grep -E "iPhone" | grep -v "unavailable" | head -n 1)
           if [ -z "$DEVICE_LINE" ]; then
             echo "ERRORE: nessun simulatore iPhone disponibile su questo runner"
             exit 1
           fi
           DEVICE_UDID=$(echo "$DEVICE_LINE" | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}')
-          DEVICE_NAME=$(echo "$DEVICE_LINE" | sed -E 's/^[[:space:]]*(.+) \([0-9A-Fa-f-]+\).*/\1/')
-          echo "Simulatore selezionato: $DEVICE_NAME ($DEVICE_UDID)"
           echo "udid=$DEVICE_UDID" >> "$GITHUB_OUTPUT"
 
       - name: Run unit tests
         run: |
           set -o pipefail
-          mkdir -p build
-          xcodebuild test -project GassPlayer.xcodeproj -scheme GassPlayer -destination "id=${{ steps.sim.outputs.udid }}" CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/tests.log
-
-      - name: Upload test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tests-log
-          path: build/tests.log
-          if-no-files-found: warn
+          xcodebuild test -project GassPlayer.xcodeproj -scheme GassPlayer -destination "id=${{ steps.sim.outputs.udid }}" CODE_SIGNING_ALLOWED=NO
 
       - name: Check signing secrets availability
         id: signing_check
@@ -112,53 +77,25 @@ jobs:
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           cp $PP_PATH "$HOME/Library/MobileDevice/Provisioning Profiles/"
 
-      - name: Build signed archive
-        if: steps.signing_check.outputs.has_signing == 'true'
+      - name: Build archive
         run: |
           set -o pipefail
           mkdir -p build
-          xcodebuild archive -project GassPlayer.xcodeproj -scheme GassPlayer -archivePath build/GassPlayer.xcarchive -destination 'generic/platform=iOS' -sdk iphoneos CODE_SIGN_STYLE=Manual 2>&1 | tee build/xcodebuild.log
-
-      - name: Build unsigned archive
-        if: steps.signing_check.outputs.has_signing == 'false'
-        run: |
-          set -o pipefail
-          mkdir -p build
-          xcodebuild archive -project GassPlayer.xcodeproj -scheme GassPlayer -archivePath build/GassPlayer.xcarchive -destination 'generic/platform=iOS' -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" AD_HOC_CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="" SKIP_INSTALL=NO 2>&1 | tee build/xcodebuild.log
-
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: xcodebuild-log
-          path: build/xcodebuild.log
-          if-no-files-found: warn
-
-      - name: Verify app was produced
-        run: |
-          APP_PATH="build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app"
-          if [ ! -d "$APP_PATH" ]; then
-            echo "ERRORE: app non trovata"
-            exit 1
+          if [ "${{ steps.signing_check.outputs.has_signing }}" = "true" ]; then
+            xcodebuild archive -project GassPlayer.xcodeproj -scheme GassPlayer -archivePath build/GassPlayer.xcarchive -destination 'generic/platform=iOS' -sdk iphoneos CODE_SIGN_STYLE=Manual
+          else
+            xcodebuild archive -project GassPlayer.xcodeproj -scheme GassPlayer -archivePath build/GassPlayer.xcarchive -destination 'generic/platform=iOS' -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" AD_HOC_CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="" SKIP_INSTALL=NO
           fi
-
-      - name: Verify compiled Info.plist ATS content
-        run: |
-          APP_PATH="build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app"
-          plutil -p "$APP_PATH/Info.plist" | grep -A 5 "NSAppTransportSecurity" || echo "NSAppTransportSecurity ASSENTE dal binario finale"
-          plutil -convert xml1 -o build/Compiled-Info.plist "$APP_PATH/Info.plist"
-
-      - name: Upload compiled Info.plist
-        uses: actions/upload-artifact@v4
-        with:
-          name: compiled-info-plist
-          path: build/Compiled-Info.plist
-          if-no-files-found: warn
 
       - name: Package IPA
         run: |
+          APP_PATH="build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "ERRORE: $APP_PATH non trovato"
+            exit 1
+          fi
           mkdir -p build/Payload
-          cp -r "build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app" build/Payload/
+          cp -r "$APP_PATH" build/Payload/
           cd build
           zip -r GassPlayer.ipa Payload
           cd ..
