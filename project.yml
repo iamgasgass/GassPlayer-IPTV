@@ -33,12 +33,16 @@ targets:
           - "Resources/Info.plist"
           - "Resources/GassPlayer.entitlements"
           - "Resources/GassPlayer-CI.entitlements"
+          - "PacketTunnel/**"
     resources:
       - path: GassPlayer/Resources/Assets.xcassets
     info:
       path: GassPlayer/Resources/Info.plist
     entitlements:
       path: GassPlayer/Resources/GassPlayer-CI.entitlements
+    dependencies:
+      - target: PacketTunnel
+        embed: true
     settings:
       base:
         PRODUCT_NAME: GassPlayer
@@ -48,5 +52,39 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
     scheme:
-      testTargets: []
-      gatherCoverageData: false
+      testTargets:
+        - GassPlayerTests
+      gatherCoverageData: true
+
+  PacketTunnel:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: GassPlayer/PacketTunnel
+        excludes:
+          - "Info.plist"
+          - "PacketTunnel.entitlements"
+    info:
+      path: GassPlayer/PacketTunnel/Info.plist
+    entitlements:
+      path: GassPlayer/PacketTunnel/PacketTunnel.entitlements
+    settings:
+      base:
+        PRODUCT_NAME: PacketTunnel
+        PRODUCT_BUNDLE_IDENTIFIER: com.iamgasgass.gassPlayer.PacketTunnel
+        SKIP_INSTALL: NO
+
+  GassPlayerTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: GassPlayerTests
+    dependencies:
+      - target: GassPlayer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.iamgasgass.gassPlayer.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/GassPlayer.app/GassPlayer"
+        BUNDLE_LOADER: "$(TEST_HOST)"

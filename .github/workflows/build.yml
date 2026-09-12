@@ -1,4 +1,4 @@
-name: Build Unsigned IPA
+name: Build & Test
 
 on:
   push:
@@ -8,20 +8,35 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-unsigned-ipa:
+  lint:
     runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SwiftLint
+        run: brew install swiftlint
+      - name: Run SwiftLint
+        run: swiftlint lint --strict GassPlayer
+
+  build:
+    runs-on: macos-15
+    needs: lint
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check for duplicate Swift filenames
+        run: |
+          DUPES=$(find GassPlayer GassPlayerTests -name "*.swift" -exec basename {} \; | sort | uniq -d)
+          if [ -n "$DUPES" ]; then
+            echo "Trovati file Swift con lo stesso nome in percorsi diversi:"
+            echo "$DUPES"
+            exit 1
+          fi
+
       - name: Select latest available Xcode
         run: |
           LATEST_XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -n1)
-          if [ -z "$LATEST_XCODE" ]; then
-            echo "Nessuna app Xcode_*.app trovata, uso /Applications/Xcode.app di default"
-            LATEST_XCODE="/Applications/Xcode.app"
-          fi
-          echo "Uso $LATEST_XCODE"
+          [ -z "$LATEST_XCODE" ] && LATEST_XCODE="/Applications/Xcode.app"
           sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
           xcodebuild -version
 
@@ -31,52 +46,99 @@ jobs:
       - name: Generate GassPlayer.xcodeproj
         run: xcodegen generate
 
-      - name: Build unsigned archive
+      - name: Run unit tests
         run: |
           set -o pipefail
-          xcodebuild archive \
-            -project GassPlayer.xcodeproj \
-            -scheme GassPlayer \
-            -archivePath build/GassPlayer.xcarchive \
-            -destination 'generic/platform=iOS' \
-            -sdk iphoneos \
+          mkdir -p build
+          xcodebuild test \
+            -project GassPlayer.xcodeproj -scheme GassPlayer \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_ENTITLEMENTS="" \
-            DEVELOPMENT_TEAM="" \
-            SKIP_INSTALL=NO \
-            | xcpretty || true
+            2>&1 | tee build/tests.log
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-log
+          path: build/tests.log
+          if-no-files-found: warn
+
+      - name: Import certificate and provisioning profile (se presenti)
+        if: ${{ secrets.BUILD_CERTIFICATE_BASE64 != '' }}
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/build_cert.p12
+          PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERT_PATH
+          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o $PP_PATH
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security import $CERT_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
+
+      - name: Build signed archive (se certificato presente)
+        if: ${{ secrets.BUILD_CERTIFICATE_BASE64 != '' }}
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild archive \
+            -project GassPlayer.xcodeproj -scheme GassPlayer \
+            -archivePath build/GassPlayer.xcarchive \
+            -destination 'generic/platform=iOS' -sdk iphoneos \
+            CODE_SIGN_STYLE=Manual \
+            2>&1 | tee build/xcodebuild.log
+
+      - name: Build unsigned archive (fallback senza certificato)
+        if: ${{ secrets.BUILD_CERTIFICATE_BASE64 == '' }}
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild archive \
+            -project GassPlayer.xcodeproj -scheme GassPlayer \
+            -archivePath build/GassPlayer.xcarchive \
+            -destination 'generic/platform=iOS' -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="" SKIP_INSTALL=NO \
+            2>&1 | tee build/xcodebuild.log
+
+      - name: Upload build log (sempre)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild.log
+          if-no-files-found: warn
 
       - name: Verify .app was produced
         run: |
           APP_PATH="build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app"
           if [ ! -d "$APP_PATH" ]; then
-            echo "ERRORE: $APP_PATH non trovato. Controlla il log di xcodebuild sopra."
+            echo "ERRORE: $APP_PATH non trovato. Apri l'artifact 'xcodebuild-log' per la causa esatta."
             exit 1
           fi
-          echo "App trovata: $APP_PATH"
 
-      - name: Package unsigned IPA
+      - name: Package IPA
         run: |
           mkdir -p build/Payload
           cp -r "build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app" build/Payload/
-          cd build
-          zip -r GassPlayer-unsigned.ipa Payload
-          cd ..
-          ls -la build/GassPlayer-unsigned.ipa
+          cd build && zip -r GassPlayer.ipa Payload && cd ..
 
-      - name: Upload unsigned IPA artifact
+      - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GassPlayer-unsigned-ipa
-          path: build/GassPlayer-unsigned.ipa
+          name: GassPlayer-ipa
+          path: build/GassPlayer.ipa
           if-no-files-found: error
 
-      - name: Upload full .xcarchive (debug)
-        uses: actions/upload-artifact@v4
-        with:
-          name: GassPlayer-xcarchive
-          path: build/GassPlayer.xcarchive
-          if-no-files-found: warn
-          
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
