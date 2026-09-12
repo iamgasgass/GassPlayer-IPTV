@@ -61,14 +61,31 @@ actor XtreamAPIService {
         return FlexibleArrayDecoder.decode([XtreamCategory].self, from: data)
     }
 
+    /// Live e VOD condividono lo stesso schema di risposta (stream_id, container_extension).
+    /// Le serie NON passano da qui: usa `fetchSeriesList` perche' l'azione API e il
+    /// formato JSON di risposta sono strutturalmente diversi (series_id, non stream_id).
     func fetchStreams(kind: XtreamStreamKind, categoryId: String? = nil) async throws -> [XtreamStream] {
-        let action = "get_\(kind == .live ? "live" : kind == .movie ? "vod" : "series")_streams"
+        guard kind != .series else {
+            throw XtreamError.invalidURL
+        }
+        let action = "get_\(kind == .live ? "live" : "vod")_streams"
         var extra: [String: String] = [:]
         if let categoryId { extra["category_id"] = categoryId }
         let url = try endpoint(action: action, extra: extra)
         let (data, response) = try await session.data(from: url)
         try validate(response)
         return FlexibleArrayDecoder.decode([XtreamStream].self, from: data)
+    }
+
+    /// Elenco delle serie TV. Azione Xtream corretta: "get_series" (non "get_series_streams",
+    /// che non esiste nell'API). La risposta usa "series_id", modellata da XtreamSeriesItem.
+    func fetchSeriesList(categoryId: String? = nil) async throws -> [XtreamSeriesItem] {
+        var extra: [String: String] = [:]
+        if let categoryId { extra["category_id"] = categoryId }
+        let url = try endpoint(action: "get_series", extra: extra)
+        let (data, response) = try await session.data(from: url)
+        try validate(response)
+        return FlexibleArrayDecoder.decode([XtreamSeriesItem].self, from: data)
     }
 
     func fetchSeriesInfo(seriesId: Int) async throws -> XtreamSeriesInfo {

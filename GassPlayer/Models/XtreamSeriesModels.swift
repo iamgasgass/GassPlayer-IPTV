@@ -1,5 +1,28 @@
 import Foundation
 
+struct XtreamSeriesItem: Identifiable, Hashable {
+    let seriesId: Int
+    let name: String
+    let cover: String?
+    let categoryId: String?
+    var id: Int { seriesId }
+}
+
+extension XtreamSeriesItem: Decodable {
+    enum CodingKeys: String, CodingKey {
+        case seriesId = "series_id", name, cover
+        case categoryId = "category_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        seriesId = container.decodeFlexibleInt(forKey: .seriesId) ?? 0
+        name = (try? container.decode(String.self, forKey: .name)) ?? "Serie senza nome"
+        cover = try? container.decode(String.self, forKey: .cover)
+        categoryId = container.decodeFlexibleString(forKey: .categoryId)
+    }
+}
+
 struct XtreamSeriesInfo: Decodable {
     struct Episode: Identifiable, Hashable {
         let id: String
