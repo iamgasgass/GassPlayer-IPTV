@@ -33,7 +33,15 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p build
-          xcodebuild archive -project GassPlayer.xcodeproj -scheme GassPlayer -archivePath build/GassPlayer.xcarchive -destination 'generic/platform=iOS' -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" AD_HOC_CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="" SKIP_INSTALL=NO
+          xcodebuild archive -project GassPlayer.xcodeproj -scheme GassPlayer -archivePath build/GassPlayer.xcarchive -destination 'generic/platform=iOS' -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" AD_HOC_CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="" SKIP_INSTALL=NO 2>&1 | tee build/xcodebuild.log
+
+      - name: Upload build log (sempre, anche se il build fallisce)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild.log
+          if-no-files-found: warn
 
       - name: Package IPA
         run: |
