@@ -28,6 +28,11 @@ struct AllSourcesLiveView: View {
                     List {
                         ForEach(groups) { group in
                             Section {
+                                if let error = group.error {
+                                    Label(error, systemImage: "exclamationmark.triangle")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                }
                                 ForEach(group.streams) { stream in
                                     Button(stream.name) {
                                         selectedStream = PlayableStream(stream: stream, credentials: group.credentials)
@@ -50,6 +55,8 @@ struct AllSourcesLiveView: View {
             .fullScreenCover(item: $selectedStream) { playable in
                 if let url = XtreamAPIService(credentials: playable.credentials).streamURL(for: playable.stream, kind: kind) {
                     PlayerView(url: url, title: playable.stream.name)
+                } else {
+                    Text("URL dello stream non valido.")
                 }
             }
         }
