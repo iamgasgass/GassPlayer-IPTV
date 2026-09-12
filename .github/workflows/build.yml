@@ -36,7 +36,9 @@ jobs:
       - name: Select latest available Xcode
         run: |
           LATEST_XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -n1)
-          [ -z "$LATEST_XCODE" ] && LATEST_XCODE="/Applications/Xcode.app"
+          if [ -z "$LATEST_XCODE" ]; then
+            LATEST_XCODE="/Applications/Xcode.app"
+          fi
           sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
           xcodebuild -version
 
@@ -46,22 +48,15 @@ jobs:
       - name: Generate GassPlayer.xcodeproj
         run: xcodegen generate
 
-      - name: Show resolved INFOPLIST build settings (verifica diretta)
+      - name: Show resolved INFOPLIST build settings
         run: |
-          xcodebuild -showBuildSettings \
-            -project GassPlayer.xcodeproj -target GassPlayer \
-            -configuration Release -sdk iphoneos 2>/dev/null \
-            | grep -E "GENERATE_INFOPLIST_FILE|INFOPLIST_FILE" || true
+          xcodebuild -showBuildSettings -project GassPlayer.xcodeproj -target GassPlayer -configuration Release -sdk iphoneos 2>/dev/null | grep -E "GENERATE_INFOPLIST_FILE|INFOPLIST_FILE" || true
 
       - name: Run unit tests
         run: |
           set -o pipefail
           mkdir -p build
-          xcodebuild test \
-            -project GassPlayer.xcodeproj -scheme GassPlayer \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
-            CODE_SIGNING_ALLOWED=NO \
-            2>&1 | tee build/tests.log
+          xcodebuild test -project GassPlayer.xcodeproj -scheme GassPlayer -destination 'platform=iOS Simulator,name=iPhone 16' CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/tests.log
 
       - name: Upload test log
         if: always()
@@ -71,7 +66,7 @@ jobs:
           path: build/tests.log
           if-no-files-found: warn
 
-      - name: Import certificate and provisioning profile (se presenti)
+      - name: Import certificate and provisioning profile
         if: ${{ secrets.BUILD_CERTIFICATE_BASE64 != '' }}
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
@@ -89,35 +84,24 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security import $CERT_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp $PP_PATH "$HOME/Library/MobileDevice/Provisioning Profiles/"
 
-      - name: Build signed archive (se certificato presente)
+      - name: Build signed archive
         if: ${{ secrets.BUILD_CERTIFICATE_BASE64 != '' }}
         run: |
           set -o pipefail
           mkdir -p build
-          xcodebuild archive \
-            -project GassPlayer.xcodeproj -scheme GassPlayer \
-            -archivePath build/GassPlayer.xcarchive \
-            -destination 'generic/platform=iOS' -sdk iphoneos \
-            CODE_SIGN_STYLE=Manual \
-            2>&1 | tee build/xcodebuild.log
+          xcodebuild archive -project GassPlayer.xcodeproj -scheme GassPlayer -archivePath build/GassPlayer.xcarchive -destination 'generic/platform=iOS' -sdk iphoneos CODE_SIGN_STYLE=Manual 2>&1 | tee build/xcodebuild.log
 
-      - name: Build unsigned archive (fallback senza certificato)
+      - name: Build unsigned archive
         if: ${{ secrets.BUILD_CERTIFICATE_BASE64 == '' }}
         run: |
           set -o pipefail
           mkdir -p build
-          xcodebuild archive \
-            -project GassPlayer.xcodeproj -scheme GassPlayer \
-            -archivePath build/GassPlayer.xcarchive \
-            -destination 'generic/platform=iOS' -sdk iphoneos \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="" SKIP_INSTALL=NO \
-            2>&1 | tee build/xcodebuild.log
+          xcodebuild archive -project GassPlayer.xcodeproj -scheme GassPlayer -archivePath build/GassPlayer.xcarchive -destination 'generic/platform=iOS' -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" AD_HOC_CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="" SKIP_INSTALL=NO 2>&1 | tee build/xcodebuild.log
 
-      - name: Upload build log (sempre)
+      - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -125,23 +109,21 @@ jobs:
           path: build/xcodebuild.log
           if-no-files-found: warn
 
-      - name: Verify .app was produced
+      - name: Verify app was produced
         run: |
           APP_PATH="build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app"
           if [ ! -d "$APP_PATH" ]; then
-            echo "ERRORE: $APP_PATH non trovato. Apri l'artifact 'xcodebuild-log' per la causa esatta."
+            echo "ERRORE: app non trovata"
             exit 1
           fi
 
-      - name: Verifica DIRETTA del vero Info.plist compilato (prova definitiva ATS)
+      - name: Verify compiled Info.plist ATS content
         run: |
           APP_PATH="build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app"
-          echo "=== Contenuto REALE di Info.plist nell'app compilata ==="
           plutil -p "$APP_PATH/Info.plist" | grep -A 5 "NSAppTransportSecurity" || echo "NSAppTransportSecurity ASSENTE dal binario finale"
-          echo "=== Copia completa per artifact ==="
           plutil -convert xml1 -o build/Compiled-Info.plist "$APP_PATH/Info.plist"
 
-      - name: Upload Info.plist compilato (verifica manuale)
+      - name: Upload compiled Info.plist
         uses: actions/upload-artifact@v4
         with:
           name: compiled-info-plist
@@ -152,7 +134,9 @@ jobs:
         run: |
           mkdir -p build/Payload
           cp -r "build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app" build/Payload/
-          cd build && zip -r GassPlayer.ipa Payload && cd ..
+          cd build
+          zip -r GassPlayer.ipa Payload
+          cd ..
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
