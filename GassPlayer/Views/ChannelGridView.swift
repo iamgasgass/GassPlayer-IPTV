@@ -68,7 +68,7 @@ struct ChannelGridView: View {
             .task(id: kind) { await loadCategories() }
             .fullScreenCover(item: $selectedStream) { stream in
                 if let url = service.streamURL(for: stream, kind: kind) {
-                    PlayerView(url: url, title: stream.name)
+                    AdaptivePlayerView(url: url, title: stream.name)
                 } else {
                     Text("URL dello stream non valido.")
                 }

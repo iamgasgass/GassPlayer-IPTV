@@ -54,7 +54,7 @@ struct AllSourcesLiveView: View {
             .refreshable { await loadAll() }
             .fullScreenCover(item: $selectedStream) { playable in
                 if let url = XtreamAPIService(credentials: playable.credentials).streamURL(for: playable.stream, kind: kind) {
-                    PlayerView(url: url, title: playable.stream.name)
+                    AdaptivePlayerView(url: url, title: playable.stream.name)
                 } else {
                     Text("URL dello stream non valido.")
                 }

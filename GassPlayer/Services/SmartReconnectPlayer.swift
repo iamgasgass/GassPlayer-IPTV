@@ -29,13 +29,12 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
     private var watchdogTask: Task<Void, Never>?
     private var hasEverStartedPlaying = false
 
-    /// AVPlayer (AVFoundation) supporta nativamente solo MP4/M4V/MOV e flussi HLS
-    /// (M3U8/TS). NON supporta MKV o AVI: se il pannello Xtream serve il contenuto
-    /// in uno di questi formati, il player entra in un limbo silenzioso senza mai
-    /// emettere lo stato .failed. Per questo NON vengono piu' provati come fallback:
-    /// provarli non ha mai potuto funzionare ed era la causa del "nessun errore".
     private static let playableExtensions: Set<String> = ["mp4", "m4v", "mov", "ts", "m3u8"]
-    private static let knownUnsupportedContainers: Set<String> = ["mkv", "avi", "wmv", "flv", "webm"]
+    static let knownUnsupportedContainers: Set<String> = ["mkv", "avi", "wmv", "flv", "webm"]
+
+    static func isNativelySupported(url: URL) -> Bool {
+        !knownUnsupportedContainers.contains(url.pathExtension.lowercased())
+    }
 
     private var currentURL: URL { candidateURLs[candidateIndex] }
 
@@ -124,10 +123,6 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         pathMonitor.start(queue: pathMonitorQueue)
     }
 
-    /// Rete di sicurezza per il caso in cui AVPlayer non riesca a decodificare il
-    /// contenuto ma non emetta mai lo stato .failed (limbo silenzioso tipico di
-    /// contenitori parzialmente riconosciuti). Se dopo 15s la riproduzione non e'
-    /// mai realmente partita, lo trattiamo come un fallimento esplicito.
     private func startWatchdog() {
         watchdogTask?.cancel()
         watchdogTask = Task { [weak self] in

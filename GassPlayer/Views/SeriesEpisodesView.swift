@@ -59,7 +59,7 @@ struct SeriesEpisodesView: View {
             get: { selectedEpisodeURL.map { IdentifiableURL(url: $0) } },
             set: { selectedEpisodeURL = $0?.url }
         )) { wrapped in
-            PlayerView(url: wrapped.url, title: selectedEpisodeTitle)
+            AdaptivePlayerView(url: wrapped.url, title: selectedEpisodeTitle)
         }
     }
 
