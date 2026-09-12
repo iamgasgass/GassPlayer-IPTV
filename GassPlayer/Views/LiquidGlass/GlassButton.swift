@@ -10,6 +10,7 @@ struct GlassIconButton: View {
             Image(systemName: systemImage).font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
         }
         .buttonStyle(.plain)
+        .contentShape(Circle())
         .modifier(GlassCircleModifier(tint: tint))
     }
 }
