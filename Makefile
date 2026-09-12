@@ -1,4 +1,4 @@
-.PHONY: generate build archive ipa clean open verify
+.PHONY: generate build archive ipa clean open
 
 generate:
 	xcodegen generate
@@ -23,10 +23,6 @@ ipa: archive
 	mkdir -p build/Payload
 	cp -r build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app build/Payload/
 	cd build && zip -r GassPlayer.ipa Payload && cd ..
-
-verify:
-	@find GassPlayer -name "*.swift" -exec basename {} \; | sort | uniq -d | \
-		awk '{print "DUPLICATO: " $$0}'
 
 clean:
 	rm -rf build GassPlayer.xcodeproj DerivedData

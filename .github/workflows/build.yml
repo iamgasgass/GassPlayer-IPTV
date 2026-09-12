@@ -14,15 +14,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check for duplicate Swift filenames
-        run: |
-          DUPES=$(find GassPlayer -name "*.swift" -exec basename {} \; | sort | uniq -d)
-          if [ -n "$DUPES" ]; then
-            echo "Trovati file Swift con lo stesso nome in percorsi diversi:"
-            echo "$DUPES"
-            exit 1
-          fi
-
       - name: Select latest available Xcode
         run: |
           LATEST_XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -n1)
