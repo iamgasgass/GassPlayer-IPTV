@@ -21,6 +21,7 @@ settings:
     CODE_SIGNING_REQUIRED: NO
     CODE_SIGN_IDENTITY: ""
     DEVELOPMENT_TEAM: ""
+    GENERATE_INFOPLIST_FILE: NO
 
 targets:
   GassPlayer:
@@ -45,6 +46,7 @@ targets:
         embed: true
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: NO
         PRODUCT_NAME: GassPlayer
         PRODUCT_BUNDLE_IDENTIFIER: com.iamgasgass.gassPlayer
         MARKETING_VERSION: "1.0.0"
@@ -71,6 +73,7 @@ targets:
       path: GassPlayer/PacketTunnel/PacketTunnel.entitlements
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: NO
         PRODUCT_NAME: PacketTunnel
         PRODUCT_BUNDLE_IDENTIFIER: com.iamgasgass.gassPlayer.PacketTunnel
         SKIP_INSTALL: NO
