@@ -26,6 +26,16 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
     private let pathMonitor = NWPathMonitor()
     private let pathMonitorQueue = DispatchQueue(label: "com.gassplayer.network-monitor")
     private var isNetworkAvailable = true
+    private var watchdogTask: Task<Void, Never>?
+    private var hasEverStartedPlaying = false
+
+    /// AVPlayer (AVFoundation) supporta nativamente solo MP4/M4V/MOV e flussi HLS
+    /// (M3U8/TS). NON supporta MKV o AVI: se il pannello Xtream serve il contenuto
+    /// in uno di questi formati, il player entra in un limbo silenzioso senza mai
+    /// emettere lo stato .failed. Per questo NON vengono piu' provati come fallback:
+    /// provarli non ha mai potuto funzionare ed era la causa del "nessun errore".
+    private static let playableExtensions: Set<String> = ["mp4", "m4v", "mov", "ts", "m3u8"]
+    private static let knownUnsupportedContainers: Set<String> = ["mkv", "avi", "wmv", "flv", "webm"]
 
     private var currentURL: URL { candidateURLs[candidateIndex] }
 
@@ -43,10 +53,17 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
 
         DebugLogger.logAsync(.info, "SmartReconnectPlayer: avvio riproduzione URL = \(url.absoluteString), candidati disponibili: \(candidateURLs.map(\.absoluteString))")
 
+        let originalExt = url.pathExtension.lowercased()
+        if Self.knownUnsupportedContainers.contains(originalExt) {
+            DebugLogger.logAsync(.error, "Formato contenitore .\(originalExt) non supportato nativamente da AVPlayer su iOS")
+            lastError = "Questo contenuto e' in formato .\(originalExt.uppercased()), non supportato dal player nativo di iOS (AVPlayer supporta solo MP4, MOV e flussi HLS). Il fornitore dovrebbe offrire una versione MP4 di questo contenuto."
+        }
+
         observe()
         observeNetwork()
         configureRemoteCommandCenter()
         updateNowPlayingInfo()
+        startWatchdog()
     }
 
     private static func buildCandidateURLs(from url: URL) -> [URL] {
@@ -55,7 +72,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         if pathComponents.contains("live") {
             extensionsToTry = ["m3u8", "ts"]
         } else if pathComponents.contains("movie") || pathComponents.contains("series") {
-            extensionsToTry = ["mp4", "mkv", "ts", "avi", "m3u8"]
+            extensionsToTry = ["mp4", "m4v", "mov", "ts", "m3u8"]
         } else {
             return [url]
         }
@@ -63,8 +80,11 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         let currentExt = url.pathExtension.lowercased()
         let base = url.deletingPathExtension()
         var seen = Set<String>()
-        var result: [URL] = [url]
-        seen.insert(url.absoluteString)
+        var result: [URL] = []
+        if playableExtensions.contains(currentExt) {
+            result.append(url)
+            seen.insert(url.absoluteString)
+        }
 
         for ext in extensionsToTry where ext != currentExt {
             let candidate = base.appendingPathExtension(ext)
@@ -73,7 +93,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
                 seen.insert(candidate.absoluteString)
             }
         }
-        return result
+        return result.isEmpty ? [url] : result
     }
 
     private static func configureAudioSession() {
@@ -104,6 +124,22 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         pathMonitor.start(queue: pathMonitorQueue)
     }
 
+    /// Rete di sicurezza per il caso in cui AVPlayer non riesca a decodificare il
+    /// contenuto ma non emetta mai lo stato .failed (limbo silenzioso tipico di
+    /// contenitori parzialmente riconosciuti). Se dopo 15s la riproduzione non e'
+    /// mai realmente partita, lo trattiamo come un fallimento esplicito.
+    private func startWatchdog() {
+        watchdogTask?.cancel()
+        watchdogTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            if !self.hasEverStartedPlaying && self.lastError == nil {
+                DebugLogger.logAsync(.error, "Watchdog: nessuna riproduzione avviata dopo 15s per \(self.currentURL.absoluteString), nessun errore esplicito da AVPlayer")
+                self.handleFailure(lastKnownError: "Il flusso non si e' avviato entro 15 secondi. Il formato potrebbe non essere supportato o il server non risponde correttamente.")
+            }
+        }
+    }
+
     private func observe() {
         stallObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemPlaybackStalled, object: player.currentItem, queue: nil
@@ -128,6 +164,10 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         timeControlObserver = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
             Task { @MainActor in
                 self?.isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                if player.timeControlStatus == .playing {
+                    self?.hasEverStartedPlaying = true
+                    self?.watchdogTask?.cancel()
+                }
                 self?.updateNowPlayingInfo()
             }
         }
@@ -189,6 +229,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
             newItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
             player.replaceCurrentItem(with: newItem)
             player.play()
+            startWatchdog()
             return
         }
         reconnect(lastKnownError: lastKnownError)
@@ -220,6 +261,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
             self.player.replaceCurrentItem(with: newItem)
             self.player.play()
             self.isBuffering = false
+            self.startWatchdog()
         }
     }
 
@@ -227,13 +269,16 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         reconnectAttempts = 0
         candidateIndex = 0
         lastError = nil
+        hasEverStartedPlaying = false
         let newItem = AVPlayerItem(url: originalURL)
         newItem.preferredForwardBufferDuration = preferredBufferSeconds
         newItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         player.replaceCurrentItem(with: newItem)
+        startWatchdog()
     }
 
     deinit {
+        watchdogTask?.cancel()
         if let stallObserver { NotificationCenter.default.removeObserver(stallObserver) }
         if let interruptionObserver { NotificationCenter.default.removeObserver(interruptionObserver) }
         statusObserver?.invalidate()
