@@ -23,6 +23,11 @@ settings:
     DEVELOPMENT_TEAM: ""
     GENERATE_INFOPLIST_FILE: NO
 
+packages:
+  KSPlayer:
+    url: https://github.com/kingslay/KSPlayer.git
+    branch: main
+
 targets:
   GassPlayer:
     type: application
@@ -42,6 +47,8 @@ targets:
     dependencies:
       - target: PacketTunnel
         embed: true
+      - package: KSPlayer
+        product: KSPlayer
     settings:
       base:
         GENERATE_INFOPLIST_FILE: NO
