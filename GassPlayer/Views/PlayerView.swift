@@ -21,7 +21,7 @@ struct PlayerView: View {
 
     init(url: URL, title: String) {
         self.url = url; self.title = title
-        _reconnectPlayer = StateObject(wrappedValue: SmartReconnectPlayer(url: url))
+        _reconnectPlayer = StateObject(wrappedValue: SmartReconnectPlayer(url: url, title: title))
     }
 
     var body: some View {

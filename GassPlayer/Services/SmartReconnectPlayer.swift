@@ -1,5 +1,7 @@
 import Foundation
 import AVFoundation
+import MediaPlayer
+import Network
 import Combine
 
 @MainActor
@@ -16,15 +18,20 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
     private let candidateURLs: [URL]
     private var candidateIndex = 0
     private let maxAttemptsPerCandidate = 3
+    private let title: String
     private var statusObserver: NSKeyValueObservation?
     private var timeControlObserver: NSKeyValueObservation?
     private var stallObserver: NSObjectProtocol?
     private var interruptionObserver: NSObjectProtocol?
+    private let pathMonitor = NWPathMonitor()
+    private let pathMonitorQueue = DispatchQueue(label: "com.gassplayer.network-monitor")
+    private var isNetworkAvailable = true
 
     private var currentURL: URL { candidateURLs[candidateIndex] }
 
-    init(url: URL) {
+    init(url: URL, title: String = "") {
         self.originalURL = url
+        self.title = title
         self.candidateURLs = Self.buildCandidateURLs(from: url)
         self.player = AVPlayer(url: url)
         super.init()
@@ -37,6 +44,9 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         DebugLogger.logAsync(.info, "SmartReconnectPlayer: avvio riproduzione URL = \(url.absoluteString), candidati disponibili: \(candidateURLs.map(\.absoluteString))")
 
         observe()
+        observeNetwork()
+        configureRemoteCommandCenter()
+        updateNowPlayingInfo()
     }
 
     private static func buildCandidateURLs(from url: URL) -> [URL] {
@@ -75,6 +85,25 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         }
     }
 
+    private func observeNetwork() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in
+                guard let self else { return }
+                let available = path.status == .satisfied
+                if self.isNetworkAvailable && !available {
+                    DebugLogger.logAsync(.error, "Rete non disponibile, riproduzione sospesa")
+                    self.lastError = "Nessuna connessione di rete disponibile."
+                } else if !self.isNetworkAvailable && available && self.lastError != nil {
+                    DebugLogger.logAsync(.info, "Rete tornata disponibile, ritento la riproduzione")
+                    self.resetAttempts()
+                    self.player.play()
+                }
+                self.isNetworkAvailable = available
+            }
+        }
+        pathMonitor.start(queue: pathMonitorQueue)
+    }
+
     private func observe() {
         stallObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemPlaybackStalled, object: player.currentItem, queue: nil
@@ -88,12 +117,15 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
                 let underlying = item.error?.localizedDescription ?? "errore sconosciuto"
                 DebugLogger.logAsync(.error, "AVPlayerItem fallito per URL \(self?.currentURL.absoluteString ?? "?"): \(underlying)")
                 Task { @MainActor in self?.handleFailure(lastKnownError: underlying) }
+            } else if item.status == .readyToPlay {
+                Task { @MainActor in self?.updateNowPlayingInfo() }
             }
         }
 
         timeControlObserver = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
             Task { @MainActor in
                 self?.isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                self?.updateNowPlayingInfo()
             }
         }
 
@@ -106,6 +138,41 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
                 Task { @MainActor in self?.player.play() }
             }
         }
+    }
+
+    private func configureRemoteCommandCenter() {
+        let commandCenter = MPRemoteCommandCenter.shared()
+        commandCenter.playCommand.addTarget { [weak self] _ in
+            self?.player.play()
+            return .success
+        }
+        commandCenter.pauseCommand.addTarget { [weak self] _ in
+            self?.player.pause()
+            return .success
+        }
+        commandCenter.stopCommand.addTarget { [weak self] _ in
+            self?.player.pause()
+            return .success
+        }
+        commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            if self.player.timeControlStatus == .paused {
+                self.player.play()
+            } else {
+                self.player.pause()
+            }
+            return .success
+        }
+    }
+
+    private func updateNowPlayingInfo() {
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: title.isEmpty ? "GassPlayer" : title,
+            MPNowPlayingInfoPropertyIsLiveStream: true,
+            MPNowPlayingInfoPropertyPlaybackRate: player.timeControlStatus == .playing ? 1.0 : 0.0
+        ]
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     private func handleStall() { isBuffering = true; reconnect(lastKnownError: nil) }
@@ -125,6 +192,11 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
     }
 
     private func reconnect(lastKnownError: String?) {
+        guard isNetworkAvailable else {
+            lastError = "Nessuna connessione di rete disponibile."
+            isBuffering = false
+            return
+        }
         guard reconnectAttempts < maxAttemptsPerCandidate else {
             let triedURLs = candidateURLs.map(\.absoluteString).joined(separator: ", ")
             let message = lastKnownError.map { "Impossibile riprodurre il flusso: \($0). URL tentate: \(triedURLs)" }
@@ -156,5 +228,14 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         newItem.preferredForwardBufferDuration = preferredBufferSeconds
         newItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         player.replaceCurrentItem(with: newItem)
+    }
+
+    deinit {
+        if let stallObserver { NotificationCenter.default.removeObserver(stallObserver) }
+        if let interruptionObserver { NotificationCenter.default.removeObserver(interruptionObserver) }
+        statusObserver?.invalidate()
+        timeControlObserver?.invalidate()
+        pathMonitor.cancel()
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 }
