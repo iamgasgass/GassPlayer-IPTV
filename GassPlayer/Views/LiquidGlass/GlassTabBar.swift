@@ -8,18 +8,18 @@ struct GlassTabItem: Identifiable {
 
 /// Tab bar Liquid Glass con morph reale del blob di selezione.
 ///
-/// FIX rispetto alla versione precedente: il vetro non puo' "campionare"
-/// altro vetro (regola esplicita di Apple per Liquid Glass). Avere lo
-/// sfondo della barra e il blob di selezione come due .glassEffect()
-/// indipendenti, ciascuno fuori da un GlassEffectContainer, li fa
-/// renderizzare in isolamento: il risultato SEMBRA vetro ma l'animazione
-/// di spostamento non ha la fisica "liquida" reale (nessuna rifrazione
-/// coordinata, nessun blending), perche' ogni livello di vetro calcola la
-/// propria distorsione separatamente. La correzione e' avvolgere l'intera
-/// barra in un unico GlassEffectContainer, cosi' i due livelli condividono
-/// la stessa regione di campionamento e il sistema puo' davvero fondere le
-/// forme durante l'animazione — esattamente il comportamento visto nello
-/// screenshot di riferimento.
+/// FIX (round 2): la versione precedente applicava CONTEMPORANEAMENTE
+/// .glassEffectID e .matchedGeometryEffect con lo stesso id sullo stesso
+/// elemento. Sono due motori di animazione della geometria indipendenti che
+/// competono per il controllo dello stesso frame nello stesso momento:
+/// risultato, artefatti visivi (la "corruzione/sfocatura" segnalata) e
+/// l'animazione che non si vede perche' i due sistemi si annullano a
+/// vicenda. La regola corretta (verificata sulla documentazione Apple e sul
+/// pattern usato nell'app di esempio Landmarks, WWDC 2025): per un
+/// indicatore che scorre in continuazione tra elementi SEMPRE presenti si
+/// usa SOLO matchedGeometryEffect, dentro un unico GlassEffectContainer.
+/// glassEffectID si usa invece per transizioni tra elementi che compaiono
+/// e scompaiono (caso diverso dal nostro).
 struct GlassTabBar: View {
     let items: [GlassTabItem]
     @Binding var selection: Int
@@ -65,18 +65,16 @@ struct GlassTabBar: View {
             .foregroundStyle(isSelected ? Color.white : Color.secondary)
             .frame(maxWidth: .infinity)
             .frame(height: barHeight - 16)
-            .background {
+            .background(alignment: .center) {
                 if isSelected {
                     Capsule()
                         .fill(.clear)
                         .glassEffect(.regular.tint(.white.opacity(0.16)).interactive(), in: .capsule)
-                        .glassEffectID("selectionBlob", in: glassNamespace)
                         .matchedGeometryEffect(id: "selectionBlob", in: glassNamespace)
                 }
             }
         }
         .buttonStyle(.plain)
-        .glassEffectTransition(.matchedGeometry)
     }
 
     private var legacyBar: some View {
@@ -109,7 +107,7 @@ struct GlassTabBar: View {
             .foregroundStyle(isSelected ? Color.white : Color.secondary)
             .frame(maxWidth: .infinity)
             .frame(height: barHeight - 16)
-            .background {
+            .background(alignment: .center) {
                 if isSelected {
                     Capsule().fill(Color.white.opacity(0.14))
                         .matchedGeometryEffect(id: "legacyBlob", in: glassNamespace)
