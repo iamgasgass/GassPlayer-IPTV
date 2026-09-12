@@ -3,11 +3,14 @@ import SwiftUI
 struct GlassIconButton: View {
     let systemImage: String
     var tint: Color? = nil
+    var size: CGFloat = 44
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemImage).font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
+            Image(systemName: systemImage)
+                .font(.system(size: size * 0.41, weight: .semibold))
+                .frame(width: size, height: size)
         }
         .buttonStyle(.plain)
         .contentShape(Circle())
