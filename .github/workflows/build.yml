@@ -52,11 +52,25 @@ jobs:
         run: |
           xcodebuild -showBuildSettings -project GassPlayer.xcodeproj -target GassPlayer -configuration Release -sdk iphoneos 2>/dev/null | grep -E "GENERATE_INFOPLIST_FILE|INFOPLIST_FILE" || true
 
+      - name: Detect available iOS Simulator
+        id: sim
+        run: |
+          xcrun simctl list devices available
+          DEVICE_LINE=$(xcrun simctl list devices available | grep -E "iPhone" | grep -v "unavailable" | head -n 1)
+          if [ -z "$DEVICE_LINE" ]; then
+            echo "ERRORE: nessun simulatore iPhone disponibile su questo runner"
+            exit 1
+          fi
+          DEVICE_UDID=$(echo "$DEVICE_LINE" | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}')
+          DEVICE_NAME=$(echo "$DEVICE_LINE" | sed -E 's/^[[:space:]]*(.+) \([0-9A-Fa-f-]+\).*/\1/')
+          echo "Simulatore selezionato: $DEVICE_NAME ($DEVICE_UDID)"
+          echo "udid=$DEVICE_UDID" >> "$GITHUB_OUTPUT"
+
       - name: Run unit tests
         run: |
           set -o pipefail
           mkdir -p build
-          xcodebuild test -project GassPlayer.xcodeproj -scheme GassPlayer -destination 'platform=iOS Simulator,name=iPhone 16' CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/tests.log
+          xcodebuild test -project GassPlayer.xcodeproj -scheme GassPlayer -destination "id=${{ steps.sim.outputs.udid }}" CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/tests.log
 
       - name: Upload test log
         if: always()
