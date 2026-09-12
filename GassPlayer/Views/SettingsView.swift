@@ -60,6 +60,7 @@ struct SettingsView: View {
 
                 Section {
                     NavigationLink { DebugConsoleView() } label: { Label("Debug Mode e log", systemImage: "ladybug") }
+                    NavigationLink { ATSDiagnosticView() } label: { Label("Diagnostica rete (ATS)", systemImage: "network.badge.shield.half.filled") }
                 } header: { Label("Diagnostica", systemImage: "wrench.and.screwdriver") }
 
                 Section {
