@@ -6,6 +6,5 @@ struct M3UChannel: Identifiable, Hashable {
     let logoURL: String?
     let groupTitle: String?
     let tvgId: String?
-    let catchupDays: Int?
     let streamURL: URL
 }
