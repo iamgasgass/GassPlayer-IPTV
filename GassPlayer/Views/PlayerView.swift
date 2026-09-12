@@ -25,25 +25,23 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            RealPiPPlayerView(player: reconnectPlayer.player)
-                .ignoresSafeArea()
-                .onAppear { reconnectPlayer.player.play(); Task { await loadMediaSelection() } }
-                .onDisappear { reconnectPlayer.player.pause() }
-                .simultaneousGesture(dragGesture)
+        ZStack(alignment: .topLeading) {
+            RealPiPPlayerView(
+                player: reconnectPlayer.player,
+                onOpenSubtitles: { showTrackPicker = true },
+                onOpenQuality: { showQualityPicker = true },
+                onOpenBuffer: { showBufferSettings = true }
+            )
+            .ignoresSafeArea()
+            .onAppear { reconnectPlayer.player.play(); Task { await loadMediaSelection() } }
+            .onDisappear { reconnectPlayer.player.pause() }
+            .simultaneousGesture(dragGesture)
 
             if showBrightnessHUD { hudOverlay(icon: "sun.max.fill", value: brightnessOverlay) }
             if showVolumeHUD { hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay) }
 
-            HStack {
-                GlassIconButton(systemImage: "xmark") { dismiss() }
-                Spacer()
-                if reconnectPlayer.isBuffering { ProgressView().padding(.horizontal, 8) }
-                GlassIconButton(systemImage: "4k.tv") { showQualityPicker = true }
-                GlassIconButton(systemImage: "dial.low") { showBufferSettings = true }
-                GlassIconButton(systemImage: "text.bubble") { showTrackPicker = true }
-            }
-            .padding()
+            GlassIconButton(systemImage: "xmark") { dismiss() }
+                .padding()
         }
         .sheet(isPresented: $showTrackPicker) {
             TrackPickerView(player: reconnectPlayer.player, audioOptions: audioOptions, subtitleOptions: subtitleOptions)
@@ -101,12 +99,30 @@ struct PlayerView: View {
 
 struct RealPiPPlayerView: UIViewControllerRepresentable {
     let player: AVPlayer
+    let onOpenSubtitles: () -> Void
+    let onOpenQuality: () -> Void
+    let onOpenBuffer: () -> Void
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.player = player
         controller.allowsPictureInPicturePlayback = true
         controller.canStartPictureInPictureAutomaticallyFromInline = true
+        controller.showsPlaybackControls = true
+
+        if #available(iOS 16.0, *) {
+            controller.transportBarCustomMenuItems = [
+                UIAction(title: "Sottotitoli e audio", image: UIImage(systemName: "text.bubble")) { _ in
+                    onOpenSubtitles()
+                },
+                UIAction(title: "Qualità video", image: UIImage(systemName: "4k.tv")) { _ in
+                    onOpenQuality()
+                },
+                UIAction(title: "Buffer e riconnessione", image: UIImage(systemName: "dial.low")) { _ in
+                    onOpenBuffer()
+                }
+            ]
+        }
         return controller
     }
 

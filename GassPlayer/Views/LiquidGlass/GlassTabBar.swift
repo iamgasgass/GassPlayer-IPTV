@@ -19,6 +19,8 @@ struct GlassTabBar: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
         .padding(.bottom, 8)
     }
 
@@ -26,7 +28,9 @@ struct GlassTabBar: View {
         let isSelected = selection == index
         return VStack(spacing: 4) {
             Button {
-                selection = index
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                    selection = index
+                }
             } label: {
                 Image(systemName: item.systemImage)
                     .font(.system(size: 20, weight: .semibold))
@@ -35,6 +39,8 @@ struct GlassTabBar: View {
             }
             .buttonStyle(.plain)
             .modifier(TabCircleGlass(isSelected: isSelected))
+            .contentShape(Circle())
+            .scaleEffect(isSelected ? 1.08 : 1.0)
 
             Text(item.title)
                 .font(.system(size: 9, weight: .medium))
@@ -49,10 +55,12 @@ struct TabCircleGlass: ViewModifier {
     let isSelected: Bool
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.glassEffect(
-                isSelected ? .regular.tint(.accentColor).interactive() : .regular.interactive(),
-                in: .circle
-            )
+            content
+                .background {
+                    Circle()
+                        .fill(.clear)
+                        .glassEffect(isSelected ? .regular.tint(.accentColor) : .regular, in: .circle)
+                }
         } else {
             content
                 .background(isSelected ? Color.accentColor.opacity(0.85) : Color.clear, in: Circle())

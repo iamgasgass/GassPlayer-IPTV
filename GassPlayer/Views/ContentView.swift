@@ -23,7 +23,7 @@ struct ContentView: View {
     var body: some View {
         Group {
             if showSplash {
-                SplashScreenView { showSplash = false; restoreLastSourceIfAvailable() }
+                SplashScreenView { showSplash = false; loadActiveSource() }
             } else if credentials != nil || m3uPlaylistURL != nil {
                 ZStack(alignment: .bottom) {
                     Group {
@@ -45,6 +45,7 @@ struct ContentView: View {
                 }
                 .sheet(isPresented: $overlayState.showSearch) { GlobalSearchView() }
                 .sheet(isPresented: $overlayState.showSettings) { SettingsView() }
+                .onChange(of: sourceManager.activeSourceId) { _, _ in loadActiveSource() }
             } else {
                 LoginView(
                     onLogin: { creds in
@@ -67,18 +68,18 @@ struct ContentView: View {
         .environmentObject(overlayState)
     }
 
-    private func restoreLastSourceIfAvailable() {
-        guard credentials == nil, m3uPlaylistURL == nil else { return }
-        guard let last = sourceManager.sources.last else { return }
-
-        switch last.type {
+    private func loadActiveSource() {
+        guard let active = sourceManager.activeSource else { return }
+        switch active.type {
         case .xtream:
-            if let username = last.username, let password = last.password {
-                credentials = XtreamCredentials(host: last.host, username: username, password: password)
+            if let username = active.username, let password = active.password {
+                credentials = XtreamCredentials(host: active.host, username: username, password: password)
+                m3uPlaylistURL = nil
             }
         case .m3u8:
-            if let url = URL(string: last.host) {
+            if let url = URL(string: active.host) {
                 m3uPlaylistURL = url
+                credentials = nil
             }
         case .plex, .jellyfin, .emby:
             break

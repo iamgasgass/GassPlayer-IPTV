@@ -7,10 +7,20 @@ struct SourcesView: View {
     @State private var renamingSource: MediaSourceConfig?
     @State private var newName = ""
     @State private var showMergeSheet = false
+    @State private var showAllSourcesLive = false
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Button {
+                        showAllSourcesLive = true
+                    } label: {
+                        Label("Guarda tutte le liste insieme", systemImage: "square.stack.3d.up.fill")
+                    }
+                    .disabled(sourceManager.sources.filter { $0.type == .xtream }.isEmpty)
+                }
+
                 Section("Le mie sorgenti") {
                     ForEach(sourceManager.sources) { source in
                         HStack {
@@ -20,10 +30,22 @@ struct SourcesView: View {
                                 Text(source.type.rawValue).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
+                            if sourceManager.activeSourceId == source.id {
+                                Label("Attiva", systemImage: "checkmark.circle.fill")
+                                    .font(.caption2)
+                                    .labelStyle(.iconOnly)
+                                    .foregroundStyle(.green)
+                            }
                             Circle().fill(source.isEnabled ? .green : .gray).frame(width: 8, height: 8)
                         }
                         .contentShape(Rectangle())
-                        .onTapGesture { renamingSource = source; newName = source.name }
+                        .onTapGesture { sourceManager.setActive(source) }
+                        .swipeActions(edge: .trailing) {
+                            Button { renamingSource = source; newName = source.name } label: {
+                                Label("Rinomina", systemImage: "pencil")
+                            }
+                            .tint(.blue)
+                        }
                     }
                     .onDelete { indices in indices.forEach { sourceManager.remove(sourceManager.sources[$0]) } }
                     .onMove { sourceManager.move(fromOffsets: $0, toOffset: $1) }
@@ -70,6 +92,9 @@ struct SourcesView: View {
                 MergePlaylistView(sources: sourceManager.sources) { name, ids in
                     contentManagement.createMergedPlaylist(name: name, sourceIds: ids)
                 }
+            }
+            .sheet(isPresented: $showAllSourcesLive) {
+                AllSourcesLiveView(sources: sourceManager.sources, kind: .live)
             }
             .alert("Rinomina sorgente", isPresented: Binding(get: { renamingSource != nil }, set: { if !$0 { renamingSource = nil } })) {
                 TextField("Nome", text: $newName)

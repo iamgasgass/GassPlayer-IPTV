@@ -10,6 +10,7 @@ struct ChannelGridView: View {
     @State private var selectedStream: XtreamStream?
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var epgByStream: [Int: EPGProgram] = [:]
 
     private var repository: CachedXtreamRepository { CachedXtreamRepository(credentials: credentials) }
     private let columns = [GridItem(.adaptive(minimum: 110, maximum: 140), spacing: 14)]
@@ -25,7 +26,8 @@ struct ChannelGridView: View {
                     ForEach(streams) { stream in
                         ChannelTile(
                             stream: stream,
-                            isFavorite: contentManagement.isFavorite(id: "\(credentials.host)-\(kind.rawValue)-\(stream.streamId)")
+                            isFavorite: contentManagement.isFavorite(id: "\(credentials.host)-\(kind.rawValue)-\(stream.streamId)"),
+                            currentProgram: kind == .live ? epgByStream[stream.streamId] : nil
                         ) {
                             selectedStream = stream
                         } onFavoriteToggle: {
@@ -125,17 +127,35 @@ struct ChannelGridView: View {
         isLoading = true
         streams = (try? await repository.streams(kind: kind, categoryId: category.categoryId)) ?? []
         isLoading = false
+        if kind == .live { await loadEPGForVisibleStreams() }
+    }
+
+    private func loadEPGForVisibleStreams() async {
+        let epgService = EPGService(credentials: credentials)
+        let visibleStreams = Array(streams.prefix(24))
+        await withTaskGroup(of: (Int, EPGProgram?).self) { group in
+            for stream in visibleStreams {
+                group.addTask {
+                    let programs = (try? await epgService.shortEPG(streamId: stream.streamId, limit: 1)) ?? []
+                    return (stream.streamId, programs.first)
+                }
+            }
+            for await (streamId, program) in group {
+                if let program { epgByStream[streamId] = program }
+            }
+        }
     }
 }
 
 private struct ChannelTile: View {
     let stream: XtreamStream
     let isFavorite: Bool
+    let currentProgram: EPGProgram?
     let onTap: () -> Void
     let onFavoriteToggle: () -> Void
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
                 AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
                     switch phase {
@@ -158,6 +178,12 @@ private struct ChannelTile: View {
                 .padding(4)
             }
             Text(stream.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
+            if let currentProgram {
+                Text(currentProgram.title)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .onTapGesture { onTap() }
     }
