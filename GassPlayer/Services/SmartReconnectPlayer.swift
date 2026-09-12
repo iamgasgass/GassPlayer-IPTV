@@ -14,14 +14,20 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
     private let url: URL
     private let maxAttempts = 5
     private var statusObserver: NSKeyValueObservation?
+    private var timeControlObserver: NSKeyValueObservation?
     private var stallObserver: NSObjectProtocol?
+    private var interruptionObserver: NSObjectProtocol?
 
     init(url: URL) {
         self.url = url
         self.player = AVPlayer(url: url)
         super.init()
         Self.configureAudioSession()
+
+        player.automaticallyWaitsToMinimizeStalling = false
         player.currentItem?.preferredForwardBufferDuration = preferredBufferSeconds
+        player.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+
         observe()
     }
 
@@ -41,9 +47,26 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
             DebugLogger.logAsync(.warning, "Playback stalled")
             Task { @MainActor in self?.handleStall() }
         }
+
         statusObserver = player.currentItem?.observe(\.status, options: [.new]) { [weak self] item, _ in
             if item.status == .failed {
                 Task { @MainActor in self?.reconnect() }
+            }
+        }
+
+        timeControlObserver = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor in
+                self?.isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            }
+        }
+
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+            if type == .ended {
+                Task { @MainActor in self?.player.play() }
             }
         }
     }
@@ -58,6 +81,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
             guard let self else { return }
             let newItem = AVPlayerItem(url: self.url)
             newItem.preferredForwardBufferDuration = self.preferredBufferSeconds
+            newItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
             self.player.replaceCurrentItem(with: newItem)
             self.player.play()
             self.isBuffering = false

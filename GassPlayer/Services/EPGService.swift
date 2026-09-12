@@ -34,14 +34,27 @@ struct EPGService {
             enum CodingKeys: String, CodingKey { case epgListings = "epg_listings" }
         }
 
-        let raw = try JSONDecoder().decode(RawEPGResponse.self, from: data)
+        guard let raw = try? JSONDecoder().decode(RawEPGResponse.self, from: data) else { return [] }
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+
         return raw.epgListings.compactMap { item in
             guard let start = formatter.date(from: item.start), let end = formatter.date(from: item.end) else { return nil }
-            return EPGProgram(id: item.id, title: item.title, description: item.description,
-                               start: start, end: end, hasArchive: (item.hasArchive ?? 0) == 1)
+            return EPGProgram(
+                id: item.id,
+                title: Self.decodeIfBase64(item.title),
+                description: item.description.map(Self.decodeIfBase64),
+                start: start, end: end,
+                hasArchive: (item.hasArchive ?? 0) == 1
+            )
         }
+    }
+
+    private static func decodeIfBase64(_ value: String) -> String {
+        guard let data = Data(base64Encoded: value), let decoded = String(data: data, encoding: .utf8) else {
+            return value
+        }
+        return decoded
     }
 
     func catchupURL(for request: CatchupRequest) -> URL? {
