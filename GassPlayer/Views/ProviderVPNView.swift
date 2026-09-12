@@ -5,6 +5,7 @@ struct ProviderVPNView: View {
     let credentials: XtreamCredentials?
     @StateObject private var vpnManager = ProviderVPNManager()
     @State private var isChecking = false
+    @State private var showToggleErrorAlert = false
 
     var body: some View {
         NavigationStack {
@@ -37,7 +38,10 @@ struct ProviderVPNView: View {
                             GlassIconButton(
                                 systemImage: vpnManager.status == .connected ? "lock.fill" : "lock.open.fill",
                                 tint: vpnManager.status == .connected ? .green : .gray
-                            ) { try? vpnManager.toggle() }
+                            ) { toggleConnection() }
+                        }
+                        if let error = vpnManager.lastError {
+                            Text(error).font(.caption).foregroundStyle(.red)
                         }
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
@@ -61,6 +65,19 @@ struct ProviderVPNView: View {
                 }
             }
             .task { await refresh() }
+            .alert("Impossibile modificare la connessione VPN", isPresented: $showToggleErrorAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(vpnManager.lastError ?? "Errore sconosciuto durante l'avvio della VPN.")
+            }
+        }
+    }
+
+    private func toggleConnection() {
+        do {
+            try vpnManager.toggle()
+        } catch {
+            showToggleErrorAlert = true
         }
     }
 
