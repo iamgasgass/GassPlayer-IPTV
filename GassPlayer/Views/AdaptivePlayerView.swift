@@ -7,11 +7,11 @@ import KSPlayer
 /// (AVPlayer+FFmpeg) per i formati che AVFoundation non supporta nativamente
 /// su iOS (MKV, AVI, WMV, FLV, WebM).
 ///
-/// NOTA IMPORTANTE: l'inizializzatore KSVideoPlayerView(url:) e' basato sulla
-/// documentazione pubblica e sull'uso nella demo ufficiale di KSPlayer, non
-/// verificato a compilazione (dipendenza pinnata al branch "main", API non
-/// garantita stabile). Se il primo build fallisce su questo file, manda il
-/// log esatto: la correzione e' immediata una volta visto l'errore reale.
+/// FIX BUILD: KSVideoPlayerView(url:) da solo non basta piu' nel branch
+/// main di KSPlayer (commit 7862a2b): l'init richiede anche 'options'.
+/// Usiamo KSOptions() di default (nessuna personalizzazione necessaria per
+/// il fallback, che e' un percorso a basso traffico rispetto al player
+/// nativo AVFoundation).
 struct AdaptivePlayerView: View {
     let url: URL
     let title: String
@@ -36,7 +36,7 @@ private struct KSPlayerFallbackView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            KSVideoPlayerView(url: url)
+            KSVideoPlayerView(url: url, options: KSOptions())
                 .ignoresSafeArea()
 
             HStack {
