@@ -3,12 +3,14 @@ import AVKit
 import AVFoundation
 import UIKit
 import MediaPlayer
+import Combine
 
 struct PlayerView: View {
     let url: URL
     let title: String
     @Environment(\.dismiss) private var dismiss
     @StateObject private var reconnectPlayer: SmartReconnectPlayer
+    @StateObject private var progress = PlaybackProgress()
     @State private var showTrackPicker = false
     @State private var showBufferSettings = false
     @State private var showQualityPicker = false
@@ -18,6 +20,8 @@ struct PlayerView: View {
     @State private var volumeOverlay: Double = 0
     @State private var showBrightnessHUD = false
     @State private var showVolumeHUD = false
+    @State private var showControls = true
+    @State private var hideControlsTask: Task<Void, Never>?
 
     init(url: URL, title: String) {
         self.url = url; self.title = title
@@ -25,30 +29,33 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
+        ZStack {
             RealPiPPlayerView(player: reconnectPlayer.player)
                 .ignoresSafeArea()
-                .onAppear { reconnectPlayer.player.play(); Task { await loadMediaSelection() } }
-                .onDisappear { reconnectPlayer.player.pause() }
+                .onAppear {
+                    reconnectPlayer.player.play()
+                    Task { await loadMediaSelection() }
+                    progress.attach(to: reconnectPlayer.player)
+                    scheduleAutoHide()
+                }
+                .onDisappear {
+                    reconnectPlayer.player.pause()
+                    progress.detach()
+                    hideControlsTask?.cancel()
+                }
                 .simultaneousGesture(dragGesture)
+                .onTapGesture { toggleControls() }
 
             if showBrightnessHUD { hudOverlay(icon: "sun.max.fill", value: brightnessOverlay) }
             if showVolumeHUD { hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay) }
 
             if let errorMessage = reconnectPlayer.lastError {
                 playbackErrorBanner(errorMessage)
+            } else if showControls {
+                unifiedControlSurface
             }
-
-            HStack {
-                GlassIconButton(systemImage: "xmark") { dismiss() }
-                Spacer()
-                if reconnectPlayer.isBuffering { ProgressView().padding(.horizontal, 8) }
-                GlassIconButton(systemImage: "4k.tv") { showQualityPicker = true }
-                GlassIconButton(systemImage: "dial.low") { showBufferSettings = true }
-                GlassIconButton(systemImage: "text.bubble") { showTrackPicker = true }
-            }
-            .padding()
         }
+        .statusBarHidden(true)
         .sheet(isPresented: $showTrackPicker) {
             TrackPickerView(player: reconnectPlayer.player, audioOptions: audioOptions, subtitleOptions: subtitleOptions)
         }
@@ -58,6 +65,85 @@ struct PlayerView: View {
         .sheet(isPresented: $showQualityPicker) {
             QualityPickerView(player: reconnectPlayer.player)
         }
+    }
+
+    private var unifiedControlSurface: some View {
+        VStack {
+            HStack {
+                GlassIconButton(systemImage: "xmark") { dismiss() }
+                Spacer()
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .shadow(radius: 4)
+                Spacer()
+                if reconnectPlayer.isBuffering { ProgressView().tint(.white).padding(.horizontal, 4) }
+                GlassIconButton(systemImage: "4k.tv") { showQualityPicker = true }
+                GlassIconButton(systemImage: "dial.low") { showBufferSettings = true }
+                GlassIconButton(systemImage: "text.bubble") { showTrackPicker = true }
+            }
+            .padding()
+            .background(LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom))
+
+            Spacer()
+
+            VStack(spacing: 6) {
+                if progress.duration > 0 {
+                    Slider(value: Binding(
+                        get: { progress.currentTime },
+                        set: { progress.seek(to: $0) }
+                    ), in: 0...max(progress.duration, 1))
+                    .tint(.white)
+                }
+                HStack {
+                    GlassIconButton(systemImage: reconnectPlayer.player.timeControlStatus == .playing ? "pause.fill" : "play.fill", size: 40) {
+                        togglePlayPause()
+                    }
+                    if progress.duration > 0 {
+                        Text("\(formatted(progress.currentTime)) / \(formatted(progress.duration))")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.white)
+                    } else {
+                        Text("Live").font(.caption.weight(.semibold)).foregroundStyle(.white)
+                    }
+                    Spacer()
+                }
+            }
+            .padding()
+            .background(LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom))
+        }
+        .transition(.opacity)
+    }
+
+    private func togglePlayPause() {
+        if reconnectPlayer.player.timeControlStatus == .playing {
+            reconnectPlayer.player.pause()
+        } else {
+            reconnectPlayer.player.play()
+        }
+        scheduleAutoHide()
+    }
+
+    private func toggleControls() {
+        withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() }
+        if showControls { scheduleAutoHide() }
+    }
+
+    private func scheduleAutoHide() {
+        hideControlsTask?.cancel()
+        hideControlsTask = Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { withAnimation(.easeInOut(duration: 0.3)) { showControls = false } }
+        }
+    }
+
+    private func formatted(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "--:--" }
+        let total = Int(seconds)
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 
     private func playbackErrorBanner(_ message: String) -> some View {
@@ -80,6 +166,7 @@ struct PlayerView: View {
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             .padding()
             Spacer()
+            HStack { GlassIconButton(systemImage: "xmark") { dismiss() }; Spacer() }.padding()
         }
         .transition(.opacity)
     }
@@ -127,6 +214,35 @@ struct PlayerView: View {
     }
 }
 
+@MainActor
+final class PlaybackProgress: ObservableObject {
+    @Published var currentTime: Double = 0
+    @Published var duration: Double = 0
+    private weak var player: AVPlayer?
+    private var timeObserver: Any?
+
+    func attach(to player: AVPlayer) {
+        self.player = player
+        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] time in
+            guard let self else { return }
+            self.currentTime = time.seconds
+            if let itemDuration = player.currentItem?.duration.seconds, itemDuration.isFinite {
+                self.duration = itemDuration
+            }
+        }
+    }
+
+    func seek(to time: Double) {
+        player?.seek(to: CMTime(seconds: time, preferredTimescale: 600))
+    }
+
+    func detach() {
+        if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
+        timeObserver = nil
+        player = nil
+    }
+}
+
 struct RealPiPPlayerView: UIViewControllerRepresentable {
     let player: AVPlayer
 
@@ -135,6 +251,7 @@ struct RealPiPPlayerView: UIViewControllerRepresentable {
         controller.player = player
         controller.allowsPictureInPicturePlayback = true
         controller.canStartPictureInPictureAutomaticallyFromInline = true
+        controller.showsPlaybackControls = false
         return controller
     }
 

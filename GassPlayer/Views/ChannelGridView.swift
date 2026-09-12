@@ -83,6 +83,7 @@ struct ChannelGridView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(categories) { category in
+                    let isSelected = selectedCategory?.id == category.id
                     Button {
                         withAnimation { selectedCategory = category }
                         Task { await loadContent(for: category) }
@@ -92,9 +93,11 @@ struct ChannelGridView: View {
                                 .font(.caption)
                             Text(category.categoryName)
                         }
+                        .foregroundStyle(isSelected ? Color.white : Color.primary)
                     }
+                    .buttonStyle(.plain)
                     .padding(.horizontal, 14).padding(.vertical, 8)
-                    .modifier(GlassOrMaterial(isSelected: selectedCategory?.id == category.id))
+                    .modifier(GlassOrMaterial(isSelected: isSelected))
                 }
             }
             .padding(.horizontal)
@@ -132,12 +135,6 @@ struct ChannelGridView: View {
         isLoading = false
     }
 
-    /// Le serie richiedono un percorso di dati completamente diverso da live/VOD:
-    /// azione API "get_series" (non "get_..._streams") e modello XtreamSeriesItem
-    /// (series_id, non stream_id). Prima questo metodo chiamava sempre
-    /// repository.streams(kind:), che per .series lancia XtreamError.invalidURL
-    /// per costruzione -> da qui il messaggio "Impossibile costruire URL di richiesta"
-    /// che compariva selezionando una categoria di Serie TV.
     private func loadContent(for category: XtreamCategory) async {
         isLoading = true
         if kind == .series {
