@@ -4,10 +4,7 @@ import AVFoundation
 import UIKit
 import MediaPlayer
 
-// NOTA IMPORTANTE: BufferSettingsView, QualityPickerView e TrackPickerView
-// sono definite QUI, in un unico file. Se nel tuo progetto esiste un file
-// separato Views/BufferSettingsView.swift, ELIMINALO prima di compilare:
-// altrimenti la struct risulta dichiarata due volte ("invalid redeclaration").
+// UNICA definizione di BufferSettingsView / QualityPickerView / TrackPickerView.
 
 struct PlayerView: View {
     let url: URL
