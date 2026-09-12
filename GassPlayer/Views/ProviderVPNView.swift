@@ -51,8 +51,14 @@ struct ProviderVPNView: View {
             }
             .navigationTitle("VPN del provider")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
-                ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
+                    ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+                } else {
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+                }
             }
             .task { await refresh() }
         }

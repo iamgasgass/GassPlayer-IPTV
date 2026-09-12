@@ -39,8 +39,14 @@ struct ChannelGridView: View {
             .overlay { if isLoading { ProgressView() } }
             .navigationTitle(kind.displayName)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
-                ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
+                    ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+                } else {
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+                }
             }
             .task(id: kind) { await loadCategories() }
             .fullScreenCover(item: $selectedStream) { stream in

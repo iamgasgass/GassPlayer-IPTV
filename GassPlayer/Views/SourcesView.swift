@@ -47,11 +47,22 @@ struct SourcesView: View {
             }
             .navigationTitle("Sorgenti e contenuti")
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) { GlassSearchButton() }
-                ToolbarItem(placement: .navigationBarLeading) { GlassSettingsButton() }
-                ToolbarItem(placement: .navigationBarTrailing) { EditButton() }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { showAddSheet = true } label: { Image(systemName: "plus") }
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .navigationBarLeading) { GlassSearchButton() }
+                    ToolbarSpacer(.fixed, placement: .navigationBarLeading)
+                    ToolbarItem(placement: .navigationBarLeading) { GlassSettingsButton() }
+                    ToolbarItem(placement: .navigationBarTrailing) { EditButton() }
+                    ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button { showAddSheet = true } label: { Image(systemName: "plus") }
+                    }
+                } else {
+                    ToolbarItem(placement: .navigationBarLeading) { GlassSearchButton() }
+                    ToolbarItem(placement: .navigationBarLeading) { GlassSettingsButton() }
+                    ToolbarItem(placement: .navigationBarTrailing) { EditButton() }
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button { showAddSheet = true } label: { Image(systemName: "plus") }
+                    }
                 }
             }
             .sheet(isPresented: $showAddSheet) { AddSourceView { config in sourceManager.add(config) } }

@@ -14,64 +14,49 @@ struct GlassTabBar: View {
     private let pillHeight: CGFloat = 52
 
     var body: some View {
-        content
-            .padding(.bottom, 8)
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 10) { tabRow }
-        } else {
-            HStack(spacing: 10) { ForEach(Array(items.enumerated()), id: \.offset) { index, item in tabPill(index, item) } }
-                .frame(maxWidth: .infinity)
-        }
-    }
-
-    @available(iOS 26.0, *)
-    private var tabRow: some View {
         HStack(spacing: 10) {
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                 tabPill(index, item)
             }
         }
         .frame(maxWidth: .infinity)
+        .padding(.bottom, 8)
     }
 
     private func tabPill(_ index: Int, _ item: GlassTabItem) -> some View {
         let isSelected = selection == index
-        return Button {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { selection = index }
-        } label: {
-            VStack(spacing: 2) {
-                Image(systemName: item.systemImage)
-                    .font(.system(size: 17, weight: .semibold))
-                Text(item.title)
-                    .font(.system(size: 9, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            }
-            .foregroundStyle(isSelected ? Color.white : Color.secondary)
-            .frame(width: pillWidth, height: pillHeight)
+        let label = VStack(spacing: 2) {
+            Image(systemName: item.systemImage)
+                .font(.system(size: 17, weight: .semibold))
+            Text(item.title)
+                .font(.system(size: 9, weight: .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
-        .buttonStyle(.plain)
-        .modifier(TabPillGlass(isSelected: isSelected))
+        .foregroundStyle(isSelected ? Color.white : Color.secondary)
         .scaleEffect(isSelected ? 1.06 : 1.0)
-    }
-}
+        .frame(width: pillWidth, height: pillHeight)
 
-struct TabPillGlass: ViewModifier {
-    let isSelected: Bool
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(
-                isSelected ? .regular.tint(.accentColor).interactive() : .regular.interactive(),
-                in: .rect(cornerRadius: 18)
-            )
-        } else {
-            content
+        return Group {
+            if #available(iOS 26.0, *) {
+                GlassEffectContainer {
+                    Button {
+                        selection = index
+                    } label: { label }
+                    .buttonStyle(.plain)
+                    .glassEffect(
+                        isSelected ? .regular.tint(.accentColor).interactive() : .regular.interactive(),
+                        in: .rect(cornerRadius: 18)
+                    )
+                }
+            } else {
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { selection = index }
+                } label: { label }
+                .buttonStyle(.plain)
                 .background(isSelected ? Color.accentColor.opacity(0.9) : Color.clear, in: RoundedRectangle(cornerRadius: 18))
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+            }
         }
     }
 }
