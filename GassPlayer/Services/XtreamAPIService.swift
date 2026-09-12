@@ -101,13 +101,14 @@ actor XtreamAPIService {
 
     /// Percent-encoding esplicito di ogni segmento del path di streaming: username/password
     /// possono contenere caratteri (spazi, '+', '@', accenti) che con semplice interpolazione
-    /// di stringa producono un URL non valido -> URL(string:) restituisce nil silenziosamente,
-    /// il player non parte mai e nessun errore risulta visibile da nessuna parte.
-    private func safePathSegment(_ raw: String) -> String {
+    /// di stringa producono un URL non valido -> URL(string:) restituisce nil silenziosamente.
+    /// `nonisolated` perche' e' chiamata da streamURL/episodeStreamURL (anch'essi nonisolated)
+    /// e legge solo `credentials`, una `let` costante immutabile: sicura fuori dall'isolamento.
+    nonisolated private func safePathSegment(_ raw: String) -> String {
         raw.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? raw
     }
 
-    private func buildStreamingURL(pathComponent: String, idAndExtension: String) -> URL? {
+    nonisolated private func buildStreamingURL(pathComponent: String, idAndExtension: String) -> URL? {
         var host = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines)
         if host.hasSuffix("/") { host.removeLast() }
         let user = safePathSegment(credentials.username)

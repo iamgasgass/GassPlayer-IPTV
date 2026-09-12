@@ -115,8 +115,11 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         statusObserver = player.currentItem?.observe(\.status, options: [.new]) { [weak self] item, _ in
             if item.status == .failed {
                 let underlying = item.error?.localizedDescription ?? "errore sconosciuto"
-                DebugLogger.logAsync(.error, "AVPlayerItem fallito per URL \(self?.currentURL.absoluteString ?? "?"): \(underlying)")
-                Task { @MainActor in self?.handleFailure(lastKnownError: underlying) }
+                Task { @MainActor in
+                    guard let self else { return }
+                    DebugLogger.logAsync(.error, "AVPlayerItem fallito per URL \(self.currentURL.absoluteString): \(underlying)")
+                    self.handleFailure(lastKnownError: underlying)
+                }
             } else if item.status == .readyToPlay {
                 Task { @MainActor in self?.updateNowPlayingInfo() }
             }
