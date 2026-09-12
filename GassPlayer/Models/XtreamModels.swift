@@ -11,7 +11,14 @@ struct XtreamAuthResponse: Codable {
         let username: String
         let status: String
         let expDate: String?
-        enum CodingKeys: String, CodingKey { case username, status; case expDate = "exp_date" }
+        let maxConnections: String?
+        let activeConnections: String?
+        enum CodingKeys: String, CodingKey {
+            case username, status
+            case expDate = "exp_date"
+            case maxConnections = "max_connections"
+            case activeConnections = "active_cons"
+        }
     }
     struct ServerInfo: Codable { let url: String; let port: String }
     let userInfo: UserInfo
@@ -62,15 +69,17 @@ enum XtreamError: LocalizedError {
         case .invalidURL:
             return "Impossibile costruire l'URL di richiesta. Controlla host, username e password."
         case .unreachable:
-            return "Il server non risponde. Verifica connessione e host/porta."
+            return "Il server non risponde. Verifica connessione e host/porta (provato anche lo schema alternativo http/https)."
         case .timeout:
             return "Il server ha impiegato troppo tempo a rispondere (timeout)."
+        case .httpStatus(let code) where code == 429:
+            return "Troppe connessioni simultanee su questo account (\"max connections reached\"). Chiudi altre sessioni attive o aggiorna il piano."
         case .httpStatus(let code):
             return "Il server ha risposto con codice HTTP \(code)."
         case .wrongCredentials:
-            return "Username o password non corretti per questo server."
-        case .decoding:
-            return "Risposta del server in un formato inatteso."
+            return "Username o password non corretti, oppure l'account non è più attivo (scaduto/disabilitato)."
+        case .decoding(let underlying):
+            return "Risposta del server in un formato inatteso: \(underlying.localizedDescription)"
         case .noProviderVPN:
             return "Questo fornitore non pubblica una configurazione VPN propria."
         }
