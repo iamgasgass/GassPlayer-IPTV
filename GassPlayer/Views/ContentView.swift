@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Tab dinamici: prima Live/VOD/Serie non esistevano come sezioni
-/// separate (solo Live era raggiungibile). Ora ogni tab passa il `kind`
-/// corretto alla stessa vista generica, senza duplicare codice.
+/// VOD e Serie ora funzionano anche per playlist M3U, non solo Xtream:
+/// ogni tab passa lo stesso `kind` a `ChannelGridView` (Xtream) o
+/// `M3UChannelsView` (M3U), e lo store condiviso `M3UPlaylistStore`
+/// evita di riparsare la playlist ad ogni cambio tab.
 struct ContentView: View {
     @State private var showSplash = true
     @State private var credentials: XtreamCredentials?
@@ -12,6 +13,7 @@ struct ContentView: View {
     @StateObject private var lockManager = ParentalLockManager()
     @StateObject private var contentManagement = ContentManagementService()
     @StateObject private var themeManager = ThemeManager()
+    @StateObject private var m3uStore = M3UPlaylistStore()
 
     private let tabs = [
         GlassTabItem(title: "Live", systemImage: "tv"),
@@ -33,13 +35,13 @@ struct ContentView: View {
                         switch selectedTab {
                         case 0:
                             if let credentials { ChannelGridView(credentials: credentials, kind: .live) }
-                            else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL) }
+                            else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .live) }
                         case 1:
                             if let credentials { ChannelGridView(credentials: credentials, kind: .movie) }
-                            else { Text("VOD disponibile solo per sorgenti Xtream Codes.") }
+                            else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .movie) }
                         case 2:
                             if let credentials { ChannelGridView(credentials: credentials, kind: .series) }
-                            else { Text("Serie TV disponibili solo per sorgenti Xtream Codes.") }
+                            else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .series) }
                         case 3: GlobalSearchView()
                         case 4: SourcesView()
                         case 5: ProviderVPNView(credentials: credentials)
@@ -66,5 +68,6 @@ struct ContentView: View {
         .environmentObject(lockManager)
         .environmentObject(contentManagement)
         .environmentObject(themeManager)
+        .environmentObject(m3uStore)
     }
 }
