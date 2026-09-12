@@ -50,7 +50,10 @@ struct ProviderVPNView: View {
                 }
             }
             .navigationTitle("VPN del provider")
-            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { GlobalToolbarButtons() } }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
+                ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+            }
             .task { await refresh() }
         }
     }

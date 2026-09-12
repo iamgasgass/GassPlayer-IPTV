@@ -47,7 +47,8 @@ struct SourcesView: View {
             }
             .navigationTitle("Sorgenti e contenuti")
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) { GlobalToolbarButtons() }
+                ToolbarItem(placement: .navigationBarLeading) { GlassSearchButton() }
+                ToolbarItem(placement: .navigationBarLeading) { GlassSettingsButton() }
                 ToolbarItem(placement: .navigationBarTrailing) { EditButton() }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showAddSheet = true } label: { Image(systemName: "plus") }

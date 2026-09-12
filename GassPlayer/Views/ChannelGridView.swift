@@ -38,7 +38,10 @@ struct ChannelGridView: View {
             }
             .overlay { if isLoading { ProgressView() } }
             .navigationTitle(kind.displayName)
-            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { GlobalToolbarButtons() } }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
+                ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+            }
             .task(id: kind) { await loadCategories() }
             .fullScreenCover(item: $selectedStream) { stream in
                 if let url = streamURLFor(stream) {

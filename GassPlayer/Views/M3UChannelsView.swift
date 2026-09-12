@@ -64,7 +64,10 @@ struct M3UChannelsView: View {
                 }
             }
             .navigationTitle(kind.displayName)
-            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { GlobalToolbarButtons() } }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
+                ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+            }
             .task(id: playlistURL) { await store.loadIfNeeded(url: playlistURL) }
         }
     }

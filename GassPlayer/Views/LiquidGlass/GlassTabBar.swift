@@ -9,58 +9,70 @@ struct GlassTabItem: Identifiable {
 struct GlassTabBar: View {
     let items: [GlassTabItem]
     @Binding var selection: Int
-    @Namespace private var selectionNamespace
+
+    private let pillWidth: CGFloat = 60
+    private let pillHeight: CGFloat = 52
 
     var body: some View {
-        HStack(spacing: 0) {
-            ForEach(items.indices, id: \.self) { index in
-                tabButton(index)
-            }
-        }
-        .padding(6)
-        .background(barBackground)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 6)
+        content
+            .padding(.bottom, 8)
     }
 
     @ViewBuilder
-    private var barBackground: some View {
+    private var content: some View {
         if #available(iOS 26.0, *) {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.clear)
-                .glassEffect(.regular, in: .rect(cornerRadius: 22))
+            GlassEffectContainer(spacing: 10) { tabRow }
         } else {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(.ultraThinMaterial)
+            HStack(spacing: 10) { ForEach(Array(items.enumerated()), id: \.offset) { index, item in tabPill(index, item) } }
+                .frame(maxWidth: .infinity)
         }
     }
 
-    private func tabButton(_ index: Int) -> some View {
-        let item = items[index]
+    @available(iOS 26.0, *)
+    private var tabRow: some View {
+        HStack(spacing: 10) {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                tabPill(index, item)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func tabPill(_ index: Int, _ item: GlassTabItem) -> some View {
         let isSelected = selection == index
         return Button {
-            withAnimation(.snappy(duration: 0.3)) { selection = index }
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { selection = index }
         } label: {
             VStack(spacing: 2) {
                 Image(systemName: item.systemImage)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                 Text(item.title)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: 9, weight: .medium))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                    .minimumScaleFactor(0.7)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
             .foregroundStyle(isSelected ? Color.white : Color.secondary)
-            .background {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color.accentColor)
-                        .matchedGeometryEffect(id: "gassplayer.tab.selection", in: selectionNamespace)
-                }
-            }
+            .frame(width: pillWidth, height: pillHeight)
         }
         .buttonStyle(.plain)
+        .modifier(TabPillGlass(isSelected: isSelected))
+        .scaleEffect(isSelected ? 1.06 : 1.0)
+    }
+}
+
+struct TabPillGlass: ViewModifier {
+    let isSelected: Bool
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(
+                isSelected ? .regular.tint(.accentColor).interactive() : .regular.interactive(),
+                in: .rect(cornerRadius: 18)
+            )
+        } else {
+            content
+                .background(isSelected ? Color.accentColor.opacity(0.9) : Color.clear, in: RoundedRectangle(cornerRadius: 18))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        }
     }
 }
 
