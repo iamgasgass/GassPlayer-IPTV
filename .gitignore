@@ -1,0 +1,10 @@
+GassPlayer.xcodeproj/
+DerivedData/
+build/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+.build/
+.DS_Store
+.swiftpm/
+*.ipa
