@@ -6,8 +6,10 @@ struct ChannelGridView: View {
     @EnvironmentObject var contentManagement: ContentManagementService
     @State private var categories: [XtreamCategory] = []
     @State private var streams: [XtreamStream] = []
+    @State private var seriesItems: [XtreamSeriesItem] = []
     @State private var selectedCategory: XtreamCategory?
     @State private var selectedStream: XtreamStream?
+    @State private var selectedSeries: XtreamSeriesItem?
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var epgByStream: [Int: EPGProgram] = [:]
@@ -23,21 +25,33 @@ struct ChannelGridView: View {
                 if let errorMessage {
                     Text(errorMessage).font(.caption).foregroundStyle(.secondary).padding()
                 }
-                LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(streams) { stream in
-                        ChannelTile(
-                            stream: stream,
-                            isFavorite: contentManagement.isFavorite(id: "\(credentials.host)-\(kind.rawValue)-\(stream.streamId)"),
-                            currentProgram: kind == .live ? epgByStream[stream.streamId] : nil
-                        ) {
-                            selectedStream = stream
-                        } onFavoriteToggle: {
-                            contentManagement.toggleFavorite(id: "\(credentials.host)-\(kind.rawValue)-\(stream.streamId)", title: stream.name, kind: kind.rawValue)
+                if kind == .series {
+                    LazyVGrid(columns: columns, spacing: 16) {
+                        ForEach(seriesItems) { series in
+                            SeriesTile(series: series) {
+                                selectedSeries = series
+                            }
                         }
                     }
+                    .padding()
+                    .animation(.spring(response: 0.4, dampingFraction: 0.8), value: seriesItems.count)
+                } else {
+                    LazyVGrid(columns: columns, spacing: 16) {
+                        ForEach(streams) { stream in
+                            ChannelTile(
+                                stream: stream,
+                                isFavorite: contentManagement.isFavorite(id: "\(credentials.host)-\(kind.rawValue)-\(stream.streamId)"),
+                                currentProgram: kind == .live ? epgByStream[stream.streamId] : nil
+                            ) {
+                                selectedStream = stream
+                            } onFavoriteToggle: {
+                                contentManagement.toggleFavorite(id: "\(credentials.host)-\(kind.rawValue)-\(stream.streamId)", title: stream.name, kind: kind.rawValue)
+                            }
+                        }
+                    }
+                    .padding()
+                    .animation(.spring(response: 0.4, dampingFraction: 0.8), value: streams.count)
                 }
-                .padding()
-                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: streams.count)
             }
             .overlay { if isLoading { ProgressView() } }
             .navigationTitle(kind.displayName)
@@ -53,15 +67,14 @@ struct ChannelGridView: View {
             }
             .task(id: kind) { await loadCategories() }
             .fullScreenCover(item: $selectedStream) { stream in
-                if kind == .series {
-                    NavigationStack {
-                        SeriesEpisodesView(credentials: credentials, seriesId: stream.streamId, seriesName: stream.name)
-                    }
-                } else if let url = service.streamURL(for: stream, kind: kind) {
+                if let url = service.streamURL(for: stream, kind: kind) {
                     PlayerView(url: url, title: stream.name)
                 } else {
                     Text("URL dello stream non valido.")
                 }
+            }
+            .navigationDestination(item: $selectedSeries) { series in
+                SeriesEpisodesView(credentials: credentials, seriesId: series.seriesId, seriesName: series.name)
             }
         }
     }
@@ -72,7 +85,7 @@ struct ChannelGridView: View {
                 ForEach(categories) { category in
                     Button {
                         withAnimation { selectedCategory = category }
-                        Task { await loadStreams(for: category) }
+                        Task { await loadContent(for: category) }
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: Self.categoryIcon(for: category.categoryName))
@@ -109,7 +122,7 @@ struct ChannelGridView: View {
                 errorMessage = "Nessuna categoria \(kind.displayName) trovata su questo server."
             } else if let first = categories.first {
                 selectedCategory = first
-                await loadStreams(for: first)
+                await loadContent(for: first)
             }
         } catch let error as XtreamError {
             errorMessage = error.errorDescription
@@ -119,8 +132,28 @@ struct ChannelGridView: View {
         isLoading = false
     }
 
-    private func loadStreams(for category: XtreamCategory) async {
+    /// Le serie richiedono un percorso di dati completamente diverso da live/VOD:
+    /// azione API "get_series" (non "get_..._streams") e modello XtreamSeriesItem
+    /// (series_id, non stream_id). Prima questo metodo chiamava sempre
+    /// repository.streams(kind:), che per .series lancia XtreamError.invalidURL
+    /// per costruzione -> da qui il messaggio "Impossibile costruire URL di richiesta"
+    /// che compariva selezionando una categoria di Serie TV.
+    private func loadContent(for category: XtreamCategory) async {
         isLoading = true
+        if kind == .series {
+            do {
+                seriesItems = try await service.fetchSeriesList(categoryId: category.categoryId)
+                errorMessage = nil
+            } catch let error as XtreamError {
+                seriesItems = []
+                errorMessage = error.errorDescription
+            } catch {
+                seriesItems = []
+                errorMessage = "Errore imprevisto: \(error.localizedDescription)"
+            }
+            isLoading = false
+            return
+        }
         do {
             streams = try await repository.streams(kind: kind, categoryId: category.categoryId)
             errorMessage = nil
@@ -189,6 +222,28 @@ private struct ChannelTile: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+        }
+        .onTapGesture { onTap() }
+    }
+}
+
+private struct SeriesTile: View {
+    let series: XtreamSeriesItem
+    let onTap: () -> Void
+
+    var body: some View {
+        VStack(spacing: 4) {
+            AsyncImage(url: URL(string: series.cover ?? "")) { phase in
+                switch phase {
+                case .success(let image): image.resizable().scaledToFit()
+                default:
+                    RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial)
+                        .overlay(Image(systemName: "rectangle.stack.fill").foregroundStyle(.secondary))
+                }
+            }
+            .frame(width: 100, height: 140)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            Text(series.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
         }
         .onTapGesture { onTap() }
     }
