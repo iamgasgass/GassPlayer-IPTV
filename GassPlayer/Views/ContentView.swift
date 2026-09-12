@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
+    @State private var showSplash = true
     @State private var credentials: XtreamCredentials?
     @State private var m3uPlaylistURL: URL?
     @State private var selectedTab = 0
@@ -19,7 +20,9 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if credentials != nil || m3uPlaylistURL != nil {
+            if showSplash {
+                SplashScreenView { showSplash = false }
+            } else if credentials != nil || m3uPlaylistURL != nil {
                 ZStack(alignment: .bottom) {
                     Group {
                         switch selectedTab {

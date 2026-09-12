@@ -25,17 +25,26 @@ struct LoginView: View {
                     .pickerStyle(.segmented)
 
                     if mode == .xtream {
-                        TextField("Host (es. http://server:port)", text: $host)
+                        TextField("Host (es. http://server.dominio.com:8080)", text: $host)
                             .textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
                         TextField("Username", text: $username)
                             .textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
                         SecureField("Password", text: $password).textFieldStyle(.roundedBorder)
+                        Text("Formato host corretto: schema + dominio/IP + porta, senza percorsi finali. Esempio valido: http://miodominio.com:8080")
+                            .font(.caption2).foregroundStyle(.secondary)
                     } else {
                         TextField("URL playlist M3U/M3U8", text: $m3uURL)
                             .textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
                     }
 
-                    if let errorMessage { Text(errorMessage).foregroundStyle(.red).font(.footnote) }
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .foregroundStyle(.red)
+                            .font(.footnote)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
 
                     GlassPrimaryButton(title: isLoading ? "Verifica in corso..." : "Accedi") {
                         Task { await submit() }
@@ -55,13 +64,27 @@ struct LoginView: View {
     private func submit() async {
         isLoading = true; errorMessage = nil
         if mode == .xtream {
-            let credentials = XtreamCredentials(host: host, username: username, password: password)
+            let credentials = XtreamCredentials(
+                host: host.trimmingCharacters(in: .whitespacesAndNewlines),
+                username: username.trimmingCharacters(in: .whitespacesAndNewlines),
+                password: password
+            )
             let service = XtreamAPIService(credentials: credentials)
-            do { _ = try await service.authenticate(); onLogin(credentials) }
-            catch { errorMessage = "Credenziali non valide o server non raggiungibile." }
+            do {
+                _ = try await service.authenticate()
+                onLogin(credentials)
+            } catch let error as XtreamError {
+                // Messaggio specifico per causa reale, non più un errore generico unico.
+                errorMessage = error.errorDescription
+            } catch {
+                errorMessage = "Errore imprevisto: \(error.localizedDescription)"
+            }
         } else {
-            if let url = URL(string: m3uURL) { onM3ULoaded(url) }
-            else { errorMessage = "URL playlist non valido." }
+            if let url = URL(string: m3uURL.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                onM3ULoaded(url)
+            } else {
+                errorMessage = "URL playlist non valido."
+            }
         }
         isLoading = false
     }

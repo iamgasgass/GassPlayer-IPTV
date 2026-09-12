@@ -12,35 +12,71 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Sincronizzazione") {
-                    Button("Sincronizza ora con iCloud") { cloudSync.pushSources(sourceManager.sources) }
-                    Text("Sorgenti, preferiti e progresso visione sincronizzati su tutti i tuoi dispositivi Apple.")
+                Section {
+                    settingsRow(icon: "icloud", tint: .blue, title: "Sincronizza ora con iCloud") {
+                        cloudSync.pushSources(sourceManager.sources)
+                    }
+                    Text("Sorgenti, preferiti e progresso visione su tutti i tuoi dispositivi Apple.")
                         .font(.caption).foregroundStyle(.secondary)
-                }
-                Section("Download") { Toggle("Scarica solo su Wi-Fi", isOn: $downloadManager.wifiOnly) }
-                Section("Rete") {
-                    Picker("DNS preferito", selection: $preferredDNS) {
+                } header: { Label("Sincronizzazione", systemImage: "icloud.and.arrow.up") }
+
+                Section {
+                    Toggle(isOn: $downloadManager.wifiOnly) {
+                        Label("Scarica solo su Wi-Fi", systemImage: "wifi")
+                    }
+                } header: { Label("Download offline", systemImage: "arrow.down.circle") }
+
+                Section {
+                    Picker(selection: $preferredDNS) {
                         Text("1.1.1.1 (Cloudflare)").tag("1.1.1.1")
                         Text("8.8.8.8 (Google)").tag("8.8.8.8")
                         Text("Automatico (di sistema)").tag("system")
+                    } label: { Label("DNS preferito", systemImage: "network") }
+                    Text("Se i canali vanno spesso in buffering, prova a cambiare DNS.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } header: { Label("Rete e streaming", systemImage: "antenna.radiowaves.left.and.right") }
+
+                Section {
+                    Picker(selection: $subtitleLanguage) {
+                        Text("Italiano").tag("it")
+                        Text("English").tag("en")
+                        Text("Español").tag("es")
+                    } label: { Label("Lingua sottotitoli", systemImage: "captions.bubble") }
+                } header: { Label("Audio e sottotitoli", systemImage: "waveform") }
+
+                Section {
+                    HStack {
+                        Label("Trakt.tv", systemImage: "checkmark.seal")
+                        Spacer()
+                        Text(traktConnected ? "Connesso" : "Non connesso").foregroundStyle(.secondary)
                     }
-                    Text("Se i canali vanno spesso in buffering, prova a cambiare DNS.").font(.caption).foregroundStyle(.secondary)
-                }
-                Section("Sottotitoli") {
-                    Picker("Lingua preferita", selection: $subtitleLanguage) {
-                        Text("Italiano").tag("it"); Text("English").tag("en"); Text("Español").tag("es")
+                } header: { Label("Integrazioni", systemImage: "puzzlepiece.extension") }
+
+                Section {
+                    NavigationLink { ParentalLockView() } label: {
+                        Label("Parental Lock", systemImage: "lock.shield")
                     }
-                }
-                Section("Integrazioni") {
-                    HStack { Text("Trakt.tv"); Spacer(); Text(traktConnected ? "Connesso" : "Non connesso").foregroundStyle(.secondary) }
-                }
-                Section("Sicurezza") { NavigationLink("Parental Lock") { ParentalLockView() } }
-                Section("Diagnostica") { NavigationLink("Debug Mode e log") { DebugConsoleView() } }
-                Section("Tutte le funzioni sono incluse") {
-                    Text("Nessun livello Pro: ogni modulo è attivo di default per tutti gli utenti.").font(.footnote)
-                }
+                } header: { Label("Sicurezza", systemImage: "checkmark.shield") }
+
+                Section {
+                    NavigationLink { DebugConsoleView() } label: {
+                        Label("Debug Mode e log", systemImage: "ladybug")
+                    }
+                } header: { Label("Diagnostica", systemImage: "wrench.and.screwdriver") }
+
+                Section {
+                    Text("Nessun livello Pro: ogni modulo è attivo di default per tutti gli utenti.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } header: { Label("Trasparenza", systemImage: "info.circle") }
             }
             .navigationTitle("Impostazioni")
+        }
+    }
+
+    @ViewBuilder
+    private func settingsRow(icon: String, tint: Color, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon).foregroundStyle(tint)
         }
     }
 }
