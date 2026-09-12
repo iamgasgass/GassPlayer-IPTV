@@ -10,7 +10,13 @@ actor XtreamAPIService {
     }
 
     private func endpoint(action: String? = nil, extra: [String: String] = [:], path: String = "/player_api.php") throws -> URL {
-        guard var components = URLComponents(string: credentials.host + path) else { throw XtreamError.invalidURL }
+        let cleanedHost = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let scheme = URL(string: cleanedHost)?.scheme, scheme == "http" || scheme == "https" else {
+            throw XtreamError.malformedHost(cleanedHost)
+        }
+        guard var components = URLComponents(string: cleanedHost + path) else {
+            throw XtreamError.malformedHost(cleanedHost)
+        }
         var items = [
             URLQueryItem(name: "username", value: credentials.username),
             URLQueryItem(name: "password", value: credentials.password)
@@ -24,10 +30,27 @@ actor XtreamAPIService {
 
     func authenticate() async throws -> XtreamAuthResponse {
         let url = try endpoint()
-        let (data, response) = try await session.data(from: url)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(from: url)
+        } catch let urlError as URLError {
+            if urlError.code == .timedOut { throw XtreamError.timeout }
+            throw XtreamError.unreachable(underlying: urlError)
+        } catch {
+            throw XtreamError.unreachable(underlying: error)
+        }
         try validate(response)
-        do { return try JSONDecoder().decode(XtreamAuthResponse.self, from: data) }
-        catch { throw XtreamError.decoding(error) }
+        do {
+            let decoded = try JSONDecoder().decode(XtreamAuthResponse.self, from: data)
+            if decoded.userInfo.status.lowercased() != "active" {
+                throw XtreamError.wrongCredentials
+            }
+            return decoded
+        } catch let xtreamError as XtreamError {
+            throw xtreamError
+        } catch {
+            throw XtreamError.decoding(error)
+        }
     }
 
     func fetchCategories(kind: XtreamStreamKind) async throws -> [XtreamCategory] {
@@ -75,8 +98,8 @@ actor XtreamAPIService {
     }
 
     private func validate(_ response: URLResponse) throws {
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw XtreamError.invalidCredentials
-        }
+        guard let http = response as? HTTPURLResponse else { return }
+        if http.statusCode == 401 || http.statusCode == 403 { throw XtreamError.wrongCredentials }
+        guard (200..<300).contains(http.statusCode) else { throw XtreamError.httpStatus(http.statusCode) }
     }
 }
