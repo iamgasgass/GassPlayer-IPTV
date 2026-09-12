@@ -1,9 +1,5 @@
 import SwiftUI
 
-/// Vista dinamica per contenuti Xtream: `kind` decide se mostra Live TV,
-/// VOD o Serie senza duplicare codice — prima esistevano solo canali Live,
-/// VOD e Serie non avevano alcuna vista nonostante `XtreamStreamKind` le
-/// prevedesse già nel modello dati.
 struct ChannelGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -42,6 +38,7 @@ struct ChannelGridView: View {
             }
             .overlay { if isLoading { ProgressView() } }
             .navigationTitle(kind.displayName)
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { GlobalToolbarButtons() } }
             .task(id: kind) { await loadCategories() }
             .fullScreenCover(item: $selectedStream) { stream in
                 if let url = streamURLFor(stream) {
@@ -62,9 +59,15 @@ struct ChannelGridView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(categories) { category in
-                    Button(category.categoryName) {
+                    Button {
                         withAnimation { selectedCategory = category }
                         Task { await loadStreams(for: category) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: Self.categoryIcon(for: category.categoryName))
+                                .font(.caption)
+                            Text(category.categoryName)
+                        }
                     }
                     .padding(.horizontal, 14).padding(.vertical, 8)
                     .modifier(GlassOrMaterial(isSelected: selectedCategory?.id == category.id))
@@ -72,6 +75,19 @@ struct ChannelGridView: View {
             }
             .padding(.horizontal)
         }
+    }
+
+    private static func categoryIcon(for name: String) -> String {
+        let normalized = name.lowercased()
+        if normalized.contains("sport") { return "sportscourt" }
+        if normalized.contains("kids") || normalized.contains("cartoon") || normalized.contains("bambini") { return "gamecontroller" }
+        if normalized.contains("news") || normalized.contains("notizie") { return "newspaper" }
+        if normalized.contains("music") || normalized.contains("musica") { return "music.note" }
+        if normalized.contains("cinema") || normalized.contains("film") || normalized.contains("movie") { return "film" }
+        if normalized.contains("document") { return "video" }
+        if normalized.contains("relig") { return "building.columns" }
+        if normalized.contains("adult") || normalized.contains("+18") || normalized.contains("xxx") { return "eye.slash" }
+        return "tv"
     }
 
     private func loadCategories() async {

@@ -1,9 +1,5 @@
 import SwiftUI
 
-/// VOD e Serie ora funzionano anche per playlist M3U, non solo Xtream:
-/// ogni tab passa lo stesso `kind` a `ChannelGridView` (Xtream) o
-/// `M3UChannelsView` (M3U), e lo store condiviso `M3UPlaylistStore`
-/// evita di riparsare la playlist ad ogni cambio tab.
 struct ContentView: View {
     @State private var showSplash = true
     @State private var credentials: XtreamCredentials?
@@ -14,15 +10,14 @@ struct ContentView: View {
     @StateObject private var contentManagement = ContentManagementService()
     @StateObject private var themeManager = ThemeManager()
     @StateObject private var m3uStore = M3UPlaylistStore()
+    @StateObject private var overlayState = NavigationOverlayState()
 
     private let tabs = [
         GlassTabItem(title: "Live", systemImage: "tv"),
         GlassTabItem(title: "Film", systemImage: "film"),
         GlassTabItem(title: "Serie", systemImage: "rectangle.stack.fill"),
-        GlassTabItem(title: "Cerca", systemImage: "magnifyingglass"),
         GlassTabItem(title: "Sorgenti", systemImage: "square.stack.3d.up"),
-        GlassTabItem(title: "VPN", systemImage: "lock.shield"),
-        GlassTabItem(title: "Impostazioni", systemImage: "gearshape")
+        GlassTabItem(title: "VPN", systemImage: "lock.shield")
     ]
 
     var body: some View {
@@ -42,14 +37,14 @@ struct ContentView: View {
                         case 2:
                             if let credentials { ChannelGridView(credentials: credentials, kind: .series) }
                             else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .series) }
-                        case 3: GlobalSearchView()
-                        case 4: SourcesView()
-                        case 5: ProviderVPNView(credentials: credentials)
-                        default: SettingsView()
+                        case 3: SourcesView()
+                        default: ProviderVPNView(credentials: credentials)
                         }
                     }
                     GlassTabBar(items: tabs, selection: $selectedTab)
                 }
+                .sheet(isPresented: $overlayState.showSearch) { GlobalSearchView() }
+                .sheet(isPresented: $overlayState.showSettings) { SettingsView() }
             } else {
                 LoginView(
                     onLogin: { creds in
@@ -69,5 +64,6 @@ struct ContentView: View {
         .environmentObject(contentManagement)
         .environmentObject(themeManager)
         .environmentObject(m3uStore)
+        .environmentObject(overlayState)
     }
 }

@@ -1,13 +1,6 @@
 import Foundation
 import Combine
 
-/// PRIMA: ogni volta che `M3UChannelsView` appariva (ogni cambio tab),
-/// ripartiva da zero il download + parsing dell'intera playlist —
-/// per una playlist come Free-TV/IPTV (multi-MB, migliaia di righe)
-/// questo significava richiamare la rete e riparsare tutto ad ogni
-/// swipe tra Live/Film/Serie. Ora il parsing avviene UNA sola volta,
-/// condiviso tramite @EnvironmentObject, e i risultati sono già
-/// pre-raggruppati per kind (Live/VOD/Serie) e per group-title.
 @MainActor
 final class M3UPlaylistStore: ObservableObject {
     @Published private(set) var isLoading = false
@@ -55,5 +48,9 @@ final class M3UPlaylistStore: ObservableObject {
 
     func totalCount(for kind: XtreamStreamKind) -> Int {
         channelsByKind[kind]?.count ?? 0
+    }
+
+    func groupIcon(for kind: XtreamStreamKind, group: String) -> String? {
+        channels(for: kind, group: group).first(where: { $0.logoURL?.isEmpty == false })?.logoURL
     }
 }

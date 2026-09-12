@@ -47,8 +47,11 @@ struct SourcesView: View {
             }
             .navigationTitle("Sorgenti e contenuti")
             .toolbar {
-                EditButton()
-                Button { showAddSheet = true } label: { Image(systemName: "plus") }
+                ToolbarItem(placement: .navigationBarLeading) { GlobalToolbarButtons() }
+                ToolbarItem(placement: .navigationBarTrailing) { EditButton() }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { showAddSheet = true } label: { Image(systemName: "plus") }
+                }
             }
             .sheet(isPresented: $showAddSheet) { AddSourceView { config in sourceManager.add(config) } }
             .sheet(isPresented: $showMergeSheet) {

@@ -1,10 +1,5 @@
 import SwiftUI
 
-/// Ora dinamica su `kind` (Live/VOD/Serie) come le sorgenti Xtream —
-/// prima VOD e Serie non erano raggiungibili per le playlist M3U perché
-/// non esisteva alcuna classificazione del contenuto. Usa lo store
-/// condiviso `M3UPlaylistStore` (via @EnvironmentObject) invece di
-/// scaricare e riparsare la playlist ad ogni cambio tab.
 struct M3UChannelsView: View {
     let playlistURL: URL
     let kind: XtreamStreamKind
@@ -35,8 +30,6 @@ struct M3UChannelsView: View {
                         Image(systemName: kind.systemImage).font(.largeTitle).foregroundStyle(.secondary)
                         Text("Nessun contenuto \(kind.displayName) trovato in questa playlist.")
                             .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        Text("Le playlist M3U non hanno un campo \"tipo\" standard: la classificazione è dedotta dal group-title.")
-                            .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }
                     .padding()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -51,7 +44,11 @@ struct M3UChannelsView: View {
                                         sourceKey: playlistURL.absoluteString
                                     )
                                 } label: {
-                                    HStack {
+                                    HStack(spacing: 10) {
+                                        GroupIconView(
+                                            logoURL: store.groupIcon(for: kind, group: group),
+                                            fallbackSystemImage: kind.systemImage
+                                        )
                                         Text(group)
                                         Spacer()
                                         Text("\(store.channels(for: kind, group: group).count)")
@@ -67,13 +64,34 @@ struct M3UChannelsView: View {
                 }
             }
             .navigationTitle(kind.displayName)
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { GlobalToolbarButtons() } }
             .task(id: playlistURL) { await store.loadIfNeeded(url: playlistURL) }
         }
     }
 }
 
-/// Schermata dedicata ai canali di un singolo gruppo, con logo canale
-/// e preferiti (parità con le sorgenti Xtream).
+private struct GroupIconView: View {
+    let logoURL: String?
+    let fallbackSystemImage: String
+
+    var body: some View {
+        Group {
+            if let logoURL, let url = URL(string: logoURL) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image): image.resizable().scaledToFit()
+                    default: Image(systemName: fallbackSystemImage).foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Image(systemName: fallbackSystemImage).foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 24, height: 24)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
 struct M3UGroupChannelsView: View {
     let groupTitle: String
     let channels: [M3UChannel]
