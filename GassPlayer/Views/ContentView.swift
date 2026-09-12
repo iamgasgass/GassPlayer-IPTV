@@ -23,7 +23,7 @@ struct ContentView: View {
     var body: some View {
         Group {
             if showSplash {
-                SplashScreenView { showSplash = false }
+                SplashScreenView { showSplash = false; restoreLastSourceIfAvailable() }
             } else if credentials != nil || m3uPlaylistURL != nil {
                 ZStack(alignment: .bottom) {
                     Group {
@@ -65,5 +65,23 @@ struct ContentView: View {
         .environmentObject(themeManager)
         .environmentObject(m3uStore)
         .environmentObject(overlayState)
+    }
+
+    private func restoreLastSourceIfAvailable() {
+        guard credentials == nil, m3uPlaylistURL == nil else { return }
+        guard let last = sourceManager.sources.last else { return }
+
+        switch last.type {
+        case .xtream:
+            if let username = last.username, let password = last.password {
+                credentials = XtreamCredentials(host: last.host, username: username, password: password)
+            }
+        case .m3u8:
+            if let url = URL(string: last.host) {
+                m3uPlaylistURL = url
+            }
+        case .plex, .jellyfin, .emby:
+            break
+        }
     }
 }
