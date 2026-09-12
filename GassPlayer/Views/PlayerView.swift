@@ -35,6 +35,10 @@ struct PlayerView: View {
             if showBrightnessHUD { hudOverlay(icon: "sun.max.fill", value: brightnessOverlay) }
             if showVolumeHUD { hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay) }
 
+            if let errorMessage = reconnectPlayer.lastError {
+                playbackErrorBanner(errorMessage)
+            }
+
             HStack {
                 GlassIconButton(systemImage: "xmark") { dismiss() }
                 Spacer()
@@ -54,6 +58,30 @@ struct PlayerView: View {
         .sheet(isPresented: $showQualityPicker) {
             QualityPickerView(player: reconnectPlayer.player)
         }
+    }
+
+    private func playbackErrorBanner(_ message: String) -> some View {
+        VStack {
+            Spacer()
+            VStack(spacing: 8) {
+                Text("Riproduzione non riuscita")
+                    .font(.headline)
+                Text(message)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                Button("Riprova") {
+                    reconnectPlayer.resetAttempts()
+                    reconnectPlayer.player.play()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .padding()
+            Spacer()
+        }
+        .transition(.opacity)
     }
 
     private var dragGesture: some Gesture {

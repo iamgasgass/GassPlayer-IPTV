@@ -6,6 +6,7 @@ import Combine
 final class SmartReconnectPlayer: NSObject, ObservableObject {
     @Published var isBuffering = false
     @Published var reconnectAttempts = 0
+    @Published var lastError: String?
     @Published var preferredBufferSeconds: Double = 5.0 {
         didSet { player.currentItem?.preferredForwardBufferDuration = preferredBufferSeconds }
     }
@@ -27,6 +28,8 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         player.automaticallyWaitsToMinimizeStalling = false
         player.currentItem?.preferredForwardBufferDuration = preferredBufferSeconds
         player.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+
+        DebugLogger.logAsync(.info, "SmartReconnectPlayer: avvio riproduzione URL = \(url.absoluteString)")
 
         observe()
     }
@@ -50,7 +53,9 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
 
         statusObserver = player.currentItem?.observe(\.status, options: [.new]) { [weak self] item, _ in
             if item.status == .failed {
-                Task { @MainActor in self?.reconnect() }
+                let underlying = item.error?.localizedDescription ?? "errore sconosciuto"
+                DebugLogger.logAsync(.error, "AVPlayerItem fallito per URL \(self?.url.absoluteString ?? "?"): \(underlying)")
+                Task { @MainActor in self?.reconnect(lastKnownError: underlying) }
             }
         }
 
@@ -71,12 +76,20 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         }
     }
 
-    private func handleStall() { isBuffering = true; reconnect() }
+    private func handleStall() { isBuffering = true; reconnect(lastKnownError: nil) }
 
-    private func reconnect() {
-        guard reconnectAttempts < maxAttempts else { return }
+    private func reconnect(lastKnownError: String?) {
+        guard reconnectAttempts < maxAttempts else {
+            let message = lastKnownError.map { "Impossibile riprodurre il flusso dopo \(maxAttempts) tentativi: \($0)" }
+                ?? "Impossibile riprodurre il flusso dopo \(maxAttempts) tentativi."
+            DebugLogger.logAsync(.error, message)
+            lastError = message
+            isBuffering = false
+            return
+        }
         reconnectAttempts += 1
         let delay = pow(2.0, Double(reconnectAttempts))
+        DebugLogger.logAsync(.warning, "Tentativo di riconnessione \(reconnectAttempts)/\(maxAttempts) su \(url.absoluteString)")
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             let newItem = AVPlayerItem(url: self.url)
@@ -87,5 +100,5 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
             self.isBuffering = false
         }
     }
-    func resetAttempts() { reconnectAttempts = 0 }
+    func resetAttempts() { reconnectAttempts = 0; lastError = nil }
 }
