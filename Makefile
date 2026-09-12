@@ -1,4 +1,4 @@
-.PHONY: generate build archive ipa clean open
+.PHONY: generate build archive ipa clean open verify
 
 generate:
 	xcodegen generate
@@ -23,6 +23,13 @@ ipa: archive
 	mkdir -p build/Payload
 	cp -r build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app build/Payload/
 	cd build && zip -r GassPlayer.ipa Payload && cd ..
+
+# Verifica che non esistano file .swift duplicati con lo stesso nome
+# in punti diversi della cartella GassPlayer/ (causa piu' comune di
+# "invalid redeclaration" quando si mischiano estrazioni di zip diversi).
+verify:
+	@find GassPlayer -name "*.swift" -exec basename {} \; | sort | uniq -d | \
+		awk '{print "DUPLICATO: " $$0}'
 
 clean:
 	rm -rf build GassPlayer.xcodeproj DerivedData
