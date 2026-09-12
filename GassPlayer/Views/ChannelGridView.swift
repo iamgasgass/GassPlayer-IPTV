@@ -13,6 +13,7 @@ struct ChannelGridView: View {
     @State private var epgByStream: [Int: EPGProgram] = [:]
 
     private var repository: CachedXtreamRepository { CachedXtreamRepository(credentials: credentials) }
+    private var service: XtreamAPIService { XtreamAPIService(credentials: credentials) }
     private let columns = [GridItem(.adaptive(minimum: 110, maximum: 140), spacing: 14)]
 
     var body: some View {
@@ -56,18 +57,13 @@ struct ChannelGridView: View {
                     NavigationStack {
                         SeriesEpisodesView(credentials: credentials, seriesId: stream.streamId, seriesName: stream.name)
                     }
-                } else if let url = streamURLFor(stream) {
+                } else if let url = service.streamURL(for: stream, kind: kind) {
                     PlayerView(url: url, title: stream.name)
                 } else {
                     Text("URL dello stream non valido.")
                 }
             }
         }
-    }
-
-    private func streamURLFor(_ stream: XtreamStream) -> URL? {
-        let ext = (stream.containerExtension?.isEmpty == false) ? stream.containerExtension! : kind.defaultExtension
-        return URL(string: "\(credentials.host)/\(kind.pathComponent)/\(credentials.username)/\(credentials.password)/\(stream.streamId).\(ext)")
     }
 
     private var categoryChips: some View {
@@ -125,7 +121,16 @@ struct ChannelGridView: View {
 
     private func loadStreams(for category: XtreamCategory) async {
         isLoading = true
-        streams = (try? await repository.streams(kind: kind, categoryId: category.categoryId)) ?? []
+        do {
+            streams = try await repository.streams(kind: kind, categoryId: category.categoryId)
+            errorMessage = nil
+        } catch let error as XtreamError {
+            streams = []
+            errorMessage = error.errorDescription
+        } catch {
+            streams = []
+            errorMessage = "Errore imprevisto: \(error.localizedDescription)"
+        }
         isLoading = false
         if kind == .live { await loadEPGForVisibleStreams() }
     }

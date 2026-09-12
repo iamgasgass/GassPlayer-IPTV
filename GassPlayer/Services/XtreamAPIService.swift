@@ -99,18 +99,34 @@ actor XtreamAPIService {
         }
     }
 
+    /// Percent-encoding esplicito di ogni segmento del path di streaming: username/password
+    /// possono contenere caratteri (spazi, '+', '@', accenti) che con semplice interpolazione
+    /// di stringa producono un URL non valido -> URL(string:) restituisce nil silenziosamente,
+    /// il player non parte mai e nessun errore risulta visibile da nessuna parte.
+    private func safePathSegment(_ raw: String) -> String {
+        raw.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? raw
+    }
+
+    private func buildStreamingURL(pathComponent: String, idAndExtension: String) -> URL? {
+        var host = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if host.hasSuffix("/") { host.removeLast() }
+        let user = safePathSegment(credentials.username)
+        let pass = safePathSegment(credentials.password)
+        return URL(string: "\(host)/\(pathComponent)/\(user)/\(pass)/\(idAndExtension)")
+    }
+
     nonisolated func streamURL(for stream: XtreamStream, kind: XtreamStreamKind) -> URL? {
         let ext = stream.containerExtension?.isEmpty == false ? stream.containerExtension! : kind.defaultExtension
-        return URL(string: "\(credentials.host)/\(kind.pathComponent)/\(credentials.username)/\(credentials.password)/\(stream.streamId).\(ext)")
+        return buildStreamingURL(pathComponent: kind.pathComponent, idAndExtension: "\(stream.streamId).\(ext)")
     }
 
     nonisolated func streamURL(for streamId: Int, kind: XtreamStreamKind, ext: String? = nil) -> URL? {
         let resolvedExt = ext ?? kind.defaultExtension
-        return URL(string: "\(credentials.host)/\(kind.pathComponent)/\(credentials.username)/\(credentials.password)/\(streamId).\(resolvedExt)")
+        return buildStreamingURL(pathComponent: kind.pathComponent, idAndExtension: "\(streamId).\(resolvedExt)")
     }
 
     nonisolated func episodeStreamURL(episodeId: Int, ext: String) -> URL? {
-        URL(string: "\(credentials.host)/series/\(credentials.username)/\(credentials.password)/\(episodeId).\(ext)")
+        buildStreamingURL(pathComponent: "series", idAndExtension: "\(episodeId).\(ext)")
     }
 
     func fetchProviderVPNConfig() async throws -> ProviderVPNConfig {
