@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var sourceManager: SourceManager
     @EnvironmentObject var lockManager: ParentalLockManager
+    @EnvironmentObject var themeManager: ThemeManager
     @StateObject private var cloudSync = CloudSyncService()
     @StateObject private var downloadManager = DownloadManager()
     @State private var subtitleLanguage = "it"
@@ -13,17 +14,21 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    settingsRow(icon: "icloud", tint: .blue, title: "Sincronizza ora con iCloud") {
-                        cloudSync.pushSources(sourceManager.sources)
+                    Picker(selection: $themeManager.theme) {
+                        ForEach(AppTheme.allCases) { Text($0.rawValue).tag($0) }
+                    } label: { Label("Tema", systemImage: "circle.lefthalf.filled") }
+                } header: { Label("Aspetto", systemImage: "paintbrush") }
+
+                Section {
+                    Button { cloudSync.pushSources(sourceManager.sources) } label: {
+                        Label("Sincronizza ora con iCloud", systemImage: "icloud.and.arrow.up")
                     }
                     Text("Sorgenti, preferiti e progresso visione su tutti i tuoi dispositivi Apple.")
                         .font(.caption).foregroundStyle(.secondary)
-                } header: { Label("Sincronizzazione", systemImage: "icloud.and.arrow.up") }
+                } header: { Label("Sincronizzazione", systemImage: "icloud") }
 
                 Section {
-                    Toggle(isOn: $downloadManager.wifiOnly) {
-                        Label("Scarica solo su Wi-Fi", systemImage: "wifi")
-                    }
+                    Toggle(isOn: $downloadManager.wifiOnly) { Label("Scarica solo su Wi-Fi", systemImage: "wifi") }
                 } header: { Label("Download offline", systemImage: "arrow.down.circle") }
 
                 Section {
@@ -32,15 +37,12 @@ struct SettingsView: View {
                         Text("8.8.8.8 (Google)").tag("8.8.8.8")
                         Text("Automatico (di sistema)").tag("system")
                     } label: { Label("DNS preferito", systemImage: "network") }
-                    Text("Se i canali vanno spesso in buffering, prova a cambiare DNS.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Se i canali vanno spesso in buffering, prova a cambiare DNS.").font(.caption).foregroundStyle(.secondary)
                 } header: { Label("Rete e streaming", systemImage: "antenna.radiowaves.left.and.right") }
 
                 Section {
                     Picker(selection: $subtitleLanguage) {
-                        Text("Italiano").tag("it")
-                        Text("English").tag("en")
-                        Text("Español").tag("es")
+                        Text("Italiano").tag("it"); Text("English").tag("en"); Text("Español").tag("es")
                     } label: { Label("Lingua sottotitoli", systemImage: "captions.bubble") }
                 } header: { Label("Audio e sottotitoli", systemImage: "waveform") }
 
@@ -53,15 +55,11 @@ struct SettingsView: View {
                 } header: { Label("Integrazioni", systemImage: "puzzlepiece.extension") }
 
                 Section {
-                    NavigationLink { ParentalLockView() } label: {
-                        Label("Parental Lock", systemImage: "lock.shield")
-                    }
+                    NavigationLink { ParentalLockView() } label: { Label("Parental Lock", systemImage: "lock.shield") }
                 } header: { Label("Sicurezza", systemImage: "checkmark.shield") }
 
                 Section {
-                    NavigationLink { DebugConsoleView() } label: {
-                        Label("Debug Mode e log", systemImage: "ladybug")
-                    }
+                    NavigationLink { DebugConsoleView() } label: { Label("Debug Mode e log", systemImage: "ladybug") }
                 } header: { Label("Diagnostica", systemImage: "wrench.and.screwdriver") }
 
                 Section {
@@ -70,13 +68,6 @@ struct SettingsView: View {
                 } header: { Label("Trasparenza", systemImage: "info.circle") }
             }
             .navigationTitle("Impostazioni")
-        }
-    }
-
-    @ViewBuilder
-    private func settingsRow(icon: String, tint: Color, title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: icon).foregroundStyle(tint)
         }
     }
 }

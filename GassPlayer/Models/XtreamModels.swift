@@ -45,9 +45,6 @@ enum XtreamStreamKind {
     }
 }
 
-/// Errori granulari: prima c'era un solo caso generico che produceva
-/// sempre lo stesso messaggio "Credenziali non valide o server non
-/// raggiungibile" indipendentemente dalla causa reale.
 enum XtreamError: LocalizedError {
     case malformedHost(String)
     case invalidURL
@@ -61,19 +58,19 @@ enum XtreamError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .malformedHost(let host):
-            return "L'host \"\(host)\" non è un URL valido. Usa il formato http://dominio-o-ip:porta, senza percorsi o caratteri finali extra."
+            return "L'host \"\(host)\" non è un URL valido. Usa il formato http://dominio-o-ip:porta."
         case .invalidURL:
             return "Impossibile costruire l'URL di richiesta. Controlla host, username e password."
         case .unreachable:
-            return "Il server non risponde. Verifica di essere connesso a internet e che l'host/porta siano corretti."
+            return "Il server non risponde. Verifica connessione e host/porta."
         case .timeout:
-            return "Il server ha impiegato troppo tempo a rispondere (timeout). Riprova o verifica lo stato del servizio."
+            return "Il server ha impiegato troppo tempo a rispondere (timeout)."
         case .httpStatus(let code):
-            return "Il server ha risposto con codice HTTP \(code). Se è 401/403 le credenziali sono probabilmente errate."
+            return "Il server ha risposto con codice HTTP \(code)."
         case .wrongCredentials:
             return "Username o password non corretti per questo server."
         case .decoding:
-            return "Risposta del server in un formato inatteso: potrebbe non essere un pannello Xtream Codes standard."
+            return "Risposta del server in un formato inatteso."
         case .noProviderVPN:
             return "Questo fornitore non pubblica una configurazione VPN propria."
         }

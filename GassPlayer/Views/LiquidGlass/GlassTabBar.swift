@@ -11,22 +11,20 @@ struct GlassTabBar: View {
     @Binding var selection: Int
 
     var body: some View {
-        content
-            .padding(.horizontal, 12)
-            .padding(.bottom, 8)
+        content.padding(.horizontal, 12).padding(.bottom, 8)
     }
 
     @ViewBuilder
     private var content: some View {
         if #available(iOS 26.0, *) {
-            GlassEffectContainer { tabRow(useGlass: true) }
+            GlassEffectContainer { tabRow() }
         } else {
-            tabRow(useGlass: false)
+            tabRow()
         }
     }
 
     @ViewBuilder
-    private func tabRow(useGlass: Bool) -> some View {
+    private func tabRow() -> some View {
         HStack(spacing: 4) {
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                 Button {

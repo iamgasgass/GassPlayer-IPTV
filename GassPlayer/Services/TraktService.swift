@@ -37,7 +37,7 @@ actor TraktService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(["code": deviceCode, "client_id": clientId, "client_secret": clientSecret])
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw XtreamError.invalidCredentials }
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw XtreamError.wrongCredentials }
         return try JSONDecoder().decode(TraktToken.self, from: data)
     }
 

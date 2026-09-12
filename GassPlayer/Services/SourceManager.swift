@@ -13,10 +13,6 @@ final class SourceManager: ObservableObject {
         sources.append(s); persist()
     }
     func remove(_ source: MediaSourceConfig) { sources.removeAll { $0.id == source.id }; persist() }
-    func update(_ source: MediaSourceConfig) {
-        guard let idx = sources.firstIndex(where: { $0.id == source.id }) else { return }
-        sources[idx] = source; persist()
-    }
     func rename(_ source: MediaSourceConfig, to newName: String) {
         guard let idx = sources.firstIndex(where: { $0.id == source.id }) else { return }
         sources[idx].name = newName; persist()

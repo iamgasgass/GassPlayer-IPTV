@@ -1,7 +1,7 @@
 import Foundation
 
-actor EPGService {
-    private let credentials: XtreamCredentials
+struct EPGService {
+    let credentials: XtreamCredentials
     private let session: URLSession
 
     init(credentials: XtreamCredentials, session: URLSession = .shared) {

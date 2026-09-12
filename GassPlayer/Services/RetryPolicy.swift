@@ -1,7 +1,5 @@
 import Foundation
 
-/// Wrapper generico di retry con backoff esponenziale per qualunque
-/// chiamata di rete asincrona che lancia errori.
 enum RetryPolicy {
     static func withRetry<T>(
         maxAttempts: Int = 3,
@@ -16,7 +14,7 @@ enum RetryPolicy {
                 return try await operation()
             } catch {
                 attempt += 1
-                DebugLogger.shared.log(.warning, "Tentativo \(attempt)/\(maxAttempts) fallito: \(error.localizedDescription)")
+                DebugLogger.logAsync(.warning, "Tentativo \(attempt)/\(maxAttempts) fallito: \(error.localizedDescription)")
                 guard attempt < maxAttempts, shouldRetry(error) else { throw error }
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 delay *= 2

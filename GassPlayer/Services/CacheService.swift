@@ -1,7 +1,5 @@
 import Foundation
 
-/// Cache in-memory con scadenza (TTL) per ridurre le chiamate ripetute
-/// a categorie/canali dello stesso pannello Xtream durante una sessione.
 actor CacheService {
     static let shared = CacheService()
 
@@ -9,7 +7,6 @@ actor CacheService {
         let value: Any
         let expiresAt: Date
     }
-
     private var store: [String: Entry] = [:]
 
     func value<T>(for key: String) -> T? {
@@ -19,20 +16,15 @@ actor CacheService {
         }
         return entry.value as? T
     }
-
     func set<T>(_ value: T, for key: String, ttl: TimeInterval = 300) {
         store[key] = Entry(value: value, expiresAt: Date().addingTimeInterval(ttl))
     }
-
     func invalidate(prefix: String) {
         store.keys.filter { $0.hasPrefix(prefix) }.forEach { store[$0] = nil }
     }
-
     func clearAll() { store.removeAll() }
 }
 
-/// Decorator che aggiunge cache + retry automatico sopra XtreamAPIService,
-/// senza modificarne la logica originale.
 actor CachedXtreamRepository {
     private let api: XtreamAPIService
     private let hostKey: String
@@ -62,7 +54,7 @@ actor CachedXtreamRepository {
         return result
     }
 
-    func streamURL(for streamId: Int, kind: XtreamStreamKind) async -> URL? {
-        await api.streamURL(for: streamId, kind: kind)
+    func streamURL(for streamId: Int, kind: XtreamStreamKind) -> URL? {
+        api.streamURL(for: streamId, kind: kind)
     }
 }

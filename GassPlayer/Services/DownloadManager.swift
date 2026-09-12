@@ -32,7 +32,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
                                  didFinishDownloadingTo location: URL) {
         guard let idString = downloadTask.taskDescription, let id = UUID(uuidString: idString) else { return }
         let dest = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("\\(id.uuidString).mp4")
+            .appendingPathComponent("\(id.uuidString).mp4")
         try? FileManager.default.moveItem(at: location, to: dest)
         Task { @MainActor in self.activeDownloads[id] = 1.0 }
     }

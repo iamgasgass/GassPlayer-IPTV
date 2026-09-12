@@ -1,5 +1,5 @@
 import Foundation
-import NetworkExtension
+@preconcurrency import NetworkExtension
 import Combine
 
 @MainActor
@@ -22,16 +22,20 @@ final class ProviderVPNManager: ObservableObject {
             let managers = try await NETunnelProviderManager.loadAllFromPreferences()
             manager = managers.first ?? NETunnelProviderManager()
             observeStatus()
-        } catch { lastError = "Impossibile caricare il profilo VPN: \\(error.localizedDescription)" }
+        } catch { lastError = "Impossibile caricare il profilo VPN: \(error.localizedDescription)" }
     }
 
     private func observeStatus() {
         guard let connection = manager?.connection else { return }
         statusObserver = NotificationCenter.default.addObserver(
-            forName: .NEVPNStatusDidChange, object: connection, queue: .main
-        ) { [weak self] _ in
-            self?.status = connection.status
-            self?.isConnecting = connection.status == .connecting
+            forName: .NEVPNStatusDidChange, object: connection, queue: nil
+        ) { notification in
+            guard let updatedConnection = notification.object as? NEVPNConnection else { return }
+            let newStatus = updatedConnection.status
+            Task { @MainActor [weak self] in
+                self?.status = newStatus
+                self?.isConnecting = newStatus == .connecting
+            }
         }
         status = connection.status
     }
@@ -43,13 +47,13 @@ final class ProviderVPNManager: ObservableObject {
             let vpnConfig = try await api.fetchProviderVPNConfig()
             try await apply(vpnConfig, sourceName: credentials.host)
             providerOffersVPN = true
-            DebugLogger.shared.log(.info, "VPN configurata dal provider \\(credentials.host)")
+            DebugLogger.logAsync(.info, "VPN configurata dal provider \(credentials.host)")
         } catch XtreamError.noProviderVPN {
             providerOffersVPN = false
             lastError = "Questo fornitore IPTV non pubblica una configurazione VPN propria."
         } catch {
             providerOffersVPN = false
-            lastError = "Errore nel recupero della VPN dal provider: \\(error.localizedDescription)"
+            lastError = "Errore nel recupero della VPN dal provider: \(error.localizedDescription)"
         }
     }
 
@@ -69,7 +73,7 @@ final class ProviderVPNManager: ObservableObject {
         if let pass = config.password { providerConfig["password"] = pass }
         proto.providerConfiguration = providerConfig
         m.protocolConfiguration = proto
-        m.localizedDescription = "VPN — \\(sourceName)"
+        m.localizedDescription = "VPN — \(sourceName)"
         m.isEnabled = true
         try await m.saveToPreferences()
         try await m.loadFromPreferences()

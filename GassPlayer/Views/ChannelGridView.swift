@@ -1,7 +1,5 @@
 import SwiftUI
 
-/// Sostituisce la semplice List testuale con una griglia stile "poster wall",
-/// con loghi remoti (AsyncImage) e transizioni di comparsa animate.
 struct ChannelGridView: View {
     let credentials: XtreamCredentials
     @EnvironmentObject var contentManagement: ContentManagementService
@@ -19,7 +17,7 @@ struct ChannelGridView: View {
             ScrollView {
                 categoryChips
                 LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(Array(streams.enumerated()), id: \.element.id) { index, stream in
+                    ForEach(streams) { stream in
                         ChannelTile(
                             stream: stream,
                             isFavorite: contentManagement.isFavorite(id: "\(credentials.host)-\(stream.streamId)")
@@ -28,11 +26,10 @@ struct ChannelGridView: View {
                         } onFavoriteToggle: {
                             contentManagement.toggleFavorite(id: "\(credentials.host)-\(stream.streamId)", title: stream.name, kind: "live")
                         }
-                        .transition(.scale.combined(with: .opacity))
-                        .animation(.spring(response: 0.4, dampingFraction: 0.8).delay(Double(index % 20) * 0.02), value: streams.count)
                     }
                 }
                 .padding()
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: streams.count)
             }
             .overlay { if isLoading { ProgressView() } }
             .navigationTitle("Live TV")
@@ -103,10 +100,7 @@ private struct ChannelTile: View {
                 .background(.ultraThinMaterial, in: Circle())
                 .padding(4)
             }
-            Text(stream.name)
-                .font(.caption)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
+            Text(stream.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
         }
         .onTapGesture { onTap() }
     }

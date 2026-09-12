@@ -1,8 +1,5 @@
 import SwiftUI
 
-/// Schermata di avvio originale: logo animato + indicatore di stato,
-/// pensata per il branding di GassPlayer (non riproduce elementi grafici
-/// di app di terzi). Personalizza colori/testo/icona SF Symbol qui.
 struct SplashScreenView: View {
     var onFinished: () -> Void
 
@@ -23,13 +20,13 @@ struct SplashScreenView: View {
                     Circle()
                         .fill(.ultraThinMaterial)
                         .frame(width: 120, height: 120)
-                        .shadow(color: .accentColor.opacity(0.6), radius: glowRadius)
+                        .shadow(color: Color.accentColor.opacity(0.6), radius: glowRadius)
 
                     Image(systemName: "antenna.radiowaves.left.and.right.circle.fill")
                         .resizable()
                         .scaledToFit()
                         .frame(width: 64, height: 64)
-                        .foregroundStyle(.white, .accentColor)
+                        .foregroundStyle(.white, Color.accentColor)
                 }
                 .scaleEffect(scale)
 
@@ -41,16 +38,13 @@ struct SplashScreenView: View {
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.7))
 
-                ProgressView()
-                    .tint(.white)
-                    .padding(.top, 12)
+                ProgressView().tint(.white).padding(.top, 12)
             }
             .opacity(opacity)
         }
         .onAppear {
             withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) {
-                scale = 1.0
-                opacity = 1.0
+                scale = 1.0; opacity = 1.0
             }
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
                 glowRadius = 20

@@ -21,7 +21,6 @@ final class ThemeManager: ObservableObject {
     @Published var theme: AppTheme {
         didSet { UserDefaults.standard.set(theme.rawValue, forKey: "gassplayer.theme") }
     }
-
     init() {
         let saved = UserDefaults.standard.string(forKey: "gassplayer.theme")
         theme = AppTheme(rawValue: saved ?? "") ?? .system

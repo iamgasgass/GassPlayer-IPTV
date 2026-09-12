@@ -1,11 +1,9 @@
 import SwiftUI
 import AVKit
+import AVFoundation
 import UIKit
 import MediaPlayer
 
-/// Player con Picture-in-Picture nativo reale (tramite AVPlayerViewController,
-/// non più un semplice coordinatore-placeholder), gesture per
-/// volume/luminosità stile app video professionali, e selezione qualità.
 struct PlayerView: View {
     let url: URL
     let title: String
@@ -58,8 +56,6 @@ struct PlayerView: View {
         }
     }
 
-    /// Swipe verticale: metà sinistra dello schermo = luminosità, metà destra = volume.
-    /// Pattern gesture standard nei player video (YouTube, VLC, Infuse).
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 10)
             .onChanged { value in
@@ -103,12 +99,8 @@ struct PlayerView: View {
     }
 }
 
-/// Wrapper UIKit per abilitare il vero PiP di sistema (non un placeholder):
-/// AVPlayerViewController gestisce nativamente start/stop PiP quando l'utente
-/// esce dall'app o preme il pulsante, senza codice aggiuntivo.
 struct RealPiPPlayerView: UIViewControllerRepresentable {
     let player: AVPlayer
-
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.player = player
@@ -116,18 +108,13 @@ struct RealPiPPlayerView: UIViewControllerRepresentable {
         controller.canStartPictureInPictureAutomaticallyFromInline = true
         return controller
     }
-
     func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {
         uiViewController.player = player
     }
 }
 
-/// Il volume di sistema su iOS non è leggibile/scrivibile direttamente:
-/// si usa lo slider nativo di MPVolumeView come trucco standard.
 enum MPVolumeSlider {
-    static func currentVolume() -> Float {
-        AVAudioSession.sharedInstance().outputVolume
-    }
+    static func currentVolume() -> Float { AVAudioSession.sharedInstance().outputVolume }
     static func setVolume(_ value: Float) {
         let volumeView = MPVolumeView(frame: .zero)
         if let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first {
@@ -139,7 +126,6 @@ enum MPVolumeSlider {
 struct QualityPickerView: View {
     let player: AVPlayer
     @Environment(\.dismiss) private var dismiss
-    @State private var variants: [String] = []
 
     var body: some View {
         NavigationStack {

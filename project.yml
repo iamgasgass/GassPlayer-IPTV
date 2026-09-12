@@ -32,12 +32,13 @@ targets:
         excludes:
           - "Resources/Info.plist"
           - "Resources/GassPlayer.entitlements"
+          - "Resources/GassPlayer-CI.entitlements"
     resources:
       - path: GassPlayer/Resources/Assets.xcassets
     info:
       path: GassPlayer/Resources/Info.plist
     entitlements:
-      path: GassPlayer/Resources/GassPlayer.entitlements
+      path: GassPlayer/Resources/GassPlayer-CI.entitlements
     settings:
       base:
         PRODUCT_NAME: GassPlayer
@@ -49,4 +50,3 @@ targets:
     scheme:
       testTargets: []
       gatherCoverageData: false
-      commandLineArguments: {}

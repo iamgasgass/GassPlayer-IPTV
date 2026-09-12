@@ -31,7 +31,7 @@ struct LoginView: View {
                         TextField("Username", text: $username)
                             .textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
                         SecureField("Password", text: $password).textFieldStyle(.roundedBorder)
-                        Text("Formato host corretto: schema + dominio/IP + porta, senza percorsi finali. Esempio valido: http://miodominio.com:8080")
+                        Text("Formato host: schema + dominio/IP + porta. Es. http://miodominio.com:8080")
                             .font(.caption2).foregroundStyle(.secondary)
                     } else {
                         TextField("URL playlist M3U/M3U8", text: $m3uURL)
@@ -40,8 +40,7 @@ struct LoginView: View {
 
                     if let errorMessage {
                         Text(errorMessage)
-                            .foregroundStyle(.red)
-                            .font(.footnote)
+                            .foregroundStyle(.red).font(.footnote)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -74,7 +73,6 @@ struct LoginView: View {
                 _ = try await service.authenticate()
                 onLogin(credentials)
             } catch let error as XtreamError {
-                // Messaggio specifico per causa reale, non più un errore generico unico.
                 errorMessage = error.errorDescription
             } catch {
                 errorMessage = "Errore imprevisto: \(error.localizedDescription)"

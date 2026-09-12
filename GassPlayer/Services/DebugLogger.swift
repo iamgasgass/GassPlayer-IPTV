@@ -16,4 +16,8 @@ final class DebugLogger: ObservableObject {
     func exportText() -> String {
         entries.map { "[\($0.level.rawValue)] \($0.timestamp): \($0.message)" }.joined(separator: "\n")
     }
+
+    nonisolated static func logAsync(_ level: DebugLogEntry.Level, _ message: String) {
+        Task { @MainActor in DebugLogger.shared.log(level, message) }
+    }
 }

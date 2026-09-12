@@ -71,7 +71,7 @@ actor XtreamAPIService {
         return try JSONDecoder().decode([XtreamStream].self, from: data)
     }
 
-    func streamURL(for streamId: Int, kind: XtreamStreamKind, ext: String = "m3u8") -> URL? {
+    nonisolated func streamURL(for streamId: Int, kind: XtreamStreamKind, ext: String = "m3u8") -> URL? {
         URL(string: "\(credentials.host)/\(kind.pathComponent)/\(credentials.username)/\(credentials.password)/\(streamId).\(ext)")
     }
 

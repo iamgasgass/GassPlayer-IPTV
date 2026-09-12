@@ -1,8 +1,5 @@
 import SwiftUI
 
-/// Griglia EPG a timeline orizzontale: ogni riga è un canale, ogni blocco
-/// è un programma con larghezza proporzionale alla sua durata reale,
-/// con una linea verticale che indica l'orario corrente.
 struct EPGTimelineView: View {
     let credentials: XtreamCredentials
     let streams: [XtreamStream]
@@ -16,9 +13,7 @@ struct EPGTimelineView: View {
         ScrollView([.horizontal, .vertical]) {
             VStack(alignment: .leading, spacing: 8) {
                 timeRuler
-                ForEach(streams) { stream in
-                    channelRow(for: stream)
-                }
+                ForEach(streams) { stream in channelRow(for: stream) }
             }
             .overlay(alignment: .topLeading) { nowIndicator }
         }
@@ -39,15 +34,9 @@ struct EPGTimelineView: View {
 
     private func channelRow(for stream: XtreamStream) -> some View {
         HStack(spacing: 0) {
-            Text(stream.name)
-                .font(.caption)
-                .frame(width: 130, alignment: .leading)
-                .lineLimit(1)
-
+            Text(stream.name).font(.caption).frame(width: 130, alignment: .leading).lineLimit(1)
             ZStack(alignment: .leading) {
-                ForEach(programsByStream[stream.streamId] ?? []) { program in
-                    programBlock(program)
-                }
+                ForEach(programsByStream[stream.streamId] ?? []) { program in programBlock(program) }
             }
             .frame(height: 44)
         }
@@ -67,9 +56,7 @@ struct EPGTimelineView: View {
 
     private var nowIndicator: some View {
         let minutesSinceStart = Date().timeIntervalSince(timelineStart) / 60
-        return Rectangle()
-            .fill(Color.red)
-            .frame(width: 2)
+        return Rectangle().fill(Color.red).frame(width: 2)
             .offset(x: 140 + CGFloat(minutesSinceStart) * pixelsPerMinute)
     }
 
@@ -83,9 +70,7 @@ struct EPGTimelineView: View {
                     return (stream.streamId, programs)
                 }
             }
-            for await (streamId, programs) in group {
-                programsByStream[streamId] = programs
-            }
+            for await (streamId, programs) in group { programsByStream[streamId] = programs }
         }
         isLoading = false
     }

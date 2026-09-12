@@ -8,10 +8,11 @@ struct ContentView: View {
     @StateObject private var sourceManager = SourceManager()
     @StateObject private var lockManager = ParentalLockManager()
     @StateObject private var contentManagement = ContentManagementService()
+    @StateObject private var themeManager = ThemeManager()
 
     private let tabs = [
         GlassTabItem(title: "Live", systemImage: "tv"),
-        GlassTabItem(title: "VOD", systemImage: "film"),
+        GlassTabItem(title: "Griglia", systemImage: "square.grid.2x2"),
         GlassTabItem(title: "Cerca", systemImage: "magnifyingglass"),
         GlassTabItem(title: "Sorgenti", systemImage: "square.stack.3d.up"),
         GlassTabItem(title: "VPN", systemImage: "lock.shield"),
@@ -30,8 +31,8 @@ struct ContentView: View {
                             if let credentials { ChannelsView(credentials: credentials) }
                             else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL) }
                         case 1:
-                            if let credentials { ChannelsView(credentials: credentials) }
-                            else { Text("VOD non disponibile per playlist M3U pure.") }
+                            if let credentials { ChannelGridView(credentials: credentials) }
+                            else { Text("Griglia disponibile solo per sorgenti Xtream.") }
                         case 2: GlobalSearchView()
                         case 3: SourcesView()
                         case 4: ProviderVPNView(credentials: credentials)
@@ -53,8 +54,10 @@ struct ContentView: View {
                 )
             }
         }
+        .preferredColorScheme(themeManager.theme.colorScheme)
         .environmentObject(sourceManager)
         .environmentObject(lockManager)
         .environmentObject(contentManagement)
+        .environmentObject(themeManager)
     }
 }

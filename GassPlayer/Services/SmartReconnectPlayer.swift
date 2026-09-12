@@ -26,13 +26,15 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
 
     private func observe() {
         stallObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemPlaybackStalled, object: player.currentItem, queue: .main
+            forName: .AVPlayerItemPlaybackStalled, object: player.currentItem, queue: nil
         ) { [weak self] _ in
-            DebugLogger.shared.log(.warning, "Playback stalled")
+            DebugLogger.logAsync(.warning, "Playback stalled")
             Task { @MainActor in self?.handleStall() }
         }
         statusObserver = player.currentItem?.observe(\.status, options: [.new]) { [weak self] item, _ in
-            if item.status == .failed { Task { @MainActor in self?.reconnect() } }
+            if item.status == .failed {
+                Task { @MainActor in self?.reconnect() }
+            }
         }
     }
 
