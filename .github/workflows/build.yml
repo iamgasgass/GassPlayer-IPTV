@@ -1,0 +1,82 @@
+name: Build Unsigned IPA
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest available Xcode
+        run: |
+          LATEST_XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -n1)
+          if [ -z "$LATEST_XCODE" ]; then
+            echo "Nessuna app Xcode_*.app trovata, uso /Applications/Xcode.app di default"
+            LATEST_XCODE="/Applications/Xcode.app"
+          fi
+          echo "Uso $LATEST_XCODE"
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate GassPlayer.xcodeproj
+        run: xcodegen generate
+
+      - name: Build unsigned archive
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project GassPlayer.xcodeproj \
+            -scheme GassPlayer \
+            -archivePath build/GassPlayer.xcarchive \
+            -destination 'generic/platform=iOS' \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            SKIP_INSTALL=NO \
+            | xcpretty || true
+
+      - name: Verify .app was produced
+        run: |
+          APP_PATH="build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "ERRORE: $APP_PATH non trovato. Controlla il log di xcodebuild sopra."
+            exit 1
+          fi
+          echo "App trovata: $APP_PATH"
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p build/Payload
+          cp -r "build/GassPlayer.xcarchive/Products/Applications/GassPlayer.app" build/Payload/
+          cd build
+          zip -r GassPlayer-unsigned.ipa Payload
+          cd ..
+          ls -la build/GassPlayer-unsigned.ipa
+
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GassPlayer-unsigned-ipa
+          path: build/GassPlayer-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload full .xcarchive (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: GassPlayer-xcarchive
+          path: build/GassPlayer.xcarchive
+          if-no-files-found: warn
+          
