@@ -26,6 +26,8 @@ struct ContentView: View {
                 SplashScreenView { showSplash = false; loadActiveSource() }
             } else if credentials != nil || m3uPlaylistURL != nil {
                 ZStack(alignment: .bottom) {
+                    Color.black.ignoresSafeArea()
+
                     Group {
                         switch selectedTab {
                         case 0:

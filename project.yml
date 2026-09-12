@@ -1,4 +1,4 @@
-project: name: GassPlayer
+name: GassPlayer
 options:
   bundleIdPrefix: com.iamgasgass
   deploymentTarget:
