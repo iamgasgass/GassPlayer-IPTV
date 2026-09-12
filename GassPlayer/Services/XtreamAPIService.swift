@@ -61,9 +61,6 @@ actor XtreamAPIService {
         return FlexibleArrayDecoder.decode([XtreamCategory].self, from: data)
     }
 
-    /// Live e VOD condividono lo stesso schema di risposta (stream_id, container_extension).
-    /// Le serie NON passano da qui: usa `fetchSeriesList` perche' l'azione API e il
-    /// formato JSON di risposta sono strutturalmente diversi (series_id, non stream_id).
     func fetchStreams(kind: XtreamStreamKind, categoryId: String? = nil) async throws -> [XtreamStream] {
         guard kind != .series else {
             throw XtreamError.invalidURL
@@ -77,8 +74,6 @@ actor XtreamAPIService {
         return FlexibleArrayDecoder.decode([XtreamStream].self, from: data)
     }
 
-    /// Elenco delle serie TV. Azione Xtream corretta: "get_series" (non "get_series_streams",
-    /// che non esiste nell'API). La risposta usa "series_id", modellata da XtreamSeriesItem.
     func fetchSeriesList(categoryId: String? = nil) async throws -> [XtreamSeriesItem] {
         var extra: [String: String] = [:]
         if let categoryId { extra["category_id"] = categoryId }
@@ -99,11 +94,6 @@ actor XtreamAPIService {
         }
     }
 
-    /// Percent-encoding esplicito di ogni segmento del path di streaming: username/password
-    /// possono contenere caratteri (spazi, '+', '@', accenti) che con semplice interpolazione
-    /// di stringa producono un URL non valido -> URL(string:) restituisce nil silenziosamente.
-    /// `nonisolated` perche' e' chiamata da streamURL/episodeStreamURL (anch'essi nonisolated)
-    /// e legge solo `credentials`, una `let` costante immutabile: sicura fuori dall'isolamento.
     nonisolated private func safePathSegment(_ raw: String) -> String {
         raw.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? raw
     }
@@ -128,28 +118,6 @@ actor XtreamAPIService {
 
     nonisolated func episodeStreamURL(episodeId: Int, ext: String) -> URL? {
         buildStreamingURL(pathComponent: "series", idAndExtension: "\(episodeId).\(ext)")
-    }
-
-    func fetchProviderVPNConfig() async throws -> ProviderVPNConfig {
-        let candidateActions = ["get_vpn_config", "get_vpn", "vpn_info"]
-        for action in candidateActions {
-            if let url = try? endpoint(action: action),
-               let (data, response) = try? await session.data(from: url),
-               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-               let config = try? JSONDecoder().decode(ProviderVPNConfig.self, from: data) {
-                return config
-            }
-        }
-        let candidatePaths = ["/vpn/config.json", "/panel_api.php"]
-        for path in candidatePaths {
-            if let url = try? endpoint(action: "get_vpn_config", path: path),
-               let (data, response) = try? await session.data(from: url),
-               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-               let config = try? JSONDecoder().decode(ProviderVPNConfig.self, from: data) {
-                return config
-            }
-        }
-        throw XtreamError.noProviderVPN
     }
 
     private func validate(_ response: URLResponse) throws {

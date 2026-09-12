@@ -11,7 +11,7 @@ struct ContentView: View {
     @StateObject private var themeManager = ThemeManager()
     @StateObject private var m3uStore = M3UPlaylistStore()
     @StateObject private var overlayState = NavigationOverlayState()
-    @StateObject private var vpnManager = ProviderVPNManager()
+    @StateObject private var vpnManager = PersonalVPNManager()
 
     private let tabs = [
         GlassTabItem(title: "Live", systemImage: "tv"),
@@ -41,7 +41,7 @@ struct ContentView: View {
                             if let credentials { ChannelGridView(credentials: credentials, kind: .series) }
                             else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .series) }
                         case 3: SourcesView()
-                        default: ProviderVPNView(credentials: credentials)
+                        default: PersonalVPNView()
                         }
                     }
                     GlassTabBar(items: tabs, selection: $selectedTab)
@@ -49,9 +49,8 @@ struct ContentView: View {
                 .sheet(isPresented: $overlayState.showSearch) { GlobalSearchView() }
                 .sheet(isPresented: $overlayState.showSettings) { SettingsView() }
                 .onChange(of: sourceManager.activeSourceId) { _, _ in loadActiveSource() }
-                .task(id: credentials) {
-                    guard let credentials else { return }
-                    await vpnManager.syncFromIPTVProvider(credentials: credentials)
+                .task {
+                    vpnManager.handleAppBecameActive()
                 }
             } else {
                 LoginView(

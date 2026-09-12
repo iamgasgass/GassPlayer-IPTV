@@ -9,7 +9,7 @@ struct PlayerView: View {
     let url: URL
     let title: String
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var vpnManager: ProviderVPNManager
+    @EnvironmentObject private var vpnManager: PersonalVPNManager
     @StateObject private var reconnectPlayer: SmartReconnectPlayer
     @StateObject private var progress = PlaybackProgress()
     @State private var showTrackPicker = false
@@ -88,7 +88,8 @@ struct PlayerView: View {
     }
 
     private func connectVPNIfNeededBeforePlayback() async {
-        guard vpnManager.providerOffersVPN,
+        guard vpnManager.hasSavedProfile,
+              vpnManager.autoConnectOnLaunch,
               vpnManager.activeProtocolIsEncrypted,
               vpnManager.status != .connected,
               vpnManager.status != .connecting else { return }
@@ -111,7 +112,7 @@ struct PlayerView: View {
         VStack(spacing: 12) {
             ProgressView()
                 .tint(.white)
-            Text("Connessione VPN del provider...")
+            Text("Connessione VPN personale...")
                 .font(.caption)
                 .foregroundStyle(.white)
         }
