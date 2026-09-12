@@ -1,0 +1,36 @@
+disabled_rules:
+  - todo
+  - line_length
+
+opt_in_rules:
+  - empty_count
+  - closure_spacing
+  - force_unwrapping
+
+excluded:
+  - GassPlayer.xcodeproj
+  - build
+  - DerivedData
+  - GassPlayerTests
+
+force_cast: warning
+force_try: warning
+
+type_body_length:
+  warning: 300
+  error: 400
+
+file_length:
+  warning: 400
+  error: 600
+
+function_body_length:
+  warning: 60
+  error: 100
+
+identifier_name:
+  min_length:
+    warning: 2
+  excluded:
+    - id
+    - url

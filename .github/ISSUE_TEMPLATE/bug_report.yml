@@ -1,0 +1,32 @@
+name: Bug Report
+description: Segnala un problema nell'app o nella build
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Descrizione del problema
+      description: Cosa succede e cosa ti aspettavi invece?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Come riprodurlo
+      placeholder: |
+        1. Apri l'app
+        2. Vai su...
+        3. Osserva...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log rilevanti
+      description: Se è un errore di build, incolla l'output di xcodebuild o l'artifact xcodebuild-log da GitHub Actions.
+      render: shell
+  - type: input
+    id: environment
+    attributes:
+      label: Ambiente
+      placeholder: "Xcode 26.3, iOS 18 simulatore, macOS 15"
