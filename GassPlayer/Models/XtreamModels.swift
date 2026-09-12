@@ -26,22 +26,48 @@ struct XtreamCategory: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey { case categoryId = "category_id"; case categoryName = "category_name" }
 }
 
+/// Aggiunto `containerExtension`: Xtream Codes lo restituisce per i
+/// contenuti VOD/Serie (es. "mp4", "mkv", "avi") ed e' necessario per
+/// costruire l'URL di streaming corretto — prima l'app assumeva sempre
+/// "m3u8"/"mp4" fissi, il che rompeva la riproduzione su molti pannelli
+/// che servono VOD in mkv/avi.
 struct XtreamStream: Codable, Identifiable, Hashable {
     let streamId: Int
     let name: String
     let streamIcon: String?
     let categoryId: String?
+    let containerExtension: String?
     var id: Int { streamId }
     enum CodingKeys: String, CodingKey {
         case streamId = "stream_id", name, categoryId = "category_id"
         case streamIcon = "stream_icon"
+        case containerExtension = "container_extension"
     }
 }
 
-enum XtreamStreamKind {
+enum XtreamStreamKind: String, CaseIterable, Identifiable {
     case live, movie, series
+    var id: String { rawValue }
     var pathComponent: String {
         switch self { case .live: return "live"; case .movie: return "movie"; case .series: return "series" }
+    }
+    var displayName: String {
+        switch self {
+        case .live: return "Live TV"
+        case .movie: return "Film (VOD)"
+        case .series: return "Serie TV"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .live: return "tv"
+        case .movie: return "film"
+        case .series: return "rectangle.stack.fill"
+        }
+    }
+    /// Estensione di default se il pannello non fornisce container_extension.
+    var defaultExtension: String {
+        switch self { case .live: return "m3u8"; case .movie, .series: return "mp4" }
     }
 }
 

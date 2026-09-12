@@ -25,6 +25,9 @@ actor CacheService {
     func clearAll() { store.removeAll() }
 }
 
+/// Repository dinamico: ogni metodo accetta `kind` a runtime, niente
+/// hardcoded `.live` — usato sia per Live TV che per VOD/Serie dalla
+/// stessa vista generica (`ContentGridView`).
 actor CachedXtreamRepository {
     private let api: XtreamAPIService
     private let hostKey: String
@@ -35,7 +38,7 @@ actor CachedXtreamRepository {
     }
 
     func categories(kind: XtreamStreamKind) async throws -> [XtreamCategory] {
-        let key = "\(hostKey)-categories-\(kind)"
+        let key = "\(hostKey)-categories-\(kind.rawValue)"
         if let cached: [XtreamCategory] = await CacheService.shared.value(for: key) { return cached }
         let result = try await RetryPolicy.withRetry {
             try await self.api.fetchCategories(kind: kind)
@@ -45,7 +48,7 @@ actor CachedXtreamRepository {
     }
 
     func streams(kind: XtreamStreamKind, categoryId: String?) async throws -> [XtreamStream] {
-        let key = "\(hostKey)-streams-\(kind)-\(categoryId ?? "all")"
+        let key = "\(hostKey)-streams-\(kind.rawValue)-\(categoryId ?? "all")"
         if let cached: [XtreamStream] = await CacheService.shared.value(for: key) { return cached }
         let result = try await RetryPolicy.withRetry {
             try await self.api.fetchStreams(kind: kind, categoryId: categoryId)
@@ -54,7 +57,7 @@ actor CachedXtreamRepository {
         return result
     }
 
-    func streamURL(for streamId: Int, kind: XtreamStreamKind) -> URL? {
-        api.streamURL(for: streamId, kind: kind)
+    func streamURL(for stream: XtreamStream, kind: XtreamStreamKind) -> URL? {
+        api.streamURL(for: stream, kind: kind)
     }
 }

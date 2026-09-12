@@ -71,8 +71,20 @@ actor XtreamAPIService {
         return try JSONDecoder().decode([XtreamStream].self, from: data)
     }
 
-    nonisolated func streamURL(for streamId: Int, kind: XtreamStreamKind, ext: String = "m3u8") -> URL? {
-        URL(string: "\(credentials.host)/\(kind.pathComponent)/\(credentials.username)/\(credentials.password)/\(streamId).\(ext)")
+    /// Costruisce l'URL di streaming usando il `container_extension` reale
+    /// dello stream quando disponibile (fondamentale per VOD/Serie, che
+    /// spesso sono mkv/avi e non mp4), con fallback all'estensione di
+    /// default del kind solo se il pannello non la fornisce.
+    nonisolated func streamURL(for stream: XtreamStream, kind: XtreamStreamKind) -> URL? {
+        let ext = stream.containerExtension?.isEmpty == false ? stream.containerExtension! : kind.defaultExtension
+        return URL(string: "\(credentials.host)/\(kind.pathComponent)/\(credentials.username)/\(credentials.password)/\(stream.streamId).\(ext)")
+    }
+
+    /// Overload di compatibilità per i call site che hanno solo l'id
+    /// (es. costruzione manuale senza l'oggetto XtreamStream completo).
+    nonisolated func streamURL(for streamId: Int, kind: XtreamStreamKind, ext: String? = nil) -> URL? {
+        let resolvedExt = ext ?? kind.defaultExtension
+        return URL(string: "\(credentials.host)/\(kind.pathComponent)/\(credentials.username)/\(credentials.password)/\(streamId).\(resolvedExt)")
     }
 
     func fetchProviderVPNConfig() async throws -> ProviderVPNConfig {

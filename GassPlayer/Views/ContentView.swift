@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// Tab dinamici: prima Live/VOD/Serie non esistevano come sezioni
+/// separate (solo Live era raggiungibile). Ora ogni tab passa il `kind`
+/// corretto alla stessa vista generica, senza duplicare codice.
 struct ContentView: View {
     @State private var showSplash = true
     @State private var credentials: XtreamCredentials?
@@ -12,7 +15,8 @@ struct ContentView: View {
 
     private let tabs = [
         GlassTabItem(title: "Live", systemImage: "tv"),
-        GlassTabItem(title: "Griglia", systemImage: "square.grid.2x2"),
+        GlassTabItem(title: "Film", systemImage: "film"),
+        GlassTabItem(title: "Serie", systemImage: "rectangle.stack.fill"),
         GlassTabItem(title: "Cerca", systemImage: "magnifyingglass"),
         GlassTabItem(title: "Sorgenti", systemImage: "square.stack.3d.up"),
         GlassTabItem(title: "VPN", systemImage: "lock.shield"),
@@ -28,14 +32,17 @@ struct ContentView: View {
                     Group {
                         switch selectedTab {
                         case 0:
-                            if let credentials { ChannelsView(credentials: credentials) }
+                            if let credentials { ChannelGridView(credentials: credentials, kind: .live) }
                             else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL) }
                         case 1:
-                            if let credentials { ChannelGridView(credentials: credentials) }
-                            else { Text("Griglia disponibile solo per sorgenti Xtream.") }
-                        case 2: GlobalSearchView()
-                        case 3: SourcesView()
-                        case 4: ProviderVPNView(credentials: credentials)
+                            if let credentials { ChannelGridView(credentials: credentials, kind: .movie) }
+                            else { Text("VOD disponibile solo per sorgenti Xtream Codes.") }
+                        case 2:
+                            if let credentials { ChannelGridView(credentials: credentials, kind: .series) }
+                            else { Text("Serie TV disponibili solo per sorgenti Xtream Codes.") }
+                        case 3: GlobalSearchView()
+                        case 4: SourcesView()
+                        case 5: ProviderVPNView(credentials: credentials)
                         default: SettingsView()
                         }
                     }
