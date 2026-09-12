@@ -14,6 +14,7 @@ struct PlayerView: View {
     @State private var showTrackPicker = false
     @State private var showBufferSettings = false
     @State private var showQualityPicker = false
+    @State private var showExternalPlayerMenu = false
     @State private var audioOptions: [AVMediaSelectionOption] = []
     @State private var subtitleOptions: [AVMediaSelectionOption] = []
     @State private var brightnessOverlay: Double = 0
@@ -65,8 +66,20 @@ struct PlayerView: View {
         .sheet(isPresented: $showQualityPicker) {
             QualityPickerView(player: reconnectPlayer.player)
         }
+        .confirmationDialog("Apri con un altro player", isPresented: $showExternalPlayerMenu, titleVisibility: .visible) {
+            ForEach(ExternalPlayer.available(for: url)) { player in
+                Button(player.displayName) {
+                    reconnectPlayer.player.pause()
+                    UIApplication.shared.open(player.url)
+                }
+            }
+            Button("Annulla", role: .cancel) {}
+        }
     }
 
+    /// Unica superficie di controllo: barra superiore (chiudi, AirPlay, qualita',
+    /// buffer, tracce, apri con esterno, buffering) + barra inferiore (play/pausa,
+    /// scrubber con tempo per VOD, etichetta "Live" per i canali).
     private var unifiedControlSurface: some View {
         VStack {
             HStack {
@@ -79,6 +92,13 @@ struct PlayerView: View {
                     .shadow(radius: 4)
                 Spacer()
                 if reconnectPlayer.isBuffering { ProgressView().tint(.white).padding(.horizontal, 4) }
+                // AirPlay: disattivando showsPlaybackControls sul AVPlayerViewController
+                // (per unificare la UI ed eliminare la sovrapposizione con i controlli
+                // nativi) il pulsante AirPlay integrato e' sparito. Ripristinato qui
+                // esplicitamente con AVRoutePickerView.
+                AirPlayButton()
+                    .frame(width: 32, height: 32)
+                GlassIconButton(systemImage: "arrow.up.forward.app") { showExternalPlayerMenu = true }
                 GlassIconButton(systemImage: "4k.tv") { showQualityPicker = true }
                 GlassIconButton(systemImage: "dial.low") { showBufferSettings = true }
                 GlassIconButton(systemImage: "text.bubble") { showTrackPicker = true }
@@ -161,6 +181,9 @@ struct PlayerView: View {
                     reconnectPlayer.player.play()
                 }
                 .buttonStyle(.borderedProminent)
+                if !ExternalPlayer.available(for: url).isEmpty {
+                    Button("Apri con un altro player") { showExternalPlayerMenu = true }
+                }
             }
             .padding()
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -214,6 +237,61 @@ struct PlayerView: View {
     }
 }
 
+/// Wrapper minimale di AVRoutePickerView (SDK Apple), l'unico modo pubblico per
+/// mostrare il pulsante AirPlay standard fuori da AVPlayerViewController.
+struct AirPlayButton: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.tintColor = .white
+        view.activeTintColor = .systemBlue
+        return view
+    }
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+}
+
+/// App esterne compatibili via URL scheme, per aprire lo stream in un player
+/// diverso quando quello integrato fallisce o l'utente preferisce un'altra app.
+struct ExternalPlayer: Identifiable {
+    let id = UUID()
+    let displayName: String
+    let url: URL
+
+    static func available(for streamURL: URL) -> [ExternalPlayer] {
+        guard let encoded = streamURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return [] }
+        var candidates: [ExternalPlayer] = []
+
+        if let vlcURL = URL(string: "vlc://\(streamURL.absoluteString)") {
+            candidates.append(ExternalPlayer(displayName: "VLC", url: vlcURL))
+        }
+        if let infuseURL = URL(string: "infuse://x-callback-url/play?url=\(encoded)") {
+            candidates.append(ExternalPlayer(displayName: "Infuse", url: infuseURL))
+        }
+        if let outplayerURL = URL(string: "outplayer://\(streamURL.absoluteString)") {
+            candidates.append(ExternalPlayer(displayName: "Outplayer", url: outplayerURL))
+        }
+        return candidates.filter { UIApplication.shared.canOpenURL($0.url) }
+    }
+}
+
+struct RealPiPPlayerView: UIViewControllerRepresentable {
+    let player: AVPlayer
+
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        controller.player = player
+        controller.allowsPictureInPicturePlayback = true
+        controller.canStartPictureInPictureAutomaticallyFromInline = true
+        controller.showsPlaybackControls = false
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {
+        if uiViewController.player !== player {
+            uiViewController.player = player
+        }
+    }
+}
+
 @MainActor
 final class PlaybackProgress: ObservableObject {
     @Published var currentTime: Double = 0
@@ -240,25 +318,6 @@ final class PlaybackProgress: ObservableObject {
         if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
         player = nil
-    }
-}
-
-struct RealPiPPlayerView: UIViewControllerRepresentable {
-    let player: AVPlayer
-
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        controller.player = player
-        controller.allowsPictureInPicturePlayback = true
-        controller.canStartPictureInPictureAutomaticallyFromInline = true
-        controller.showsPlaybackControls = false
-        return controller
-    }
-
-    func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {
-        if uiViewController.player !== player {
-            uiViewController.player = player
-        }
     }
 }
 

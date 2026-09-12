@@ -40,6 +40,7 @@ struct ChannelGridView: View {
                         ForEach(streams) { stream in
                             ChannelTile(
                                 stream: stream,
+                                kind: kind,
                                 isFavorite: contentManagement.isFavorite(id: "\(credentials.host)-\(kind.rawValue)-\(stream.streamId)"),
                                 currentProgram: kind == .live ? epgByStream[stream.streamId] : nil
                             ) {
@@ -184,6 +185,7 @@ struct ChannelGridView: View {
 
 private struct ChannelTile: View {
     let stream: XtreamStream
+    let kind: XtreamStreamKind
     let isFavorite: Bool
     let currentProgram: EPGProgram?
     let onTap: () -> Void
@@ -192,16 +194,24 @@ private struct ChannelTile: View {
     var body: some View {
         VStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
-                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
-                    switch phase {
-                    case .success(let image): image.resizable().scaledToFit()
-                    default:
-                        RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial)
-                            .overlay(Image(systemName: "tv").foregroundStyle(.secondary))
+                // TMDB arricchisce solo i VOD: Xtream fornisce spesso solo
+                // un'icona generica per i film, non un poster reale. Per i
+                // live TV l'icona del canale (loghi) e' gia' quella corretta,
+                // TMDB non avrebbe senso ne' un match affidabile.
+                if kind == .movie {
+                    TMDBEnrichedPoster(title: stream.name, isSeries: false, fallbackIconURL: stream.streamIcon, width: 100, height: 100)
+                } else {
+                    AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
+                        switch phase {
+                        case .success(let image): image.resizable().scaledToFit()
+                        default:
+                            RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial)
+                                .overlay(Image(systemName: "tv").foregroundStyle(.secondary))
+                        }
                     }
+                    .frame(width: 100, height: 100)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
-                .frame(width: 100, height: 100)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
 
                 Button(action: onFavoriteToggle) {
                     Image(systemName: isFavorite ? "star.fill" : "star")
@@ -230,16 +240,7 @@ private struct SeriesTile: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            AsyncImage(url: URL(string: series.cover ?? "")) { phase in
-                switch phase {
-                case .success(let image): image.resizable().scaledToFit()
-                default:
-                    RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial)
-                        .overlay(Image(systemName: "rectangle.stack.fill").foregroundStyle(.secondary))
-                }
-            }
-            .frame(width: 100, height: 140)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            TMDBEnrichedPoster(title: series.name, isSeries: true, fallbackIconURL: series.cover, width: 100, height: 140)
             Text(series.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
         }
         .onTapGesture { onTap() }
