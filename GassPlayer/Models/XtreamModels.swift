@@ -6,14 +6,49 @@ struct XtreamCredentials: Codable, Equatable {
     var password: String
 }
 
+extension KeyedDecodingContainer {
+    func decodeFlexibleString(forKey key: Key) -> String? {
+        if let value = try? decode(String.self, forKey: key) { return value }
+        if let value = try? decode(Int.self, forKey: key) { return String(value) }
+        if let value = try? decode(Double.self, forKey: key) { return String(Int(value)) }
+        if let value = try? decode(Bool.self, forKey: key) { return value ? "1" : "0" }
+        return nil
+    }
+
+    func decodeFlexibleInt(forKey key: Key) -> Int? {
+        if let value = try? decode(Int.self, forKey: key) { return value }
+        if let value = try? decode(String.self, forKey: key) { return Int(value) ?? Int(Double(value) ?? .nan) }
+        if let value = try? decode(Double.self, forKey: key) { return Int(value) }
+        return nil
+    }
+}
+
 struct XtreamAuthResponse: Codable {
     struct UserInfo: Codable {
         let username: String
         let status: String
         let expDate: String?
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            username = container.decodeFlexibleString(forKey: .username) ?? ""
+            status = container.decodeFlexibleString(forKey: .status) ?? "unknown"
+            expDate = container.decodeFlexibleString(forKey: .expDate)
+        }
+
         enum CodingKeys: String, CodingKey { case username, status; case expDate = "exp_date" }
     }
-    struct ServerInfo: Codable { let url: String; let port: String }
+    struct ServerInfo: Codable {
+        let url: String
+        let port: String
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            url = container.decodeFlexibleString(forKey: .url) ?? ""
+            port = container.decodeFlexibleString(forKey: .port) ?? "80"
+        }
+        enum CodingKeys: String, CodingKey { case url, port }
+    }
     let userInfo: UserInfo
     let serverInfo: ServerInfo
     enum CodingKeys: String, CodingKey { case userInfo = "user_info"; case serverInfo = "server_info" }
@@ -23,14 +58,15 @@ struct XtreamCategory: Codable, Identifiable, Hashable {
     let categoryId: String
     let categoryName: String
     var id: String { categoryId }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        categoryId = container.decodeFlexibleString(forKey: .categoryId) ?? UUID().uuidString
+        categoryName = container.decodeFlexibleString(forKey: .categoryName) ?? "Senza nome"
+    }
     enum CodingKeys: String, CodingKey { case categoryId = "category_id"; case categoryName = "category_name" }
 }
 
-/// Aggiunto `containerExtension`: Xtream Codes lo restituisce per i
-/// contenuti VOD/Serie (es. "mp4", "mkv", "avi") ed e' necessario per
-/// costruire l'URL di streaming corretto — prima l'app assumeva sempre
-/// "m3u8"/"mp4" fissi, il che rompeva la riproduzione su molti pannelli
-/// che servono VOD in mkv/avi.
 struct XtreamStream: Codable, Identifiable, Hashable {
     let streamId: Int
     let name: String
@@ -38,6 +74,16 @@ struct XtreamStream: Codable, Identifiable, Hashable {
     let categoryId: String?
     let containerExtension: String?
     var id: Int { streamId }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        streamId = container.decodeFlexibleInt(forKey: .streamId) ?? 0
+        name = container.decodeFlexibleString(forKey: .name) ?? "Senza nome"
+        streamIcon = container.decodeFlexibleString(forKey: .streamIcon)
+        categoryId = container.decodeFlexibleString(forKey: .categoryId)
+        containerExtension = container.decodeFlexibleString(forKey: .containerExtension)
+    }
+
     enum CodingKeys: String, CodingKey {
         case streamId = "stream_id", name, categoryId = "category_id"
         case streamIcon = "stream_icon"
@@ -65,7 +111,6 @@ enum XtreamStreamKind: String, CaseIterable, Identifiable {
         case .series: return "rectangle.stack.fill"
         }
     }
-    /// Estensione di default se il pannello non fornisce container_extension.
     var defaultExtension: String {
         switch self { case .live: return "m3u8"; case .movie, .series: return "mp4" }
     }
@@ -80,6 +125,7 @@ enum XtreamError: LocalizedError {
     case wrongCredentials
     case decoding(Error)
     case noProviderVPN
+    case unexpectedResponseShape
 
     var errorDescription: String? {
         switch self {
@@ -99,6 +145,8 @@ enum XtreamError: LocalizedError {
             return "Risposta del server in un formato inatteso."
         case .noProviderVPN:
             return "Questo fornitore non pubblica una configurazione VPN propria."
+        case .unexpectedResponseShape:
+            return "Il pannello ha risposto con una struttura dati non riconosciuta."
         }
     }
 }

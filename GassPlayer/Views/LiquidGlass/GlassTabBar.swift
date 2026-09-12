@@ -25,19 +25,16 @@ struct GlassTabBar: View {
     private func tabCircle(_ index: Int, _ item: GlassTabItem) -> some View {
         let isSelected = selection == index
         return VStack(spacing: 4) {
-            ZStack {
+            Button {
+                selection = index
+            } label: {
                 Image(systemName: item.systemImage)
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(isSelected ? Color.white : Color.primary)
+                    .frame(width: circleDiameter, height: circleDiameter)
             }
-            .frame(width: circleDiameter, height: circleDiameter)
+            .buttonStyle(.plain)
             .modifier(TabCircleGlass(isSelected: isSelected))
-            .contentShape(Circle())
-            .onTapGesture {
-                selection = index
-            }
-            .scaleEffect(isSelected ? 1.08 : 1.0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
 
             Text(item.title)
                 .font(.system(size: 9, weight: .medium))
@@ -52,12 +49,10 @@ struct TabCircleGlass: ViewModifier {
     let isSelected: Bool
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content
-                .background {
-                    Circle()
-                        .fill(.clear)
-                        .glassEffect(isSelected ? .regular.tint(.accentColor) : .regular, in: .circle)
-                }
+            content.glassEffect(
+                isSelected ? .regular.tint(.accentColor).interactive() : .regular.interactive(),
+                in: .circle
+            )
         } else {
             content
                 .background(isSelected ? Color.accentColor.opacity(0.85) : Color.clear, in: Circle())

@@ -9,6 +9,7 @@ struct GlassIconButton: View {
         Button(action: action) {
             Image(systemName: systemImage).font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
         }
+        .buttonStyle(.plain)
         .modifier(GlassCircleModifier(tint: tint))
     }
 }
@@ -32,6 +33,7 @@ struct GlassPrimaryButton: View {
         Button(action: action) {
             Text(title).font(.headline).padding(.horizontal, 24).padding(.vertical, 12)
         }
+        .buttonStyle(.plain)
         .modifier(GlassCapsuleModifier())
     }
 }
