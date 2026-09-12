@@ -6,87 +6,117 @@ struct GlassTabItem: Identifiable {
     let systemImage: String
 }
 
-/// Tab bar flottante in stile Liquid Glass: un unico "blob" di vetro scivola
-/// fisicamente da un'icona all'altra quando cambia la selezione (via
-/// matchedGeometryEffect), invece di limitarsi a un fade/scale sull'icona
-/// selezionata come nella versione precedente. Riproduce l'effetto visto
-/// nello screenshot di riferimento: indicatore capsula translucido che si
-/// muove con una molla morbida, con l'icona/testo sopra che restano nitidi
-/// mentre il vetro dietro si sposta e si deforma leggermente in transito.
+/// Tab bar Liquid Glass con morph reale del blob di selezione.
+///
+/// FIX rispetto alla versione precedente: il vetro non puo' "campionare"
+/// altro vetro (regola esplicita di Apple per Liquid Glass). Avere lo
+/// sfondo della barra e il blob di selezione come due .glassEffect()
+/// indipendenti, ciascuno fuori da un GlassEffectContainer, li fa
+/// renderizzare in isolamento: il risultato SEMBRA vetro ma l'animazione
+/// di spostamento non ha la fisica "liquida" reale (nessuna rifrazione
+/// coordinata, nessun blending), perche' ogni livello di vetro calcola la
+/// propria distorsione separatamente. La correzione e' avvolgere l'intera
+/// barra in un unico GlassEffectContainer, cosi' i due livelli condividono
+/// la stessa regione di campionamento e il sistema puo' davvero fondere le
+/// forme durante l'animazione — esattamente il comportamento visto nello
+/// screenshot di riferimento.
 struct GlassTabBar: View {
     let items: [GlassTabItem]
     @Binding var selection: Int
     @Namespace private var glassNamespace
 
-    private let horizontalPadding: CGFloat = 12
     private let barHeight: CGFloat = 64
 
     var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                tabButton(index, item)
+        Group {
+            if #available(iOS 26.0, *) {
+                GlassEffectContainer(spacing: 24) {
+                    ZStack {
+                        Capsule().fill(.clear)
+                            .glassEffect(.regular, in: .capsule)
+
+                        HStack(spacing: 0) {
+                            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                                modernTabButton(index, item)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                    }
+                }
+                .frame(height: barHeight)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            } else {
+                legacyBar
             }
         }
-        .padding(.horizontal, horizontalPadding)
-        .frame(height: barHeight)
-        .modifier(GlassBarBackground())
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
     }
 
-    private func tabButton(_ index: Int, _ item: GlassTabItem) -> some View {
+    @available(iOS 26.0, *)
+    private func modernTabButton(_ index: Int, _ item: GlassTabItem) -> some View {
         let isSelected = selection == index
         return Button {
-            withAnimation(.interactiveSpring(response: 0.45, dampingFraction: 0.72, blendDuration: 0.2)) {
-                selection = index
-            }
+            withAnimation(.smooth(duration: 0.35)) { selection = index }
         } label: {
             VStack(spacing: 2) {
-                Image(systemName: item.systemImage)
-                    .font(.system(size: 20, weight: .semibold))
-                Text(item.title)
-                    .font(.system(size: 10, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                Image(systemName: item.systemImage).font(.system(size: 20, weight: .semibold))
+                Text(item.title).font(.system(size: 10, weight: .medium)).lineLimit(1).minimumScaleFactor(0.7)
             }
             .foregroundStyle(isSelected ? Color.white : Color.secondary)
             .frame(maxWidth: .infinity)
-            .frame(height: barHeight - 12)
+            .frame(height: barHeight - 16)
             .background {
                 if isSelected {
                     Capsule()
                         .fill(.clear)
-                        .modifier(GlassBlobBackground())
-                        .matchedGeometryEffect(id: "glassBlob", in: glassNamespace)
+                        .glassEffect(.regular.tint(.white.opacity(0.16)).interactive(), in: .capsule)
+                        .glassEffectID("selectionBlob", in: glassNamespace)
+                        .matchedGeometryEffect(id: "selectionBlob", in: glassNamespace)
                 }
             }
         }
         .buttonStyle(.plain)
+        .glassEffectTransition(.matchedGeometry)
     }
-}
 
-private struct GlassBarBackground: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(.regular, in: .capsule)
-        } else {
-            content
-                .background(.ultraThinMaterial, in: Capsule())
-                .background(Color.black.opacity(0.35), in: Capsule())
+    private var legacyBar: some View {
+        ZStack {
+            Capsule()
+                .fill(.ultraThinMaterial)
                 .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
-        }
-    }
-}
 
-private struct GlassBlobBackground: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(.regular.tint(.white.opacity(0.14)).interactive(), in: .capsule)
-        } else {
-            content
-                .background(.ultraThinMaterial, in: Capsule())
-                .background(Color.white.opacity(0.10), in: Capsule())
+            HStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    legacyTabButton(index, item)
+                }
+            }
+            .padding(.horizontal, 8)
         }
+        .frame(height: barHeight)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+
+    private func legacyTabButton(_ index: Int, _ item: GlassTabItem) -> some View {
+        let isSelected = selection == index
+        return Button {
+            withAnimation(.interactiveSpring(response: 0.4, dampingFraction: 0.75)) { selection = index }
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: item.systemImage).font(.system(size: 20, weight: .semibold))
+                Text(item.title).font(.system(size: 10, weight: .medium)).lineLimit(1).minimumScaleFactor(0.7)
+            }
+            .foregroundStyle(isSelected ? Color.white : Color.secondary)
+            .frame(maxWidth: .infinity)
+            .frame(height: barHeight - 16)
+            .background {
+                if isSelected {
+                    Capsule().fill(Color.white.opacity(0.14))
+                        .matchedGeometryEffect(id: "legacyBlob", in: glassNamespace)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 

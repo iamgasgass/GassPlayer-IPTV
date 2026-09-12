@@ -3,7 +3,7 @@ import NetworkExtension
 
 struct ProviderVPNView: View {
     let credentials: XtreamCredentials?
-    @StateObject private var vpnManager = ProviderVPNManager()
+    @EnvironmentObject private var vpnManager: ProviderVPNManager
     @State private var isChecking = false
     @State private var showToggleErrorAlert = false
     @State private var showRemoveConfirmation = false
@@ -79,7 +79,11 @@ struct ProviderVPNView: View {
                     ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
                 }
             }
-            .task { await refresh() }
+            .task {
+                if !vpnManager.providerOffersVPN, vpnManager.lastError == nil {
+                    await refresh()
+                }
+            }
             .onChange(of: scenePhase) { _, newPhase in
                 switch newPhase {
                 case .active: vpnManager.handleAppBecameActive()

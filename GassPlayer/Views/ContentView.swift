@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var themeManager = ThemeManager()
     @StateObject private var m3uStore = M3UPlaylistStore()
     @StateObject private var overlayState = NavigationOverlayState()
+    @StateObject private var vpnManager = ProviderVPNManager()
 
     private let tabs = [
         GlassTabItem(title: "Live", systemImage: "tv"),
@@ -48,6 +49,10 @@ struct ContentView: View {
                 .sheet(isPresented: $overlayState.showSearch) { GlobalSearchView() }
                 .sheet(isPresented: $overlayState.showSettings) { SettingsView() }
                 .onChange(of: sourceManager.activeSourceId) { _, _ in loadActiveSource() }
+                .task(id: credentials) {
+                    guard let credentials else { return }
+                    await vpnManager.syncFromIPTVProvider(credentials: credentials)
+                }
             } else {
                 LoginView(
                     onLogin: { creds in
@@ -68,6 +73,7 @@ struct ContentView: View {
         .environmentObject(themeManager)
         .environmentObject(m3uStore)
         .environmentObject(overlayState)
+        .environmentObject(vpnManager)
     }
 
     private func loadActiveSource() {

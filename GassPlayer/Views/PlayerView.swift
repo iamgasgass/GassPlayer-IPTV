@@ -9,6 +9,7 @@ struct PlayerView: View {
     let url: URL
     let title: String
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var vpnManager: ProviderVPNManager
     @StateObject private var reconnectPlayer: SmartReconnectPlayer
     @StateObject private var progress = PlaybackProgress()
     @State private var showTrackPicker = false
@@ -23,6 +24,7 @@ struct PlayerView: View {
     @State private var showVolumeHUD = false
     @State private var showControls = true
     @State private var hideControlsTask: Task<Void, Never>?
+    @State private var isWaitingForVPN = false
 
     init(url: URL, title: String) {
         self.url = url; self.title = title
@@ -33,9 +35,13 @@ struct PlayerView: View {
         ZStack {
             RealPiPPlayerView(player: reconnectPlayer.player)
                 .ignoresSafeArea()
-                .onAppear {
+                .task {
+                    reconnectPlayer.player.automaticallyWaitsToMinimizeStalling = false
+                    await connectVPNIfNeededBeforePlayback()
                     reconnectPlayer.player.play()
-                    Task { await loadMediaSelection() }
+                    await loadMediaSelection()
+                }
+                .onAppear {
                     progress.attach(to: reconnectPlayer.player)
                     scheduleAutoHide()
                 }
@@ -46,6 +52,10 @@ struct PlayerView: View {
                 }
                 .simultaneousGesture(dragGesture)
                 .onTapGesture { toggleControls() }
+
+            if isWaitingForVPN {
+                vpnWaitingOverlay
+            }
 
             if showBrightnessHUD { hudOverlay(icon: "sun.max.fill", value: brightnessOverlay) }
             if showVolumeHUD { hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay) }
@@ -77,9 +87,39 @@ struct PlayerView: View {
         }
     }
 
-    /// Unica superficie di controllo: barra superiore (chiudi, AirPlay, qualita',
-    /// buffer, tracce, apri con esterno, buffering) + barra inferiore (play/pausa,
-    /// scrubber con tempo per VOD, etichetta "Live" per i canali).
+    private func connectVPNIfNeededBeforePlayback() async {
+        guard vpnManager.providerOffersVPN,
+              vpnManager.activeProtocolIsEncrypted,
+              vpnManager.status != .connected,
+              vpnManager.status != .connecting else { return }
+
+        isWaitingForVPN = true
+        defer { isWaitingForVPN = false }
+
+        try? vpnManager.connect()
+
+        let deadline = Date().addingTimeInterval(4)
+        while vpnManager.status != .connected && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        if vpnManager.status != .connected {
+            DebugLogger.logAsync(.warning, "VPN non connessa entro il timeout di avvio player: si procede comunque con la riproduzione diretta")
+        }
+    }
+
+    private var vpnWaitingOverlay: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .tint(.white)
+            Text("Connessione VPN del provider...")
+                .font(.caption)
+                .foregroundStyle(.white)
+        }
+        .padding(20)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .transition(.opacity)
+    }
+
     private var unifiedControlSurface: some View {
         VStack {
             HStack {
@@ -92,10 +132,6 @@ struct PlayerView: View {
                     .shadow(radius: 4)
                 Spacer()
                 if reconnectPlayer.isBuffering { ProgressView().tint(.white).padding(.horizontal, 4) }
-                // AirPlay: disattivando showsPlaybackControls sul AVPlayerViewController
-                // (per unificare la UI ed eliminare la sovrapposizione con i controlli
-                // nativi) il pulsante AirPlay integrato e' sparito. Ripristinato qui
-                // esplicitamente con AVRoutePickerView.
                 AirPlayButton()
                     .frame(width: 32, height: 32)
                 GlassIconButton(systemImage: "arrow.up.forward.app") { showExternalPlayerMenu = true }
@@ -237,8 +273,6 @@ struct PlayerView: View {
     }
 }
 
-/// Wrapper minimale di AVRoutePickerView (SDK Apple), l'unico modo pubblico per
-/// mostrare il pulsante AirPlay standard fuori da AVPlayerViewController.
 struct AirPlayButton: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView()
@@ -249,8 +283,6 @@ struct AirPlayButton: UIViewRepresentable {
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
 
-/// App esterne compatibili via URL scheme, per aprire lo stream in un player
-/// diverso quando quello integrato fallisce o l'utente preferisce un'altra app.
 struct ExternalPlayer: Identifiable {
     let id = UUID()
     let displayName: String
