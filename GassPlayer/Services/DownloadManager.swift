@@ -12,7 +12,13 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDeleg
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
+    /// Prima era `return true` fisso: ora usa NetworkMonitor reale
+    /// (NWPathMonitor), quindi "solo Wi-Fi" funziona davvero.
     func startDownload(url: URL, id: UUID) {
+        if wifiOnly && !NetworkMonitor.shared.isOnWiFi {
+            DebugLogger.logAsync(.warning, "Download bloccato: modalità solo Wi-Fi attiva e rete corrente non è Wi-Fi")
+            return
+        }
         let task = session.downloadTask(with: url)
         task.taskDescription = id.uuidString
         activeDownloads[id] = 0
