@@ -56,9 +56,9 @@ actor XtreamAPIService {
     func fetchCategories(kind: XtreamStreamKind) async throws -> [XtreamCategory] {
         let action = "get_\(kind == .live ? "live" : kind == .movie ? "vod" : "series")_categories"
         let url = try endpoint(action: action)
-        let (data, response) = try await fetchWithRetry(url)
+        let (data, response) = try await session.data(from: url)
         try validate(response)
-        return try Self.decodeFlexibleArray(XtreamCategory.self, from: data)
+        return try JSONDecoder().decode([XtreamCategory].self, from: data)
     }
 
     func fetchStreams(kind: XtreamStreamKind, categoryId: String? = nil) async throws -> [XtreamStream] {
@@ -66,48 +66,20 @@ actor XtreamAPIService {
         var extra: [String: String] = [:]
         if let categoryId { extra["category_id"] = categoryId }
         let url = try endpoint(action: action, extra: extra)
-        let (data, response) = try await fetchWithRetry(url)
+        let (data, response) = try await session.data(from: url)
         try validate(response)
-        return try Self.decodeFlexibleArray(XtreamStream.self, from: data)
+        return try JSONDecoder().decode([XtreamStream].self, from: data)
     }
 
-    private func fetchWithRetry(_ url: URL, attempts: Int = 3) async throws -> (Data, URLResponse) {
-        var lastError: Error?
-        var delay: UInt64 = 500_000_000
-        for attempt in 1...attempts {
-            do {
-                return try await session.data(from: url)
-            } catch {
-                lastError = error
-                if attempt < attempts {
-                    try? await Task.sleep(nanoseconds: delay)
-                    delay *= 2
-                }
-            }
+    func fetchSeriesInfo(seriesId: Int) async throws -> XtreamSeriesInfo {
+        let url = try endpoint(action: "get_series_info", extra: ["series_id": String(seriesId)])
+        let (data, response) = try await session.data(from: url)
+        try validate(response)
+        do {
+            return try JSONDecoder().decode(XtreamSeriesInfo.self, from: data)
+        } catch {
+            throw XtreamError.decoding(error)
         }
-        throw XtreamError.unreachable(underlying: lastError ?? URLError(.unknown))
-    }
-
-    private static func decodeFlexibleArray<T: Decodable>(_ type: T.Type, from data: Data) throws -> [T] {
-        let decoder = JSONDecoder()
-        if let direct = try? decoder.decode([T].self, from: data) {
-            return direct
-        }
-        struct WrapperKeys: Decodable {
-            let result: [T]?
-            let data: [T]?
-            let streams: [T]?
-            let categories: [T]?
-        }
-        if let wrapped = try? decoder.decode(WrapperKeys.self, from: data) {
-            if let value = wrapped.result ?? wrapped.data ?? wrapped.streams ?? wrapped.categories {
-                return value
-            }
-        }
-        if data.isEmpty || String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "[]" {
-            return []
-        }
-        throw XtreamError.unexpectedResponseShape
     }
 
     nonisolated func streamURL(for stream: XtreamStream, kind: XtreamStreamKind) -> URL? {
@@ -118,6 +90,10 @@ actor XtreamAPIService {
     nonisolated func streamURL(for streamId: Int, kind: XtreamStreamKind, ext: String? = nil) -> URL? {
         let resolvedExt = ext ?? kind.defaultExtension
         return URL(string: "\(credentials.host)/\(kind.pathComponent)/\(credentials.username)/\(credentials.password)/\(streamId).\(resolvedExt)")
+    }
+
+    nonisolated func episodeStreamURL(episodeId: Int, ext: String) -> URL? {
+        URL(string: "\(credentials.host)/series/\(credentials.username)/\(credentials.password)/\(episodeId).\(ext)")
     }
 
     func fetchProviderVPNConfig() async throws -> ProviderVPNConfig {

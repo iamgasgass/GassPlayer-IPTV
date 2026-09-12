@@ -50,7 +50,11 @@ struct ChannelGridView: View {
             }
             .task(id: kind) { await loadCategories() }
             .fullScreenCover(item: $selectedStream) { stream in
-                if let url = streamURLFor(stream) {
+                if kind == .series {
+                    NavigationStack {
+                        SeriesEpisodesView(credentials: credentials, seriesId: stream.streamId, seriesName: stream.name)
+                    }
+                } else if let url = streamURLFor(stream) {
                     PlayerView(url: url, title: stream.name)
                 } else {
                     Text("URL dello stream non valido.")
