@@ -94,11 +94,9 @@ struct ChannelGridView: View {
                                 .font(.caption)
                             Text(category.categoryName)
                         }
-                        .foregroundStyle(isSelected ? Color.white : Color.primary)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
                     }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                    .modifier(GlassOrMaterial(isSelected: isSelected))
+                    .modifier(CategoryChipStyle(isSelected: isSelected))
                 }
             }
             .padding(.horizontal)
@@ -183,6 +181,34 @@ struct ChannelGridView: View {
     }
 }
 
+/// Stile nativo per i chip categoria (es. "Sky PrimaFila OnDemand"): stessa
+/// logica applicata a tab bar e bottoni icona. .glassProminent per il chip
+/// selezionato (piu' evidente, tinta accento), .glass per gli altri —
+/// entrambi stili di sistema iOS 26, non piu' un .glassEffect() manuale.
+/// Restano chip visivamente separati (non un unico gruppo fuso): non esiste
+/// un equivalente nativo di "raggruppamento" per una fila orizzontale
+/// scorrevole con conteggio variabile di elementi (ToolbarItemGroup esiste
+/// solo per le toolbar), quindi ogni chip e' stilizzato individualmente.
+private struct CategoryChipStyle: ViewModifier {
+    let isSelected: Bool
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .buttonStyle(isSelected ? .glassProminent : .glass)
+                .buttonBorderShape(.capsule)
+                .tint(isSelected ? .accentColor : nil)
+        } else {
+            content
+                .buttonStyle(.plain)
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    if isSelected { Capsule().fill(Color.accentColor.opacity(0.85)) }
+                }
+        }
+    }
+}
+
 private struct ChannelTile: View {
     let stream: XtreamStream
     let kind: XtreamStreamKind
@@ -194,10 +220,6 @@ private struct ChannelTile: View {
     var body: some View {
         VStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
-                // TMDB arricchisce solo i VOD: Xtream fornisce spesso solo
-                // un'icona generica per i film, non un poster reale. Per i
-                // live TV l'icona del canale (loghi) e' gia' quella corretta,
-                // TMDB non avrebbe senso ne' un match affidabile.
                 if kind == .movie {
                     TMDBEnrichedPoster(title: stream.name, isSeries: false, fallbackIconURL: stream.streamIcon, width: 100, height: 100)
                 } else {
