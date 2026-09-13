@@ -47,8 +47,11 @@ struct PlayerView: View {
             .overlay {
                 if let errorMessage = controller.lastError {
                     playbackErrorBanner(errorMessage)
-                } else if showControls {
+                } else {
                     unifiedControlSurface
+                        .opacity(showControls ? 1 : 0)
+                        .allowsHitTesting(showControls)
+                        .animation(.easeInOut(duration: 0.2), value: showControls)
                 }
             }
             .statusBarHidden(true)
@@ -98,12 +101,19 @@ struct PlayerView: View {
                     GlassIconButton(systemImage: "pip.enter") { controller.isPipActive = true }
                 }
                 GlassIconButton(systemImage: "arrow.up.forward.app") { showExternalPlayerMenu = true }
-                GlassIconButton(systemImage: "speedometer") { showSpeedPicker = true }
-                GlassIconButton(systemImage: "4k.tv") { showQualityPicker = true }
-                GlassIconButton(systemImage: "dial.low") { showBufferSettings = true }
-                GlassIconButton(systemImage: "text.bubble") { showTrackPicker = true }
+                Menu {
+                    Button("Velocità di riproduzione", systemImage: "speedometer") { showSpeedPicker = true }
+                    Button("Qualità video", systemImage: "4k.tv") { showQualityPicker = true }
+                    Button("Impostazioni buffer", systemImage: "dial.low") { showBufferSettings = true }
+                    Button("Audio e sottotitoli", systemImage: "text.bubble") { showTrackPicker = true }
+                } label: {
+                    GlassIconButton(systemImage: "ellipsis") {}
+                        .allowsHitTesting(false)
+                }
             }
-            .padding()
+            .padding(.horizontal)
+            .padding(.top, 8)
+            .safeAreaPadding(.horizontal)
             .background(LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom))
 
             Spacer()
@@ -133,20 +143,23 @@ struct PlayerView: View {
                         Text("\(formatted(controller.currentTime)) / \(formatted(controller.duration))")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .layoutPriority(1)
                     } else {
                         Text("Live").font(.caption.weight(.semibold)).foregroundStyle(.white)
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
             }
-            .padding()
+            .padding(.horizontal)
+            .padding(.bottom, 8)
+            .safeAreaPadding(.horizontal)
             .background(LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom))
         }
-        .transition(.opacity)
     }
 
     private func toggleControls() {
-        withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() }
+        showControls.toggle()
         if showControls { scheduleAutoHide() }
     }
 
@@ -155,7 +168,7 @@ struct PlayerView: View {
         hideControlsTask = Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
-            await MainActor.run { withAnimation(.easeInOut(duration: 0.3)) { showControls = false } }
+            await MainActor.run { showControls = false }
         }
     }
 
@@ -188,9 +201,10 @@ struct PlayerView: View {
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             .padding()
             Spacer()
-            HStack { GlassIconButton(systemImage: "xmark") { dismiss() }; Spacer() }.padding()
+            HStack { GlassIconButton(systemImage: "xmark") { dismiss() }; Spacer() }
+                .padding()
+                .safeAreaPadding(.horizontal)
         }
-        .transition(.opacity)
     }
 
     private var dragGesture: some Gesture {
