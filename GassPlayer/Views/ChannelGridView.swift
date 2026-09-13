@@ -34,6 +34,10 @@ struct ChannelGridView: View {
         xtreamCatalog.streams(for: kind)
     }
 
+    private var allSeries: [XtreamSeriesItem] {
+        xtreamCatalog.seriesItems
+    }
+
     private var displayedStreams: [XtreamStream] {
         switch selectedCategory {
         case .all:
@@ -41,23 +45,38 @@ struct ChannelGridView: View {
         case .category(let categoryID):
             return allStreams.filter { normalizedCategoryID($0.categoryId) == categoryID }
         case .uncategorized:
-            return allStreams.filter(isUncategorized)
+            return allStreams.filter { isUncategorized($0.categoryId) }
+        }
+    }
+
+    private var displayedSeries: [XtreamSeriesItem] {
+        switch selectedCategory {
+        case .all:
+            return allSeries
+        case .category(let categoryID):
+            return allSeries.filter { normalizedCategoryID($0.categoryId) == categoryID }
+        case .uncategorized:
+            return allSeries.filter { isUncategorized($0.categoryId) }
         }
     }
 
     private var visibleCategories: [XtreamCategory] {
-        guard kind != .series else { return categories }
-        return categories.filter { categoryCount(for: $0.categoryId) > 0 }
+        categories.filter { categoryCount(for: $0.categoryId) > 0 }
     }
 
     private var uncategorizedCount: Int {
-        allStreams.filter(isUncategorized).count
+        if kind == .series {
+            return allSeries.lazy.filter { isUncategorized($0.categoryId) }.count
+        }
+        return allStreams.lazy.filter { isUncategorized($0.categoryId) }.count
+    }
+
+    private var itemCount: Int {
+        kind == .series ? allSeries.count : allStreams.count
     }
 
     private var isInitialLoadPending: Bool {
-        guard kind != .series else { return false }
-        guard allStreams.isEmpty else { return false }
-
+        guard itemCount == 0 else { return false }
         switch xtreamCatalog.state {
         case .idle, .loading:
             return true
@@ -73,7 +92,7 @@ struct ChannelGridView: View {
 
                 if isInitialLoadPending {
                     loadingView
-                } else if case .failed(let message) = xtreamCatalog.state, allStreams.isEmpty, kind != .series {
+                } else if case .failed(let message) = xtreamCatalog.state, itemCount == 0 {
                     ContentUnavailableView(
                         "Impossibile caricare il catalogo",
                         systemImage: "exclamationmark.triangle",
@@ -97,7 +116,7 @@ struct ChannelGridView: View {
                     .accessibilityLabel("Aggiorna \(kind.displayName)")
                 }
             }
-            .task(id: "\(kind.rawValue)-\(allStreams.count)") {
+            .task(id: "\(kind.rawValue)-\(itemCount)") {
                 guard kind == .live else { return }
                 await loadEPGForVisibleStreams()
             }
@@ -116,6 +135,9 @@ struct ChannelGridView: View {
                 SeriesEpisodesView(credentials: credentials, seriesId: series.seriesId, seriesName: series.name)
             }
         }
+        .onChange(of: kind) { _, _ in
+            selectedCategory = .all
+        }
     }
 
     @ViewBuilder
@@ -126,11 +148,7 @@ struct ChannelGridView: View {
             ContentUnavailableView(
                 "Nessun contenuto in questa sezione",
                 systemImage: kind.systemImage,
-                description: Text(
-                    selectedCategory == .all
-                        ? "La sorgente non ha restituito contenuti."
-                        : "Prova una categoria diversa o aggiorna la sorgente."
-                )
+                description: Text(selectedCategory == .all ? "La sorgente non ha restituito contenuti." : "Prova una categoria diversa o aggiorna la sorgente.")
             )
             .padding(.vertical, 32)
         } else {
@@ -140,19 +158,21 @@ struct ChannelGridView: View {
 
     @ViewBuilder
     private var seriesGrid: some View {
-        let series = xtreamCatalog.seriesItems
-
-        if series.isEmpty {
-            ContentUnavailableView("Nessuna serie disponibile", systemImage: "rectangle.stack.fill")
-                .padding(.vertical, 32)
+        if displayedSeries.isEmpty {
+            ContentUnavailableView(
+                "Nessuna serie in questa sezione",
+                systemImage: "rectangle.stack.fill",
+                description: Text(selectedCategory == .all ? "La sorgente non ha restituito serie." : "Questa categoria non contiene serie.")
+            )
+            .padding(.vertical, 32)
         } else {
             LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(series) { item in
+                ForEach(displayedSeries) { item in
                     SeriesTile(series: item) { selectedSeries = item }
                 }
             }
             .padding()
-            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: series.count)
+            .animation(.snappy(duration: 0.22), value: selectedCategory)
         }
     }
 
@@ -176,7 +196,7 @@ struct ChannelGridView: View {
             }
         }
         .padding()
-        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: displayedStreams.count)
+        .animation(.snappy(duration: 0.22), value: selectedCategory)
     }
 
     private var loadingView: some View {
@@ -192,12 +212,20 @@ struct ChannelGridView: View {
     private var categoryChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                if kind != .series {
-                    categoryButton(title: "Tutti", icon: "square.grid.2x2", count: allStreams.count, selection: .all)
+                categoryButton(
+                    title: "Tutti",
+                    icon: "square.grid.2x2",
+                    count: itemCount,
+                    selection: .all
+                )
 
-                    if uncategorizedCount > 0 {
-                        categoryButton(title: "Senza categoria", icon: "tray", count: uncategorizedCount, selection: .uncategorized)
-                    }
+                if uncategorizedCount > 0 {
+                    categoryButton(
+                        title: "Senza categoria",
+                        icon: "tray",
+                        count: uncategorizedCount,
+                        selection: .uncategorized
+                    )
                 }
 
                 ForEach(visibleCategories) { category in
@@ -215,28 +243,32 @@ struct ChannelGridView: View {
     }
 
     private func categoryButton(title: String, icon: String, count: Int, selection: CategorySelection) -> some View {
-        Button {
-            withAnimation(.snappy) { selectedCategory = selection }
+        let isSelected = selectedCategory == selection
+        return Button {
+            guard selectedCategory != selection else { return }
+            withAnimation(.snappy(duration: 0.22, extraBounce: 0.08)) {
+                selectedCategory = selection
+            }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: icon).font(.caption)
                 Text(title).lineLimit(1)
                 Text("\(count)")
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(selectedCategory == selection ? Color.white.opacity(0.78) : Color.secondary)
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.78) : Color.secondary)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(selectedCategory == selection ? Color.white : Color.primary)
-        .background(selectedCategory == selection ? Color.accentColor : Color.clear, in: Capsule())
+        .foregroundStyle(isSelected ? Color.white : Color.primary)
+        .background(isSelected ? Color.accentColor : Color.clear, in: Capsule())
         .background(.ultraThinMaterial, in: Capsule())
         .overlay {
-            Capsule().strokeBorder(Color.white.opacity(selectedCategory == selection ? 0.22 : 0.12), lineWidth: 0.5)
+            Capsule().strokeBorder(Color.white.opacity(isSelected ? 0.22 : 0.12), lineWidth: 0.5)
         }
         .accessibilityLabel("\(title), \(count) contenuti")
-        .accessibilityAddTraits(selectedCategory == selection ? .isSelected : [])
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func normalizedCategoryID(_ categoryID: String?) -> String? {
@@ -245,14 +277,17 @@ struct ChannelGridView: View {
         return normalized.isEmpty ? nil : normalized
     }
 
-    private func isUncategorized(_ stream: XtreamStream) -> Bool {
-        guard let categoryID = normalizedCategoryID(stream.categoryId) else { return true }
+    private func isUncategorized(_ categoryID: String?) -> Bool {
+        guard let categoryID = normalizedCategoryID(categoryID) else { return true }
         let knownCategoryIDs = Set(categories.map(\.categoryId))
         return categoryID == "0" || !knownCategoryIDs.contains(categoryID)
     }
 
     private func categoryCount(for categoryID: String) -> Int {
-        allStreams.lazy.filter { normalizedCategoryID($0.categoryId) == categoryID }.count
+        if kind == .series {
+            return allSeries.lazy.filter { normalizedCategoryID($0.categoryId) == categoryID }.count
+        }
+        return allStreams.lazy.filter { normalizedCategoryID($0.categoryId) == categoryID }.count
     }
 
     private func favoriteID(for stream: XtreamStream) -> String {
@@ -316,8 +351,7 @@ private struct ChannelTile: View {
                     } else {
                         AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
                             switch phase {
-                            case .success(let image):
-                                image.resizable().scaledToFit()
+                            case .success(let image): image.resizable().scaledToFit()
                             default:
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .fill(.ultraThinMaterial)
