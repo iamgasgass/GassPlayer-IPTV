@@ -131,12 +131,14 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
 
     private func startWatchdog() {
         watchdogTask?.cancel()
+        let isLastCandidate = candidateIndex >= candidateURLs.count - 1
+        let timeoutSeconds: UInt64 = isLastCandidate ? 12 : 5
         watchdogTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
             guard let self, !Task.isCancelled else { return }
             if !self.hasEverStartedPlaying && self.lastError == nil {
-                DebugLogger.logAsync(.error, "Watchdog: nessuna riproduzione avviata dopo 15s per \(self.currentURL.absoluteString), nessun errore esplicito da AVPlayer")
-                self.handleFailure(lastKnownError: "Il flusso non si e' avviato entro 15 secondi. Il formato potrebbe non essere supportato o il server non risponde correttamente.")
+                DebugLogger.logAsync(.error, "Watchdog: nessuna riproduzione avviata dopo \(timeoutSeconds)s per \(self.currentURL.absoluteString) (candidato \(self.candidateIndex + 1)/\(self.candidateURLs.count)), nessun errore esplicito da AVPlayer")
+                self.handleFailure(lastKnownError: "Il flusso non si e' avviato in tempo utile. Il formato potrebbe non essere supportato o il server non risponde correttamente.")
             }
         }
     }
@@ -209,20 +211,40 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         assertPlaybackReallyStarts()
     }
 
+    private func totalLoadedSeconds() -> Double {
+        guard let ranges = player.currentItem?.loadedTimeRanges else { return 0 }
+        return ranges.reduce(0.0) { total, value in
+            total + value.timeRangeValue.duration.seconds
+        }
+    }
+
     private func assertPlaybackReallyStarts() {
         autoplayAssertTask?.cancel()
         autoplayAssertTask = Task { [weak self] in
-            for delayMs in [400, 900, 1800, 3000] {
-                try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+            var lastLoadedSeconds: Double = -1
+            var stagnantChecks = 0
+            let delaysMs: [UInt64] = [500, 1200, 2200, 3500, 5200, 7200, 9500]
+            for delayMs in delaysMs {
+                try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
                 guard let self, !Task.isCancelled else { return }
                 guard self.lastError == nil else { return }
-                let alreadyPlaying = self.player.rate != 0 || self.player.timeControlStatus == .playing
-                let isLegitimatelyBuffering = self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate
-                    && self.player.currentItem?.status != .failed
-                if alreadyPlaying || isLegitimatelyBuffering { return }
-                DebugLogger.logAsync(.warning, "Autoplay non confermato dopo \(delayMs)ms (rate=0, timeControlStatus=\(self.player.timeControlStatus.rawValue)): forzo ciclo pausa->play")
-                self.player.pause()
-                self.player.play()
+                if self.player.rate != 0 || self.player.timeControlStatus == .playing { return }
+
+                let loadedSeconds = self.totalLoadedSeconds()
+                let isProgressing = loadedSeconds > lastLoadedSeconds + 0.5
+                lastLoadedSeconds = loadedSeconds
+
+                if isProgressing {
+                    stagnantChecks = 0
+                    continue
+                }
+                stagnantChecks += 1
+                if stagnantChecks >= 2 {
+                    DebugLogger.logAsync(.warning, "Autoplay bloccato dopo \(delayMs)ms (buffer fermo a \(loadedSeconds)s, non in crescita): forzo ciclo pausa->play")
+                    self.player.pause()
+                    self.player.play()
+                    stagnantChecks = 0
+                }
             }
         }
     }
