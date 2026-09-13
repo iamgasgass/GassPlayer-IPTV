@@ -9,6 +9,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
     @Published var isBuffering = false
     @Published var reconnectAttempts = 0
     @Published var lastError: String?
+    @Published var exhaustedAllNativeOptions = false
     @Published var preferredBufferSeconds: Double = 5.0 {
         didSet { player.currentItem?.preferredForwardBufferDuration = preferredBufferSeconds }
     }
@@ -27,6 +28,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
     private let pathMonitorQueue = DispatchQueue(label: "com.gassplayer.network-monitor")
     private var isNetworkAvailable = true
     private var watchdogTask: Task<Void, Never>?
+    private var autoplayAssertTask: Task<Void, Never>?
     private var hasEverStartedPlaying = false
 
     private static let playableExtensions: Set<String> = ["mp4", "m4v", "mov", "ts", "m3u8"]
@@ -67,7 +69,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         updateNowPlayingInfo()
         startWatchdog()
 
-        player.play()
+        requestPlay()
     }
 
     private static func buildCandidateURLs(from url: URL) -> [URL] {
@@ -120,7 +122,6 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
                 } else if !self.isNetworkAvailable && available && self.lastError != nil {
                     DebugLogger.logAsync(.info, "Rete tornata disponibile, ritento la riproduzione")
                     self.resetAttempts()
-                    self.player.play()
                 }
                 self.isNetworkAvailable = available
             }
@@ -147,6 +148,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
                 if player.timeControlStatus == .playing {
                     self?.hasEverStartedPlaying = true
                     self?.watchdogTask?.cancel()
+                    self?.autoplayAssertTask?.cancel()
                 }
                 self?.updateNowPlayingInfo()
             }
@@ -158,7 +160,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
             guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
             if type == .ended {
-                Task { @MainActor in self?.player.play() }
+                Task { @MainActor in self?.requestPlay() }
             }
         }
     }
@@ -187,7 +189,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
                     guard let self else { return }
                     self.updateNowPlayingInfo()
                     if self.player.rate == 0, self.player.timeControlStatus != .playing {
-                        self.player.play()
+                        self.requestPlay()
                     }
                 }
             }
@@ -202,10 +204,33 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         attachItemObservers(to: newItem)
     }
 
+    private func requestPlay() {
+        player.play()
+        assertPlaybackReallyStarts()
+    }
+
+    private func assertPlaybackReallyStarts() {
+        autoplayAssertTask?.cancel()
+        autoplayAssertTask = Task { [weak self] in
+            for delayMs in [400, 900, 1800, 3000] {
+                try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+                guard let self, !Task.isCancelled else { return }
+                guard self.lastError == nil else { return }
+                let alreadyPlaying = self.player.rate != 0 || self.player.timeControlStatus == .playing
+                let isLegitimatelyBuffering = self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                    && self.player.currentItem?.status != .failed
+                if alreadyPlaying || isLegitimatelyBuffering { return }
+                DebugLogger.logAsync(.warning, "Autoplay non confermato dopo \(delayMs)ms (rate=0, timeControlStatus=\(self.player.timeControlStatus.rawValue)): forzo ciclo pausa->play")
+                self.player.pause()
+                self.player.play()
+            }
+        }
+    }
+
     private func configureRemoteCommandCenter() {
         let commandCenter = MPRemoteCommandCenter.shared()
         commandCenter.playCommand.addTarget { [weak self] _ in
-            self?.player.play()
+            self?.requestPlay()
             return .success
         }
         commandCenter.pauseCommand.addTarget { [weak self] _ in
@@ -219,7 +244,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
             if self.player.timeControlStatus == .paused {
-                self.player.play()
+                self.requestPlay()
             } else {
                 self.player.pause()
             }
@@ -244,7 +269,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
             candidateIndex += 1
             DebugLogger.logAsync(.warning, "URL fallita, provo estensione alternativa: \(currentURL.absoluteString)")
             replaceItem(with: currentURL)
-            player.play()
+            requestPlay()
             startWatchdog()
             return
         }
@@ -264,6 +289,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
             DebugLogger.logAsync(.error, message)
             lastError = message
             isBuffering = false
+            exhaustedAllNativeOptions = true
             return
         }
         reconnectAttempts += 1
@@ -272,7 +298,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.replaceItem(with: self.currentURL)
-            self.player.play()
+            self.requestPlay()
             self.isBuffering = false
             self.startWatchdog()
         }
@@ -284,11 +310,13 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         lastError = nil
         hasEverStartedPlaying = false
         replaceItem(with: originalURL)
+        requestPlay()
         startWatchdog()
     }
 
     deinit {
         watchdogTask?.cancel()
+        autoplayAssertTask?.cancel()
         if let stallObserver { NotificationCenter.default.removeObserver(stallObserver) }
         if let interruptionObserver { NotificationCenter.default.removeObserver(interruptionObserver) }
         statusObserver?.invalidate()

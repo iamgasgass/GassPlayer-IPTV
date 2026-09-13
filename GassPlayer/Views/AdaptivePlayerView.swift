@@ -2,33 +2,35 @@ import SwiftUI
 import KSPlayer
 
 /// Punto di ingresso unico per la riproduzione: sceglie automaticamente tra il
-/// player nativo AVFoundation (gia' verificato, con tutte le funzioni: lock
-/// screen, watchdog, fallback estensioni, controlli unificati) e KSPlayer
-/// (AVPlayer+FFmpeg) per i formati che AVFoundation non supporta nativamente
-/// su iOS (MKV, AVI, WMV, FLV, WebM).
+/// player nativo AVFoundation e KSPlayer (AVPlayer+FFmpeg) per i formati che
+/// AVFoundation non supporta nativamente su iOS (MKV, AVI, WMV, FLV, WebM).
 ///
-/// FIX BUILD: KSVideoPlayerView(url:) da solo non basta piu' nel branch
-/// main di KSPlayer (commit 7862a2b): l'init richiede anche 'options'.
-/// Usiamo KSOptions() di default (nessuna personalizzazione necessaria per
-/// il fallback, che e' un percorso a basso traffico rispetto al player
-/// nativo AVFoundation).
+/// FIX "alcuni titoli di serie TV non partono": il container reale di un
+/// episodio non e' sempre noto in anticipo — se "container_extension" manca
+/// nella risposta Xtream, il chiamante presume ".mp4", ma il file potrebbe
+/// essere MKV. In quel caso isNativelySupported(url:) lascia passare
+/// erroneamente il file al player nativo, che esaurisce i retry e si blocca
+/// su un errore statico senza mai provare l'alternativa che probabilmente
+/// funzionerebbe. Ora, quando SmartReconnectPlayer segnala che ha esaurito
+/// tutte le opzioni native (exhaustedAllNativeOptions), questa view passa
+/// automaticamente al fallback KSPlayer come ultima risorsa.
 struct AdaptivePlayerView: View {
     let url: URL
     let title: String
+    @State private var forceFallbackPlayer = false
 
     var body: some View {
-        if SmartReconnectPlayer.isNativelySupported(url: url) {
-            PlayerView(url: url, title: title)
-        } else {
+        if forceFallbackPlayer || !SmartReconnectPlayer.isNativelySupported(url: url) {
             KSPlayerFallbackView(url: url, title: title)
+        } else {
+            PlayerView(url: url, title: title, onExhaustedNativeOptions: {
+                DebugLogger.logAsync(.warning, "AdaptivePlayerView: opzioni native esaurite per \(url.absoluteString), passo a KSPlayer come ultima risorsa")
+                forceFallbackPlayer = true
+            })
         }
     }
 }
 
-/// Player di riserva per contenitori non supportati da AVFoundation.
-/// Usa i controlli nativi di KSPlayer (non quelli custom di PlayerView):
-/// integrazione isolata e a basso rischio, non entangled con la pipeline
-/// AVPlayer gia' verificata.
 private struct KSPlayerFallbackView: View {
     let url: URL
     let title: String

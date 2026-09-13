@@ -8,6 +8,7 @@ import Combine
 struct PlayerView: View {
     let url: URL
     let title: String
+    var onExhaustedNativeOptions: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var vpnManager: PersonalVPNManager
     @StateObject private var reconnectPlayer: SmartReconnectPlayer
@@ -26,8 +27,9 @@ struct PlayerView: View {
     @State private var hideControlsTask: Task<Void, Never>?
     @State private var isWaitingForVPN = false
 
-    init(url: URL, title: String) {
+    init(url: URL, title: String, onExhaustedNativeOptions: @escaping () -> Void = {}) {
         self.url = url; self.title = title
+        self.onExhaustedNativeOptions = onExhaustedNativeOptions
         _reconnectPlayer = StateObject(wrappedValue: SmartReconnectPlayer(url: url, title: title))
     }
 
@@ -36,9 +38,7 @@ struct PlayerView: View {
             RealPiPPlayerView(player: reconnectPlayer.player)
                 .ignoresSafeArea()
                 .task {
-                    reconnectPlayer.player.automaticallyWaitsToMinimizeStalling = false
                     await connectVPNIfNeededBeforePlayback()
-                    reconnectPlayer.player.play()
                     await loadMediaSelection()
                 }
                 .onAppear {
@@ -84,6 +84,11 @@ struct PlayerView: View {
                 }
             }
             Button("Annulla", role: .cancel) {}
+        }
+        .onChange(of: reconnectPlayer.exhaustedAllNativeOptions) { _, exhausted in
+            if exhausted {
+                onExhaustedNativeOptions()
+            }
         }
     }
 
@@ -215,7 +220,6 @@ struct PlayerView: View {
                     .foregroundStyle(.secondary)
                 Button("Riprova") {
                     reconnectPlayer.resetAttempts()
-                    reconnectPlayer.player.play()
                 }
                 .buttonStyle(.borderedProminent)
                 if !ExternalPlayer.available(for: url).isEmpty {
