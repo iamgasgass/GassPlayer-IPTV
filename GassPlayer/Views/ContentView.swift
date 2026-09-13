@@ -1,7 +1,9 @@
 import SwiftUI
 
 struct ContentView: View {
-    @EnvironmentObject private var accountStore: AccountStore
+    let activeCredentials: XtreamCredentials?
+    let activeSourceID: String?
+
     @StateObject private var catalog = XtreamCatalogStore()
     @StateObject private var settings = CatalogSettings.shared
     @State private var showSettings = false
@@ -9,37 +11,65 @@ struct ContentView: View {
 
     var body: some View {
         TabView {
-            ChannelsView(streamKind: .live, catalog: catalog)
-                .tabItem { Label("Live", systemImage: "tv") }
+            ChannelsView(
+                streamKind: .live,
+                catalog: catalog,
+                credentials: activeCredentials
+            )
+            .tabItem {
+                Label("Live", systemImage: "tv")
+            }
 
-            ChannelsView(streamKind: .movie, catalog: catalog)
-                .tabItem { Label("Film", systemImage: "film") }
+            ChannelsView(
+                streamKind: .movie,
+                catalog: catalog,
+                credentials: activeCredentials
+            )
+            .tabItem {
+                Label("Film", systemImage: "film")
+            }
 
-            ChannelsView(streamKind: .series, catalog: catalog)
-                .tabItem { Label("Serie", systemImage: "rectangle.stack") }
+            ChannelsView(
+                streamKind: .series,
+                catalog: catalog,
+                credentials: activeCredentials
+            )
+            .tabItem {
+                Label("Serie", systemImage: "rectangle.stack")
+            }
         }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button { showSearch = true } label: {
+                Button {
+                    showSearch = true
+                } label: {
                     Label("Cerca", systemImage: "magnifyingglass")
                 }
-                Button { showSettings = true } label: {
+
+                Button {
+                    showSettings = true
+                } label: {
                     Label("Impostazioni", systemImage: "gearshape")
                 }
             }
         }
-        .task(id: accountStore.activeAccount?.id) {
-            guard let credentials = accountStore.activeAccount?.xtreamCredentials else {
+        .task(id: activeSourceID) {
+            guard let activeCredentials else {
                 catalog.reset()
                 return
             }
-            await catalog.loadIfNeeded(credentials: credentials)
+
+            await catalog.loadIfNeeded(credentials: activeCredentials)
         }
         .sheet(isPresented: $showSearch) {
             GlobalSearchView(catalog: catalog)
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView(catalog: catalog, settings: settings)
+            SettingsView(
+                catalog: catalog,
+                settings: settings,
+                credentials: activeCredentials
+            )
         }
     }
 }
