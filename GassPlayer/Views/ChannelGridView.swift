@@ -1,13 +1,21 @@
 import SwiftUI
 
 struct ChannelGridView: View {
+    private enum CategorySelection: Hashable {
+        case all
+        case category(String)
+        case uncategorized
+    }
+
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
-    @EnvironmentObject var contentManagement: ContentManagementService
+
+    @EnvironmentObject private var contentManagement: ContentManagementService
     @State private var categories: [XtreamCategory] = []
-    @State private var streams: [XtreamStream] = []
+    @State private var allStreams: [XtreamStream] = []
+    @State private var filteredStreams: [XtreamStream] = []
     @State private var seriesItems: [XtreamSeriesItem] = []
-    @State private var selectedCategory: XtreamCategory?
+    @State private var selectedCategory: CategorySelection = .all
     @State private var selectedStream: XtreamStream?
     @State private var selectedSeries: XtreamSeriesItem?
     @State private var isLoading = false
@@ -22,56 +30,49 @@ struct ChannelGridView: View {
         NavigationStack {
             ScrollView {
                 categoryChips
+
                 if let errorMessage {
-                    Text(errorMessage).font(.caption).foregroundStyle(.secondary).padding()
-                }
-                if kind == .series {
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(seriesItems) { series in
-                            SeriesTile(series: series) {
-                                selectedSeries = series
-                            }
-                        }
-                    }
-                    .padding()
-                    .animation(.spring(response: 0.4, dampingFraction: 0.8), value: seriesItems.count)
+                    ContentUnavailableView(
+                        "Impossibile caricare i contenuti",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(errorMessage)
+                    )
+                    .padding(.vertical, 24)
+                } else if kind == .series {
+                    seriesGrid
+                } else if filteredStreams.isEmpty, !isLoading {
+                    ContentUnavailableView(
+                        "Nessun contenuto in questa sezione",
+                        systemImage: kind.systemImage,
+                        description: Text("Prova a scegliere un'altra categoria o aggiorna la sorgente.")
+                    )
+                    .padding(.vertical, 24)
                 } else {
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(streams) { stream in
-                            ChannelTile(
-                                stream: stream,
-                                kind: kind,
-                                isFavorite: contentManagement.isFavorite(id: "\(credentials.host)-\(kind.rawValue)-\(stream.streamId)"),
-                                currentProgram: kind == .live ? epgByStream[stream.streamId] : nil
-                            ) {
-                                selectedStream = stream
-                            } onFavoriteToggle: {
-                                contentManagement.toggleFavorite(id: "\(credentials.host)-\(kind.rawValue)-\(stream.streamId)", title: stream.name, kind: kind.rawValue)
-                            }
-                        }
-                    }
-                    .padding()
-                    .animation(.spring(response: 0.4, dampingFraction: 0.8), value: streams.count)
+                    streamsGrid
                 }
             }
-            .overlay { if isLoading { ProgressView() } }
             .navigationTitle(kind.displayName)
             .toolbar {
-                if #available(iOS 26.0, *) {
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
-                    ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
-                } else {
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { Task { await refresh() } } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .accessibilityLabel("Aggiorna catalogo")
                 }
             }
-            .task(id: kind) { await loadCategories() }
+            .overlay {
+                if isLoading {
+                    ProgressView("Caricamento catalogo…")
+                        .padding(16)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+            }
+            .task(id: kind) { await loadInitialContent(forceRefresh: false) }
             .fullScreenCover(item: $selectedStream) { stream in
                 if let url = service.streamURL(for: stream, kind: kind) {
                     AdaptivePlayerView(url: url, title: stream.name)
                 } else {
-                    Text("URL dello stream non valido.")
+                    ContentUnavailableView("URL non valido", systemImage: "exclamationmark.triangle")
                 }
             }
             .navigationDestination(item: $selectedSeries) { series in
@@ -80,27 +81,199 @@ struct ChannelGridView: View {
         }
     }
 
+    private var seriesGrid: some View {
+        LazyVGrid(columns: columns, spacing: 16) {
+            ForEach(seriesItems) { series in
+                SeriesTile(series: series) { selectedSeries = series }
+            }
+        }
+        .padding()
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: seriesItems.count)
+    }
+
+    private var streamsGrid: some View {
+        LazyVGrid(columns: columns, spacing: 16) {
+            ForEach(filteredStreams) { stream in
+                ChannelTile(
+                    stream: stream,
+                    kind: kind,
+                    isFavorite: contentManagement.isFavorite(id: favoriteID(for: stream)),
+                    currentProgram: kind == .live ? epgByStream[stream.streamId] : nil,
+                    onTap: { selectedStream = stream },
+                    onFavoriteToggle: {
+                        contentManagement.toggleFavorite(
+                            id: favoriteID(for: stream),
+                            title: stream.name,
+                            kind: kind.rawValue
+                        )
+                    }
+                )
+            }
+        }
+        .padding()
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: filteredStreams.count)
+    }
+
     private var categoryChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(categories) { category in
-                    let isSelected = selectedCategory?.id == category.id
-                    Button {
-                        withAnimation { selectedCategory = category }
-                        Task { await loadContent(for: category) }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: Self.categoryIcon(for: category.categoryName))
-                                .font(.caption)
-                            Text(category.categoryName)
-                        }
-                        .padding(.horizontal, 14).padding(.vertical, 8)
+                if kind != .series {
+                    categoryButton(title: "Tutti", icon: "square.grid.2x2", count: allStreams.count, selection: .all)
+                    if uncategorizedStreamsCount > 0 {
+                        categoryButton(title: "Senza categoria", icon: "tray", count: uncategorizedStreamsCount, selection: .uncategorized)
                     }
-                    .modifier(CategoryChipStyle(isSelected: isSelected))
+                }
+
+                ForEach(visibleCategories) { category in
+                    categoryButton(
+                        title: category.categoryName,
+                        icon: Self.categoryIcon(for: category.categoryName),
+                        count: categoryCount(for: category.categoryId),
+                        selection: .category(category.categoryId)
+                    )
                 }
             }
             .padding(.horizontal)
+            .padding(.vertical, 8)
         }
+    }
+
+    private var visibleCategories: [XtreamCategory] {
+        guard kind != .series else { return categories }
+        return categories.filter { categoryCount(for: $0.categoryId) > 0 }
+    }
+
+    private func categoryButton(title: String, icon: String, count: Int, selection: CategorySelection) -> some View {
+        Button {
+            selectedCategory = selection
+            applyFilter()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.caption)
+                Text(title).lineLimit(1)
+                Text("\(count)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected(selection) ? Color.white : Color.primary)
+        .background(isSelected(selection) ? Color.accentColor : Color.clear, in: Capsule())
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(Color.white.opacity(isSelected(selection) ? 0.20 : 0.12), lineWidth: 0.5)
+        }
+        .accessibilityLabel("\(title), \(count) contenuti")
+    }
+
+    private func isSelected(_ selection: CategorySelection) -> Bool {
+        selectedCategory == selection
+    }
+
+    private var uncategorizedStreamsCount: Int {
+        allStreams.filter(isUncategorized).count
+    }
+
+    private func categoryCount(for categoryID: String) -> Int {
+        allStreams.lazy.filter { normalizedCategoryID($0.categoryId) == categoryID }.count
+    }
+
+    private func isUncategorized(_ stream: XtreamStream) -> Bool {
+        guard let categoryID = normalizedCategoryID(stream.categoryId) else { return true }
+        return categoryID == "0" || !Set(categories.map(\.categoryId)).contains(categoryID)
+    }
+
+    private func normalizedCategoryID(_ categoryID: String?) -> String? {
+        guard let categoryID else { return nil }
+        let normalized = categoryID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private func applyFilter() {
+        switch selectedCategory {
+        case .all:
+            filteredStreams = allStreams
+        case .category(let categoryID):
+            filteredStreams = allStreams.filter { normalizedCategoryID($0.categoryId) == categoryID }
+        case .uncategorized:
+            filteredStreams = allStreams.filter(isUncategorized)
+        }
+
+        if kind == .live {
+            Task { await loadEPGForVisibleStreams() }
+        }
+    }
+
+    private func loadInitialContent(forceRefresh: Bool) async {
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+
+        do {
+            categories = try await repository.categories(kind: kind, forceRefresh: forceRefresh)
+
+            if kind == .series {
+                selectedCategory = .all
+                if let firstCategory = categories.first {
+                    seriesItems = try await service.fetchSeriesList(categoryId: firstCategory.categoryId)
+                } else {
+                    seriesItems = try await service.fetchSeriesList()
+                }
+                return
+            }
+
+            allStreams = try await repository.allStreams(kind: kind, forceRefresh: forceRefresh)
+            selectedCategory = .all
+            applyFilter()
+
+            if kind == .live {
+                await loadEPGForVisibleStreams()
+            }
+        } catch let error as XtreamError {
+            allStreams = []
+            filteredStreams = []
+            errorMessage = error.errorDescription
+        } catch {
+            allStreams = []
+            filteredStreams = []
+            errorMessage = "Errore imprevisto: \(error.localizedDescription)"
+        }
+    }
+
+    private func refresh() async {
+        await repository.invalidate(kind: kind)
+        await loadInitialContent(forceRefresh: true)
+    }
+
+    private func loadEPGForVisibleStreams() async {
+        let visibleStreams = Array(filteredStreams.prefix(24))
+        guard !visibleStreams.isEmpty else { return }
+
+        let epgService = EPGService(credentials: credentials)
+        let batches = stride(from: 0, to: visibleStreams.count, by: 4).map {
+            Array(visibleStreams[$0..<min($0 + 4, visibleStreams.count)])
+        }
+
+        for batch in batches {
+            await withTaskGroup(of: (Int, EPGProgram?).self) { group in
+                for stream in batch {
+                    group.addTask {
+                        let programs = try? await epgService.shortEPG(streamId: stream.streamId, limit: 2)
+                        return (stream.streamId, programs?.first)
+                    }
+                }
+                for await (streamID, program) in group {
+                    if let program { epgByStream[streamID] = program }
+                }
+            }
+        }
+    }
+
+    private func favoriteID(for stream: XtreamStream) -> String {
+        let normalizedHost = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return "\(normalizedHost)|\(credentials.username)|\(kind.rawValue)|\(stream.streamId)"
     }
 
     private static func categoryIcon(for name: String) -> String {
@@ -115,96 +288,6 @@ struct ChannelGridView: View {
         if normalized.contains("adult") || normalized.contains("+18") || normalized.contains("xxx") { return "eye.slash" }
         return "tv"
     }
-
-    private func loadCategories() async {
-        isLoading = true; errorMessage = nil
-        do {
-            categories = try await repository.categories(kind: kind)
-            if categories.isEmpty {
-                errorMessage = "Nessuna categoria \(kind.displayName) trovata su questo server."
-            } else if let first = categories.first {
-                selectedCategory = first
-                await loadContent(for: first)
-            }
-        } catch let error as XtreamError {
-            errorMessage = error.errorDescription
-        } catch {
-            errorMessage = "Errore imprevisto: \(error.localizedDescription)"
-        }
-        isLoading = false
-    }
-
-    private func loadContent(for category: XtreamCategory) async {
-        isLoading = true
-        if kind == .series {
-            do {
-                seriesItems = try await service.fetchSeriesList(categoryId: category.categoryId)
-                errorMessage = nil
-            } catch let error as XtreamError {
-                seriesItems = []
-                errorMessage = error.errorDescription
-            } catch {
-                seriesItems = []
-                errorMessage = "Errore imprevisto: \(error.localizedDescription)"
-            }
-            isLoading = false
-            return
-        }
-        do {
-            streams = try await repository.streams(kind: kind, categoryId: category.categoryId)
-            errorMessage = nil
-        } catch let error as XtreamError {
-            streams = []
-            errorMessage = error.errorDescription
-        } catch {
-            streams = []
-            errorMessage = "Errore imprevisto: \(error.localizedDescription)"
-        }
-        isLoading = false
-        if kind == .live { await loadEPGForVisibleStreams() }
-    }
-
-    private func loadEPGForVisibleStreams() async {
-        let epgService = EPGService(credentials: credentials)
-        let visibleStreams = Array(streams.prefix(24))
-        await withTaskGroup(of: (Int, EPGProgram?).self) { group in
-            for stream in visibleStreams {
-                group.addTask {
-                    let programs = (try? await epgService.shortEPG(streamId: stream.streamId, limit: 1)) ?? []
-                    return (stream.streamId, programs.first)
-                }
-            }
-            for await (streamId, program) in group {
-                if let program { epgByStream[streamId] = program }
-            }
-        }
-    }
-}
-
-private struct CategoryChipStyle: ViewModifier {
-    let isSelected: Bool
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            if isSelected {
-                content
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.capsule)
-                    .tint(Color.accentColor)
-            } else {
-                content
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.capsule)
-            }
-        } else {
-            content
-                .buttonStyle(.plain)
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay {
-                    if isSelected { Capsule().fill(Color.accentColor.opacity(0.85)) }
-                }
-        }
-    }
 }
 
 private struct ChannelTile: View {
@@ -216,41 +299,54 @@ private struct ChannelTile: View {
     let onFavoriteToggle: () -> Void
 
     var body: some View {
-        VStack(spacing: 4) {
-            ZStack(alignment: .topTrailing) {
-                if kind == .movie {
-                    TMDBEnrichedPoster(title: stream.name, isSeries: false, fallbackIconURL: stream.streamIcon, width: 100, height: 150)
-                } else {
-                    AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
-                        switch phase {
-                        case .success(let image): image.resizable().scaledToFit()
-                        default:
-                            RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial)
-                                .overlay(Image(systemName: "tv").foregroundStyle(.secondary))
+        Button(action: onTap) {
+            VStack(spacing: 6) {
+                ZStack(alignment: .topTrailing) {
+                    if kind == .movie {
+                        TMDBEnrichedPoster(title: stream.name, isSeries: false, fallbackIconURL: stream.streamIcon, width: 100, height: 150)
+                    } else {
+                        AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image.resizable().scaledToFit()
+                            default:
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(.ultraThinMaterial)
+                                    .overlay(Image(systemName: "tv").foregroundStyle(.secondary))
+                            }
                         }
+                        .frame(width: 100, height: 100)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
-                    .frame(width: 100, height: 100)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                    Button(action: onFavoriteToggle) {
+                        Image(systemName: isFavorite ? "star.fill" : "star")
+                            .font(.caption)
+                            .padding(7)
+                            .foregroundStyle(.yellow)
+                    }
+                    .buttonStyle(.plain)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .padding(4)
+                    .accessibilityLabel(isFavorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti")
                 }
 
-                Button(action: onFavoriteToggle) {
-                    Image(systemName: isFavorite ? "star.fill" : "star")
-                        .font(.caption)
-                        .padding(6)
-                        .foregroundStyle(.yellow)
+                Text(stream.name)
+                    .font(.caption)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+
+                if let currentProgram {
+                    Text(currentProgram.title)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                .background(.ultraThinMaterial, in: Circle())
-                .padding(4)
             }
-            Text(stream.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
-            if let currentProgram {
-                Text(currentProgram.title)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            .frame(maxWidth: .infinity, alignment: .top)
         }
-        .onTapGesture { onTap() }
+        .buttonStyle(.plain)
+        .accessibilityLabel(stream.name)
     }
 }
 
@@ -259,10 +355,12 @@ private struct SeriesTile: View {
     let onTap: () -> Void
 
     var body: some View {
-        VStack(spacing: 4) {
-            TMDBEnrichedPoster(title: series.name, isSeries: true, fallbackIconURL: series.cover, width: 100, height: 140)
-            Text(series.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
+        Button(action: onTap) {
+            VStack(spacing: 4) {
+                TMDBEnrichedPoster(title: series.name, isSeries: true, fallbackIconURL: series.cover, width: 100, height: 140)
+                Text(series.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
+            }
         }
-        .onTapGesture { onTap() }
+        .buttonStyle(.plain)
     }
 }
