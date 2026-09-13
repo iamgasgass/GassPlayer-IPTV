@@ -13,39 +13,43 @@ struct ContentView: View {
     @StateObject private var overlayState = NavigationOverlayState()
     @StateObject private var vpnManager = PersonalVPNManager()
 
-    private let tabs = [
-        GlassTabItem(title: "Live", systemImage: "tv"),
-        GlassTabItem(title: "Film", systemImage: "film"),
-        GlassTabItem(title: "Serie", systemImage: "rectangle.stack.fill"),
-        GlassTabItem(title: "Sorgenti", systemImage: "square.stack.3d.up"),
-        GlassTabItem(title: "VPN", systemImage: "lock.shield")
-    ]
-
     var body: some View {
         Group {
             if showSplash {
                 SplashScreenView { showSplash = false; loadActiveSource() }
             } else if credentials != nil || m3uPlaylistURL != nil {
-                ZStack(alignment: .bottom) {
-                    Color.black.ignoresSafeArea()
-
-                    Group {
-                        switch selectedTab {
-                        case 0:
-                            if let credentials { ChannelGridView(credentials: credentials, kind: .live) }
-                            else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .live) }
-                        case 1:
-                            if let credentials { ChannelGridView(credentials: credentials, kind: .movie) }
-                            else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .movie) }
-                        case 2:
-                            if let credentials { ChannelGridView(credentials: credentials, kind: .series) }
-                            else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .series) }
-                        case 3: SourcesView()
-                        default: PersonalVPNView()
-                        }
-                    }
-                    GlassTabBar(items: tabs, selection: $selectedTab)
+                // FIX DEFINITIVO ANIMAZIONE TAB BAR: l'esatta animazione a
+                // "blob liquido" vista in Files (Sfoglia/Condivisi/Recenti)
+                // e in iMessage NON e' riproducibile con le API pubbliche
+                // GlassEffectContainer/glassEffectID (verificato: quelle
+                // producono solo interpolazioni geometriche, non la vera
+                // fisica del vetro). Quell'effetto arriva da un framework
+                // privato esclusivo di UITabBar/UISegmentedControl. L'unico
+                // modo per ottenerlo davvero e' usare il TabView nativo di
+                // SwiftUI: ricompilando per iOS 26 adotta automaticamente
+                // Liquid Glass reale, zero codice custom necessario. Ho
+                // quindi eliminato l'intera GlassTabBar fatta a mano stanotte:
+                // era un tentativo, per quanto accurato, di ricostruire con
+                // strumenti pubblici un effetto riservato ai componenti di
+                // sistema.
+                TabView(selection: $selectedTab) {
+                    liveTab
+                        .tabItem { Label("Live", systemImage: "tv") }
+                        .tag(0)
+                    filmTab
+                        .tabItem { Label("Film", systemImage: "film") }
+                        .tag(1)
+                    serieTab
+                        .tabItem { Label("Serie", systemImage: "rectangle.stack.fill") }
+                        .tag(2)
+                    SourcesView()
+                        .tabItem { Label("Sorgenti", systemImage: "square.stack.3d.up") }
+                        .tag(3)
+                    PersonalVPNView()
+                        .tabItem { Label("VPN", systemImage: "lock.shield") }
+                        .tag(4)
                 }
+                .background(Color.black.ignoresSafeArea())
                 .sheet(isPresented: $overlayState.showSearch) { GlobalSearchView() }
                 .sheet(isPresented: $overlayState.showSettings) { SettingsView() }
                 .onChange(of: sourceManager.activeSourceId) { _, _ in loadActiveSource() }
@@ -73,6 +77,19 @@ struct ContentView: View {
         .environmentObject(m3uStore)
         .environmentObject(overlayState)
         .environmentObject(vpnManager)
+    }
+
+    @ViewBuilder private var liveTab: some View {
+        if let credentials { ChannelGridView(credentials: credentials, kind: .live) }
+        else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .live) }
+    }
+    @ViewBuilder private var filmTab: some View {
+        if let credentials { ChannelGridView(credentials: credentials, kind: .movie) }
+        else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .movie) }
+    }
+    @ViewBuilder private var serieTab: some View {
+        if let credentials { ChannelGridView(credentials: credentials, kind: .series) }
+        else if let m3uPlaylistURL { M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .series) }
     }
 
     private func loadActiveSource() {
