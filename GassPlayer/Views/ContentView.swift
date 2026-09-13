@@ -38,6 +38,16 @@ struct ContentView: View {
                 Label("Serie", systemImage: "rectangle.stack")
             }
         }
+        .task(id: activeSourceID) {
+            guard let activeCredentials else {
+                catalog.reset()
+                return
+            }
+
+            await catalog.loadIfNeeded(
+                credentials: activeCredentials
+            )
+        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
@@ -52,14 +62,6 @@ struct ContentView: View {
                     Label("Impostazioni", systemImage: "gearshape")
                 }
             }
-        }
-        .task(id: activeSourceID) {
-            guard let activeCredentials else {
-                catalog.reset()
-                return
-            }
-
-            await catalog.loadIfNeeded(credentials: activeCredentials)
         }
         .sheet(isPresented: $showSearch) {
             GlobalSearchView(catalog: catalog)
