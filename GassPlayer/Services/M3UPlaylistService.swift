@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
 actor M3UPlaylistService {
     func load(from url: URL) async throws -> [M3UChannel] {
@@ -19,96 +16,67 @@ actor M3UPlaylistService {
         var pendingGroup: String?
         var pendingTvgId: String?
         var pendingTvgType: String?
-        var pendingURL: URL?
 
         for rawLine in content.components(separatedBy: .newlines) {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("#EXTINF") {
-                // Do not split the metadata line by comma: movie titles frequently contain commas.
-                pendingTitle = Self.extractEXTINFTitle(from: line)
+                pendingTitle = line.components(separatedBy: ",").last
                 pendingLogo = extractAttribute("tvg-logo", from: line)
                 pendingGroup = extractAttribute("group-title", from: line)
                 pendingTvgId = extractAttribute("tvg-id", from: line)
                 pendingTvgType = extractAttribute("tvg-type", from: line)
             } else if !line.isEmpty, !line.hasPrefix("#"), let url = URL(string: line) {
-                pendingURL = url
-                let title = pendingTitle?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? url.lastPathComponent
+                let title = pendingTitle ?? url.lastPathComponent
                 channels.append(M3UChannel(
                     title: title,
-                    logoURL: pendingLogo?.nilIfEmpty,
-                    groupTitle: pendingGroup?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-                    tvgId: pendingTvgId?.nilIfEmpty,
+                    logoURL: pendingLogo,
+                    groupTitle: pendingGroup,
+                    tvgId: pendingTvgId,
                     streamURL: url,
-                    kind: Self.classifyKind(title: title, groupTitle: pendingGroup, tvgType: pendingTvgType, streamURL: pendingURL)
+                    kind: Self.classifyKind(title: title, groupTitle: pendingGroup, tvgType: pendingTvgType)
                 ))
-                pendingTitle = nil
-                pendingLogo = nil
-                pendingGroup = nil
-                pendingTvgId = nil
-                pendingTvgType = nil
-                pendingURL = nil
+                pendingTitle = nil; pendingLogo = nil; pendingGroup = nil; pendingTvgId = nil; pendingTvgType = nil
             }
         }
         return channels
     }
 
-    static func classifyKind(title: String, groupTitle: String?, tvgType: String?, streamURL: URL? = nil) -> XtreamStreamKind {
-        let type = tvgType?.normalizedSearch ?? ""
-        if type.containsAny(["movie", "vod", "film"]) { return .movie }
-        if type.containsAny(["series", "show", "serie"]) { return .series }
-        if type.containsAny(["live", "channel", "tv"]) { return .live }
-
-        let group = groupTitle?.normalizedSearch ?? ""
-        if group.containsAny(["vod", "movie", "movies", "film", "films", "cinema", "cinema", "4k movies"]) { return .movie }
-        if group.containsAny(["serie", "series", "tv show", "tv shows", "season", "stagioni", "episodi", "episode"]) { return .series }
-
-        let combined = "\(title) \(groupTitle ?? "")".normalizedSearch
-        // Common playlist conventions. This is deliberately conservative around Live TV.
-        if combined.range(of: #"\b(s\d{1,2}\s*e\d{1,2}|season\s*\d+|stagione\s*\d+|episodio\s*\d+)\b"#, options: .regularExpression) != nil {
-            return .series
+    /// Le playlist M3U non hanno un campo "tipo contenuto" standard come
+    /// Xtream Codes (`get_vod_streams` vs `get_live_streams`). Deduciamo
+    /// il tipo con priorità decrescente:
+    /// 1. `tvg-type` esplicito, se il provider lo fornisce (non standard
+    ///    ma usato da alcuni: "movie", "series", "live")
+    /// 2. parole chiave nel `group-title` (es. "VOD", "Movies", "Series")
+    /// 3. pattern SxxExx nel titolo (tipico delle serie TV: "S01E02")
+    /// 4. fallback: Live TV (comportamento sicuro, la maggior parte delle
+    ///    playlist pubbliche come Free-TV/IPTV sono canali live)
+    static func classifyKind(title: String, groupTitle: String?, tvgType: String?) -> XtreamStreamKind {
+        if let tvgType {
+            let normalized = tvgType.lowercased()
+            if normalized.contains("movie") || normalized.contains("vod") { return .movie }
+            if normalized.contains("series") || normalized.contains("show") { return .series }
+            if normalized.contains("live") || normalized.contains("channel") { return .live }
         }
 
-        // URL/path is often the only reliable signal in M3U exports.
-        let path = streamURL?.absoluteString.normalizedSearch ?? ""
-        if path.containsAny(["/movie/", "/movies/", "/vod/", "/film/"]) { return .movie }
-        if path.containsAny(["/series/", "/serie/", "/tvshows/", "/shows/"]) { return .series }
+        if let groupTitle {
+            let normalized = groupTitle.lowercased()
+            let movieKeywords = ["vod", "movie", "film", "cinema"]
+            let seriesKeywords = ["serie", "series", "tv show", "show"]
+            if movieKeywords.contains(where: normalized.contains) { return .movie }
+            if seriesKeywords.contains(where: normalized.contains) { return .series }
+        }
 
-        // File extensions are a useful secondary signal for VOD exports.
-        let ext = streamURL?.pathExtension.lowercased() ?? ""
-        if ["mp4", "mkv", "avi", "mov", "m4v", "webm"].contains(ext) { return .movie }
+        if title.range(of: #"S\d{1,2}E\d{1,2}"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return .series
+        }
 
         return .live
     }
 
-    private static func extractEXTINFTitle(from line: String) -> String? {
-        guard let comma = line.firstIndex(of: ",") else { return nil }
-        return String(line[line.index(after: comma)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private func extractAttribute(_ key: String, from line: String) -> String? {
-        // Accept both quoted and unquoted values used by real-world M3U generators.
-        if let range = line.range(of: "\(key)=\"", options: .caseInsensitive) {
-            let after = line[range.upperBound...]
-            if let end = after.firstIndex(of: "\"") { return String(after[..<end]) }
-        }
-        let pattern = "\\b#?" + key + "\\s*=\\s*([^\\s,]+)"
-        if let range = line.range(of: pattern, options: [.regularExpression, .caseInsensitive]) {
-            let match = String(line[range])
-            if let equal = match.firstIndex(of: "=") {
-                return String(match[match.index(after: equal)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-        }
-        return nil
+        guard let range = line.range(of: "\(key)=\"") else { return nil }
+        let after = line[range.upperBound...]
+        guard let end = after.firstIndex(of: "\"") else { return nil }
+        return String(after[..<end])
     }
-}
-
-private extension String {
-    var normalizedSearch: String {
-        folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-            .replacingOccurrences(of: "_", with: " ")
-            .replacingOccurrences(of: "-", with: " ")
-    }
-    func containsAny(_ values: [String]) -> Bool { values.contains { normalizedSearch.contains($0) } }
-    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

@@ -12,7 +12,6 @@ struct ContentView: View {
     @StateObject private var m3uStore = M3UPlaylistStore()
     @StateObject private var overlayState = NavigationOverlayState()
     @StateObject private var vpnManager = PersonalVPNManager()
-    @StateObject private var appSettings = AppSettings.shared
 
     var body: some View {
         Group {
@@ -78,7 +77,6 @@ struct ContentView: View {
         .environmentObject(m3uStore)
         .environmentObject(overlayState)
         .environmentObject(vpnManager)
-        .environmentObject(appSettings)
     }
 
     @ViewBuilder private var liveTab: some View {

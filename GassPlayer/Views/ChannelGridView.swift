@@ -13,8 +13,6 @@ struct ChannelGridView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var epgByStream: [Int: EPGProgram] = [:]
-    @State private var showEPG = false
-    @EnvironmentObject private var settings: AppSettings
 
     private var repository: CachedXtreamRepository { CachedXtreamRepository(credentials: credentials) }
     private var service: XtreamAPIService { XtreamAPIService(credentials: credentials) }
@@ -60,16 +58,7 @@ struct ChannelGridView: View {
             .navigationTitle(kind.displayName)
             .toolbar {
                 if #available(iOS 26.0, *) {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        if kind == .live && settings.epgEnabled {
-                            Button { showEPG = true } label: {
-                                Label("EPG", systemImage: "calendar.badge.clock")
-                            }
-                            .modifier(GlassToolbarButtonStyle())
-                        } else {
-                            GlassSearchButton()
-                        }
-                    }
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
                     ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
                     ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
                 } else {
@@ -78,9 +67,6 @@ struct ChannelGridView: View {
                 }
             }
             .task(id: kind) { await loadCategories() }
-            .sheet(isPresented: $showEPG) {
-                EPGTimelineView(credentials: credentials, streams: streams)
-            }
             .fullScreenCover(item: $selectedStream) { stream in
                 if let url = service.streamURL(for: stream, kind: kind) {
                     AdaptivePlayerView(url: url, title: stream.name)
@@ -133,12 +119,8 @@ struct ChannelGridView: View {
     private func loadCategories() async {
         isLoading = true; errorMessage = nil
         do {
-            let remoteCategories = try await repository.categories(kind: kind)
-            // Many Xtream panels return hundreds/thousands of VOD entries but the UI
-            // previously loaded only the first category. A synthetic "Tutti" bucket
-            // makes the complete catalogue reachable without forcing category hopping.
-            categories = [XtreamCategory(categoryId: "__all__", categoryName: "Tutti (\(remoteCategories.count) categorie)")] + remoteCategories
-            if remoteCategories.isEmpty {
+            categories = try await repository.categories(kind: kind)
+            if categories.isEmpty {
                 errorMessage = "Nessuna categoria \(kind.displayName) trovata su questo server."
             } else if let first = categories.first {
                 selectedCategory = first
@@ -156,7 +138,7 @@ struct ChannelGridView: View {
         isLoading = true
         if kind == .series {
             do {
-                seriesItems = try await service.fetchSeriesList(categoryId: category.categoryId == "__all__" ? nil : category.categoryId)
+                seriesItems = try await service.fetchSeriesList(categoryId: category.categoryId)
                 errorMessage = nil
             } catch let error as XtreamError {
                 seriesItems = []
@@ -169,7 +151,7 @@ struct ChannelGridView: View {
             return
         }
         do {
-            streams = try await repository.streams(kind: kind, categoryId: category.categoryId == "__all__" ? nil : category.categoryId)
+            streams = try await repository.streams(kind: kind, categoryId: category.categoryId)
             errorMessage = nil
         } catch let error as XtreamError {
             streams = []
@@ -179,12 +161,12 @@ struct ChannelGridView: View {
             errorMessage = "Errore imprevisto: \(error.localizedDescription)"
         }
         isLoading = false
-        if kind == .live && settings.epgEnabled && settings.showEPGOnLiveCards { await loadEPGForVisibleStreams() }
+        if kind == .live { await loadEPGForVisibleStreams() }
     }
 
     private func loadEPGForVisibleStreams() async {
         let epgService = EPGService(credentials: credentials)
-        let visibleStreams = Array(streams.prefix(100))
+        let visibleStreams = Array(streams.prefix(24))
         await withTaskGroup(of: (Int, EPGProgram?).self) { group in
             for stream in visibleStreams {
                 group.addTask {
@@ -195,16 +177,6 @@ struct ChannelGridView: View {
             for await (streamId, program) in group {
                 if let program { epgByStream[streamId] = program }
             }
-        }
-    }
-}
-
-private struct GlassToolbarButtonStyle: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.buttonStyle(.glass).buttonBorderShape(.circle)
-        } else {
-            content.buttonStyle(.plain).padding(7).background(.ultraThinMaterial, in: Circle())
         }
     }
 }
@@ -272,23 +244,10 @@ private struct ChannelTile: View {
             }
             Text(stream.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
             if let currentProgram {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(currentProgram.title)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    if currentProgram.end > currentProgram.start {
-                        GeometryReader { proxy in
-                            let progress = min(1, max(0, Date().timeIntervalSince(currentProgram.start) / currentProgram.end.timeIntervalSince(currentProgram.start)))
-                            Capsule().fill(.secondary.opacity(0.15))
-                                .overlay(alignment: .leading) {
-                                    Capsule().fill(.tint).frame(width: proxy.size.width * progress)
-                                }
-                        }
-                        .frame(height: 2)
-                    }
-                }
-                .frame(maxWidth: .infinity)
+                Text(currentProgram.title)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
         .onTapGesture { onTap() }

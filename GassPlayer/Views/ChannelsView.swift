@@ -77,8 +77,7 @@ struct ChannelsView: View {
 
     private func loadCategories() async {
         do {
-            let remoteCategories = try await service.fetchCategories(kind: kind)
-            categories = [XtreamCategory(categoryId: "__all__", categoryName: "Tutti (\(remoteCategories.count) categorie)")] + remoteCategories
+            categories = try await service.fetchCategories(kind: kind)
             errorMessage = nil
         } catch let error as XtreamError {
             errorMessage = error.errorDescription
@@ -90,7 +89,7 @@ struct ChannelsView: View {
     private func loadContent(for category: XtreamCategory) async {
         if kind == .series {
             do {
-                seriesItems = try await service.fetchSeriesList(categoryId: category.categoryId == "__all__" ? nil : category.categoryId)
+                seriesItems = try await service.fetchSeriesList(categoryId: category.categoryId)
                 errorMessage = nil
             } catch let error as XtreamError {
                 seriesItems = []
@@ -101,7 +100,7 @@ struct ChannelsView: View {
             }
         } else {
             do {
-                streams = try await service.fetchStreams(kind: kind, categoryId: category.categoryId == "__all__" ? nil : category.categoryId)
+                streams = try await service.fetchStreams(kind: kind, categoryId: category.categoryId)
                 errorMessage = nil
             } catch let error as XtreamError {
                 streams = []
