@@ -3,7 +3,7 @@ import SwiftUI
 struct GlassSearchButton: View {
     @EnvironmentObject var overlayState: NavigationOverlayState
     var body: some View {
-        GlassIconButton(systemImage: "magnifyingglass") {
+        GlassIconButton(systemImage: "magnifyingglass", isInSystemToolbar: true) {
             overlayState.showSearch = true
         }
     }
@@ -12,7 +12,7 @@ struct GlassSearchButton: View {
 struct GlassSettingsButton: View {
     @EnvironmentObject var overlayState: NavigationOverlayState
     var body: some View {
-        GlassIconButton(systemImage: "gearshape") {
+        GlassIconButton(systemImage: "gearshape", isInSystemToolbar: true) {
             overlayState.showSettings = true
         }
     }

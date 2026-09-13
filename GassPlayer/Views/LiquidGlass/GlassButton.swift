@@ -1,18 +1,21 @@
 import SwiftUI
 
 /// GlassIconButton: da .glassEffect() manuale a stile nativo .glass/.glassProminent.
-///
-/// FIX (stessa logica della tab bar): iOS 26 introduce buttonStyle(.glass) e
-/// .glassProminent, pensati apposta per i bottoni — gestiscono automaticamente
-/// stato pressed/hover, tinta, forma e la vera fisica del vetro dei
-/// controlli di sistema. Avvolgere manualmente un bottone in .glassEffect()
-/// (come facevo prima con GlassCircleModifier) da' un risultato visivamente
-/// simile ma perde le micro-interazioni native (feedback di pressione,
-/// adattamento automatico al contesto) che lo stile nativo fornisce gratis.
 struct GlassIconButton: View {
     let systemImage: String
     var tint: Color? = nil
     var size: CGFloat = 44
+    /// FIX "rettangolo scuro nei toggle Settings/Search": quando questo
+    /// bottone vive dentro una toolbar di sistema (NavigationStack
+    /// .toolbar), iOS 26 raggruppa automaticamente TUTTI gli elementi
+    /// della stessa posizione (es. .navigationBarTrailing) in un'unica
+    /// "pillola" di Liquid Glass condivisa. Applicare ANCHE
+    /// .buttonStyle(.glass) sul singolo bottone in quel contesto
+    /// sovrappone un SECONDO strato di vetro (circolare) dentro quello
+    /// gia' fornito dal sistema, visibile come un rettangolo/cerchio
+    /// leggermente piu' scuro. Con isInSystemToolbar = true si usa uno
+    /// stile "plain" e si lascia che sia il sistema a rendere il vetro.
+    var isInSystemToolbar: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -21,14 +24,19 @@ struct GlassIconButton: View {
                 .font(.system(size: size * 0.41, weight: .semibold))
                 .frame(width: size, height: size)
         }
-        .modifier(NativeOrLegacyGlassCircle(tint: tint))
+        .modifier(NativeOrLegacyGlassCircle(tint: tint, isInSystemToolbar: isInSystemToolbar))
     }
 }
 
 private struct NativeOrLegacyGlassCircle: ViewModifier {
     let tint: Color?
+    var isInSystemToolbar: Bool = false
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
+        if isInSystemToolbar {
+            content
+                .buttonStyle(.plain)
+                .foregroundStyle(tint ?? .primary)
+        } else if #available(iOS 26.0, *) {
             content
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)

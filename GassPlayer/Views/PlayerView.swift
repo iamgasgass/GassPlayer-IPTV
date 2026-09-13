@@ -37,6 +37,9 @@ struct PlayerView: View {
         ZStack {
             RealPiPPlayerView(player: reconnectPlayer.player)
                 .ignoresSafeArea()
+                .transaction { transaction in
+                    transaction.disablesAnimations = true
+                }
                 .task {
                     await connectVPNIfNeededBeforePlayback()
                     await loadMediaSelection()
