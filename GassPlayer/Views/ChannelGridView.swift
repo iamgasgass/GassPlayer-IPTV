@@ -21,8 +21,9 @@ struct ChannelGridView: View {
     }
 
     private var visibleStreams: [XtreamStream] {
-        let normalizedQuery = searchText
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = searchText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
 
         return catalog.streams(for: streamKind).filter { stream in
             let categoryMatches =
@@ -30,8 +31,8 @@ struct ChannelGridView: View {
                 stream.categoryId == selectedCategoryID
 
             let queryMatches =
-                normalizedQuery.isEmpty ||
-                stream.name.localizedCaseInsensitiveContains(normalizedQuery)
+                query.isEmpty ||
+                stream.name.localizedCaseInsensitiveContains(query)
 
             return categoryMatches && queryMatches
         }
@@ -94,12 +95,12 @@ struct ChannelGridView: View {
                 .disabled(refreshing || credentials == nil)
             }
         }
-        .onChange(of: categories.map(\.categoryId)) { _, availableIDs in
+        .onChange(of: categories.map(\.categoryId)) { _, categoryIDs in
             guard let selectedCategoryID else {
                 return
             }
 
-            if !availableIDs.contains(selectedCategoryID) {
+            if !categoryIDs.contains(selectedCategoryID) {
                 self.selectedCategoryID = nil
             }
         }
@@ -147,6 +148,33 @@ struct ChannelGridView: View {
     }
 }
 
+struct CatalogLoadOverlay: View {
+    let state: XtreamCatalogStore.LoadState
+    let isEmpty: Bool
+
+    var body: some View {
+        switch state {
+        case .loadingFromDisk:
+            ProgressView("Caricamento cache…")
+                .padding()
+
+        case .loadingFromNetwork where isEmpty:
+            ProgressView("Aggiornamento playlist…")
+                .padding()
+
+        case .failed(let message) where isEmpty:
+            ContentUnavailableView(
+                "Catalogo non disponibile",
+                systemImage: "wifi.exclamationmark",
+                description: Text(message)
+            )
+
+        default:
+            EmptyView()
+        }
+    }
+}
+
 private struct CategoryFilterButton: View {
     let title: String
     let isSelected: Bool
@@ -160,9 +188,6 @@ private struct CategoryFilterButton: View {
         .buttonStyle(.bordered)
         .tint(isSelected ? .accentColor : .secondary)
         .controlSize(.small)
-        .accessibilityAddTraits(
-            isSelected ? .isSelected : []
-        )
     }
 }
 
@@ -175,13 +200,43 @@ private struct StreamTile: View {
             alignment: .leading,
             spacing: 8
         ) {
-            artwork
+            AsyncImage(url: artworkURL) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+
+                case .empty:
+                    placeholder
+                        .overlay {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+
+                case .failure:
+                    placeholder
+
+                @unknown default:
+                    placeholder
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .aspectRatio(
+                16 / 9,
+                contentMode: .fit
+            )
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 10,
+                    style: .continuous
+                )
+            )
 
             Text(stream.name)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-                .multilineTextAlignment(.leading)
                 .frame(
                     maxWidth: .infinity,
                     alignment: .leading
@@ -195,60 +250,14 @@ private struct StreamTile: View {
                 style: .continuous
             )
         )
-        .contentShape(
-            RoundedRectangle(
-                cornerRadius: 14,
-                style: .continuous
-            )
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "\(stream.name), \(streamKind.title)"
-        )
-    }
-
-    @ViewBuilder
-    private var artwork: some View {
-        AsyncImage(url: artworkURL) { phase in
-            switch phase {
-            case .success(let image):
-                image
-                    .resizable()
-                    .scaledToFill()
-
-            case .empty:
-                placeholder
-                    .overlay {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-
-            case .failure:
-                placeholder
-
-            @unknown default:
-                placeholder
-            }
-        }
-        .frame(
-            maxWidth: .infinity
-        )
-        .aspectRatio(
-            16 / 9,
-            contentMode: .fit
-        )
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: 10,
-                style: .continuous
-            )
-        )
     }
 
     private var artworkURL: URL? {
         guard
             let rawURL = stream.streamIcon?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ),
             !rawURL.isEmpty
         else {
             return nil
