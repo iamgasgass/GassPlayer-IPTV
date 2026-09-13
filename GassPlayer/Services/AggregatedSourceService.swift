@@ -5,61 +5,90 @@ struct AggregatedChannelGroup: Identifiable {
     let sourceName: String
     let streams: [XtreamStream]
     let credentials: XtreamCredentials
-    /// Non nil se il recupero e' fallito parzialmente o del tutto per questa sorgente
-    /// (credenziali errate, rete irraggiungibile, ecc). Prima veniva ingoiato
-    /// silenziosamente e la sorgente scompariva senza spiegazione dai risultati.
     let error: String?
 }
 
 actor AggregatedSourceService {
-    /// Nota: pensato per kind == .live / .movie. Le serie hanno un modello di dati
-    /// diverso (XtreamSeriesItem, non XtreamStream) e vanno aggregate separatamente
-    /// se in futuro serve "tutte le serie insieme".
-    func fetchLiveChannels(from sources: [MediaSourceConfig], kind: XtreamStreamKind) async -> [AggregatedChannelGroup] {
+    /// Carica gruppi di stream da tutte le sorgenti Xtream abilitate.
+    /// Per VOD usa il catalogo completo globale e include anche i titoli senza
+    /// categoria dichiarata dal provider.
+    func fetchStreamGroups(
+        from sources: [MediaSourceConfig],
+        kind: XtreamStreamKind,
+        forceRefresh: Bool = false
+    ) async -> [AggregatedChannelGroup] {
+        guard kind != .series else { return [] }
         let xtreamSources = sources.filter { $0.type == .xtream && $0.isEnabled }
 
-        var results: [AggregatedChannelGroup] = []
-        await withTaskGroup(of: AggregatedChannelGroup?.self) { group in
+        let groups = await withTaskGroup(of: AggregatedChannelGroup.self, returning: [AggregatedChannelGroup].self) { group in
             for source in xtreamSources {
                 group.addTask {
-                    guard let username = source.username, let password = source.password else {
+                    guard let username = source.username?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !username.isEmpty,
+                          let password = source.password,
+                          !password.isEmpty else {
                         return AggregatedChannelGroup(
-                            id: source.id, sourceName: source.name, streams: [],
+                            id: source.id,
+                            sourceName: source.name,
+                            streams: [],
                             credentials: XtreamCredentials(host: source.host, username: "", password: ""),
                             error: "Username o password mancanti per questa sorgente."
                         )
                     }
+
                     let credentials = XtreamCredentials(host: source.host, username: username, password: password)
-                    let api = XtreamAPIService(credentials: credentials)
+                    let repository = CachedXtreamRepository(credentials: credentials)
 
-                    let categories: [XtreamCategory]
                     do {
-                        categories = try await api.fetchCategories(kind: kind)
+                        let streams = try await repository.allStreams(kind: kind, forceRefresh: forceRefresh)
+                        return AggregatedChannelGroup(
+                            id: source.id,
+                            sourceName: source.name,
+                            streams: streams,
+                            credentials: credentials,
+                            error: nil
+                        )
                     } catch let error as XtreamError {
-                        return AggregatedChannelGroup(id: source.id, sourceName: source.name, streams: [], credentials: credentials, error: error.errorDescription)
+                        return AggregatedChannelGroup(
+                            id: source.id,
+                            sourceName: source.name,
+                            streams: [],
+                            credentials: credentials,
+                            error: error.errorDescription
+                        )
                     } catch {
-                        return AggregatedChannelGroup(id: source.id, sourceName: source.name, streams: [], credentials: credentials, error: "Errore imprevisto: \(error.localizedDescription)")
+                        return AggregatedChannelGroup(
+                            id: source.id,
+                            sourceName: source.name,
+                            streams: [],
+                            credentials: credentials,
+                            error: "Errore imprevisto: \(error.localizedDescription)"
+                        )
                     }
-
-                    var allStreams: [XtreamStream] = []
-                    var partialErrors: [String] = []
-                    for category in categories {
-                        do {
-                            allStreams += try await api.fetchStreams(kind: kind, categoryId: category.categoryId)
-                        } catch let error as XtreamError {
-                            partialErrors.append(error.errorDescription ?? "errore sconosciuto")
-                        } catch {
-                            partialErrors.append(error.localizedDescription)
-                        }
-                    }
-                    let combinedError = partialErrors.isEmpty ? nil : "Alcune categorie non sono state caricate: \(Set(partialErrors).joined(separator: "; "))"
-                    return AggregatedChannelGroup(id: source.id, sourceName: source.name, streams: allStreams, credentials: credentials, error: combinedError)
                 }
             }
+
+            var results: [AggregatedChannelGroup] = []
             for await result in group {
-                if let result { results.append(result) }
+                results.append(result)
             }
+            return results
         }
-        return results.sorted { $0.sourceName < $1.sourceName }
+
+        return groups.sorted {
+            if $0.sourceName.localizedCaseInsensitiveCompare($1.sourceName) == .orderedSame {
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            return $0.sourceName.localizedCaseInsensitiveCompare($1.sourceName) == .orderedAscending
+        }
+    }
+
+    /// Compatibilità con i call-site esistenti. Il nome storico non cambia il
+    /// comportamento: per kind .movie usa comunque il catalogo VOD completo.
+    func fetchLiveChannels(
+        from sources: [MediaSourceConfig],
+        kind: XtreamStreamKind
+    ) async -> [AggregatedChannelGroup] {
+        await fetchStreamGroups(from: sources, kind: kind)
     }
 }
