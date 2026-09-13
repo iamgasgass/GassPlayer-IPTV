@@ -181,22 +181,32 @@ struct ChannelGridView: View {
     }
 }
 
-/// Stile nativo per i chip categoria (es. "Sky PrimaFila OnDemand"): stessa
-/// logica applicata a tab bar e bottoni icona. .glassProminent per il chip
-/// selezionato (piu' evidente, tinta accento), .glass per gli altri —
-/// entrambi stili di sistema iOS 26, non piu' un .glassEffect() manuale.
-/// Restano chip visivamente separati (non un unico gruppo fuso): non esiste
-/// un equivalente nativo di "raggruppamento" per una fila orizzontale
-/// scorrevole con conteggio variabile di elementi (ToolbarItemGroup esiste
-/// solo per le toolbar), quindi ogni chip e' stilizzato individualmente.
+/// Stile nativo per i chip categoria (es. "Sky PrimaFila OnDemand").
+///
+/// FIX: la versione precedente usava un ternario
+/// `.buttonStyle(isSelected ? .glassProminent : .glass)`. .glassProminent e
+/// .glass sono stili nativi reali di iOS 26, ma ciascuno ha un tipo opaco
+/// concreto DIVERSO sotto il cofano: un ternario richiede che i due rami
+/// abbiano lo stesso tipo statico PRIMA che @ViewBuilder entri in gioco, e
+/// qui non ce l'hanno — da cui l'errore del compilatore ("has no member",
+/// fuorviante: il vero problema e' l'inferenza di tipo del ternario, non un
+/// membro mancante). Un if/else dentro @ViewBuilder risolve il problema:
+/// ogni ramo viene avvolto automaticamente in _ConditionalContent, che
+/// gestisce tipi concreti diversi senza richiedere unificazione statica.
 private struct CategoryChipStyle: ViewModifier {
     let isSelected: Bool
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content
-                .buttonStyle(isSelected ? .glassProminent : .glass)
-                .buttonBorderShape(.capsule)
-                .tint(isSelected ? .accentColor : nil)
+            if isSelected {
+                content
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.capsule)
+                    .tint(Color.accentColor)
+            } else {
+                content
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
+            }
         } else {
             content
                 .buttonStyle(.plain)
