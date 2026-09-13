@@ -181,18 +181,6 @@ struct ChannelGridView: View {
     }
 }
 
-/// Stile nativo per i chip categoria (es. "Sky PrimaFila OnDemand").
-///
-/// FIX: la versione precedente usava un ternario
-/// `.buttonStyle(isSelected ? .glassProminent : .glass)`. .glassProminent e
-/// .glass sono stili nativi reali di iOS 26, ma ciascuno ha un tipo opaco
-/// concreto DIVERSO sotto il cofano: un ternario richiede che i due rami
-/// abbiano lo stesso tipo statico PRIMA che @ViewBuilder entri in gioco, e
-/// qui non ce l'hanno — da cui l'errore del compilatore ("has no member",
-/// fuorviante: il vero problema e' l'inferenza di tipo del ternario, non un
-/// membro mancante). Un if/else dentro @ViewBuilder risolve il problema:
-/// ogni ramo viene avvolto automaticamente in _ConditionalContent, che
-/// gestisce tipi concreti diversi senza richiedere unificazione statica.
 private struct CategoryChipStyle: ViewModifier {
     let isSelected: Bool
     func body(content: Content) -> some View {
@@ -231,7 +219,7 @@ private struct ChannelTile: View {
         VStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
                 if kind == .movie {
-                    TMDBEnrichedPoster(title: stream.name, isSeries: false, fallbackIconURL: stream.streamIcon, width: 100, height: 100)
+                    TMDBEnrichedPoster(title: stream.name, isSeries: false, fallbackIconURL: stream.streamIcon, width: 100, height: 150)
                 } else {
                     AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
                         switch phase {

@@ -42,7 +42,17 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         self.originalURL = url
         self.title = title
         self.candidateURLs = Self.buildCandidateURLs(from: url)
-        self.player = AVPlayer(url: url)
+        // FIX: prima si inizializzava AVPlayer con l'URL originale
+        // (`url`), ma candidateURLs[0] puo' essere un URL DIVERSO se
+        // l'estensione originale non e' tra quelle riproducibili native
+        // (es. l'URL non ha affatto estensione, o ne ha una non elencata in
+        // playableExtensions). In quel caso il player partiva su un URL,
+        // mentre tutta la logica di retry/candidati (currentURL,
+        // candidateIndex) ragionava su un URL diverso — un disallineamento
+        // che poteva far sembrare "non parte" un caso in cui in realta' si
+        // stava tentando l'URL sbagliato silenziosamente. Ora il player usa
+        // sempre candidateURLs[0], coerente con tutta la logica di retry.
+        self.player = AVPlayer(url: candidateURLs.first ?? url)
         super.init()
         Self.configureAudioSession()
 
@@ -63,6 +73,16 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         configureRemoteCommandCenter()
         updateNowPlayingInfo()
         startWatchdog()
+
+        // FIX AUTOPLAY: chiamata esplicita di sicurezza. AVPlayer(url:)
+        // crea l'AVPlayerItem in modo sincrono ma lo status parte da
+        // .unknown: normalmente basta chiamare play() una volta e AVPlayer
+        // "ricorda" l'intento e parte da solo appena l'item e' pronto, ma
+        // questa e' una garanzia aggiuntiva a costo zero (play() su un
+        // item gia' in riproduzione o non ancora pronto e' un no-op
+        // sicuro) per eliminare qualunque finestra di corsa residua tra
+        // creazione del player e la chiamata a play() fatta da PlayerView.
+        player.play()
     }
 
     private static func buildCandidateURLs(from url: URL) -> [URL] {
@@ -152,7 +172,13 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
                     self.handleFailure(lastKnownError: underlying)
                 }
             } else if item.status == .readyToPlay {
-                Task { @MainActor in self?.updateNowPlayingInfo() }
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.updateNowPlayingInfo()
+                    if self.player.rate == 0, self.player.timeControlStatus != .playing {
+                        self.player.play()
+                    }
+                }
             }
         }
 

@@ -36,5 +36,12 @@
     <string>Usati per i promemoria sui programmi EPG in arrivo.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Necessario per accedere a server IPTV Xtream Codes disponibili sulla rete locale.</string>
+    <key>LSApplicationQueriesSchemes</key>
+    <array>
+        <string>vlc</string>
+        <string>vlc-x-callback</string>
+        <string>infuse</string>
+        <string>outplayer</string>
+    </array>
 </dict>
 </plist>
