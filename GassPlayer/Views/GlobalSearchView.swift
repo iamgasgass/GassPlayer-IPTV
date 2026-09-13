@@ -1,98 +1,93 @@
 import SwiftUI
 
-private struct SelectedSeriesResult: Identifiable, Hashable {
-    let id = UUID()
-    let credentials: XtreamCredentials
-    let seriesId: Int
-    let name: String
-
-    static func == (lhs: SelectedSeriesResult, rhs: SelectedSeriesResult) -> Bool { lhs.id == rhs.id }
-    func hash(into hasher: inout Hasher) { hasher.combine(id) }
-}
-
-private struct SelectedPlayable: Identifiable, Hashable {
-    let id = UUID()
-    let url: URL
-    let title: String
-
-    static func == (lhs: SelectedPlayable, rhs: SelectedPlayable) -> Bool { lhs.id == rhs.id }
-    func hash(into hasher: inout Hasher) { hasher.combine(id) }
-}
-
 struct GlobalSearchView: View {
-    @EnvironmentObject var sourceManager: SourceManager
+    enum Result: Identifiable {
+        case live(XtreamStream)
+        case movie(XtreamStream)
+        case series(XtreamSeriesItem)
+
+        var id: String {
+            switch self {
+            case .live(let item): return "live-\(item.streamId)"
+            case .movie(let item): return "movie-\(item.streamId)"
+            case .series(let item): return "series-\(item.seriesId)"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .live(let item), .movie(let item): return item.name
+            case .series(let item): return item.name
+            }
+        }
+
+        var kind: String {
+            switch self {
+            case .live: return "Canale"
+            case .movie: return "Film"
+            case .series: return "Serie"
+            }
+        }
+
+        var artworkURL: URL? {
+            switch self {
+            case .live(let item), .movie(let item): return URL(string: item.streamIcon ?? "")
+            case .series(let item): return URL(string: item.cover ?? "")
+            }
+        }
+    }
+
+    @ObservedObject var catalog: XtreamCatalogStore
+    @Environment(\.dismiss) private var dismiss
     @State private var query = ""
-    @State private var results: [SearchResult] = []
-    @State private var isSearching = false
-    @State private var searchTask: Task<Void, Never>?
-    @State private var selectedPlayable: SelectedPlayable?
-    @State private var selectedSeries: SelectedSeriesResult?
+
+    private var results: [Result] {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count >= 2 else { return [] }
+        let live = catalog.liveStreams.filter { $0.name.localizedCaseInsensitiveContains(text) }.prefix(40).map(Result.live)
+        let movies = catalog.vodStreams.filter { $0.name.localizedCaseInsensitiveContains(text) }.prefix(40).map(Result.movie)
+        let series = catalog.seriesItems.filter { $0.name.localizedCaseInsensitiveContains(text) }.prefix(40).map(Result.series)
+        return live + movies + series
+    }
 
     var body: some View {
         NavigationStack {
-            List(results) { result in
-                Button {
-                    open(result)
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(result.title).font(.headline)
-                            Text(result.sourceName).font(.caption).foregroundStyle(.secondary)
+            Group {
+                if query.trimmingCharacters(in: .whitespacesAndNewlines).count < 2 {
+                    ContentUnavailableView(
+                        "Cerca nel catalogo",
+                        systemImage: "magnifyingglass",
+                        description: Text("Inserisci almeno due caratteri.")
+                    )
+                } else if results.isEmpty {
+                    ContentUnavailableView.search(text: query)
+                } else {
+                    List(results) { result in
+                        HStack(spacing: 12) {
+                            AsyncImage(url: result.artworkURL) { image in
+                                image.resizable().scaledToFill()
+                            } placeholder: {
+                                Color.secondary.opacity(0.15)
+                            }
+                            .frame(width: 54, height: 54)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(result.title).foregroundStyle(.primary)
+                                Text(result.kind).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
-                        Spacer()
-                        Image(systemName: result.kind.systemImage)
-                            .foregroundStyle(.secondary)
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
                     }
-                    .contentShape(Rectangle())
+                    .listStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
             .navigationTitle("Ricerca globale")
-            .searchable(text: $query, prompt: "Cerca in tutte le playlist")
-            .onChange(of: query) { _, newValue in scheduleSearch(newValue) }
-            .overlay { if isSearching { ProgressView() } }
-            .fullScreenCover(item: $selectedPlayable) { playable in
-                AdaptivePlayerView(url: playable.url, title: playable.title)
-            }
-            .navigationDestination(item: $selectedSeries) { selection in
-                SeriesEpisodesView(credentials: selection.credentials, seriesId: selection.seriesId, seriesName: selection.name)
+            .searchable(text: $query, prompt: "Canali, film e serie")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Chiudi") { dismiss() }
+                }
             }
         }
-    }
-
-    private func open(_ result: SearchResult) {
-        switch result.kind {
-        case .live, .movie:
-            let service = XtreamAPIService(credentials: result.credentials)
-            guard let url = service.streamURL(for: result.streamId, kind: result.kind) else {
-                DebugLogger.logAsync(.error, "GlobalSearchView: impossibile costruire l'URL per \(result.title)")
-                return
-            }
-            selectedPlayable = SelectedPlayable(url: url, title: result.title)
-        case .series:
-            selectedSeries = SelectedSeriesResult(credentials: result.credentials, seriesId: result.streamId, name: result.title)
-        }
-    }
-
-    private func scheduleSearch(_ text: String) {
-        searchTask?.cancel()
-        searchTask = Task {
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
-            await runSearch(text)
-        }
-    }
-
-    private func runSearch(_ text: String) async {
-        guard text.count >= 2 else { results = []; return }
-        isSearching = true
-        let service = GlobalSearchService(configs: sourceManager.sources)
-        let newResults = await service.search(text)
-        guard !Task.isCancelled else { return }
-        results = newResults
-        isSearching = false
     }
 }
