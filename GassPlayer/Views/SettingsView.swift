@@ -17,8 +17,11 @@ struct SettingsView: View {
                         "Aggiornamento automatico",
                         selection: $settings.refreshInterval
                     ) {
-                        ForEach(CatalogSettings.RefreshInterval.allCases) { interval in
-                            Text(interval.title).tag(interval)
+                        ForEach(
+                            CatalogSettings.RefreshInterval.allCases
+                        ) { interval in
+                            Text(interval.title)
+                                .tag(interval)
                         }
                     }
 
@@ -81,7 +84,9 @@ struct SettingsView: View {
             }
             .navigationTitle("Impostazioni")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(
+                    placement: .topBarTrailing
+                ) {
                     Button("Fine") {
                         dismiss()
                     }
@@ -106,7 +111,9 @@ struct SettingsView: View {
         }
 
         clearing = true
-        await catalog.clearPersistedCache(credentials: credentials)
+        await catalog.clearPersistedCache(
+            credentials: credentials
+        )
         clearing = false
     }
 }
