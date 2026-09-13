@@ -3,90 +3,139 @@ import SwiftUI
 struct M3UChannelsView: View {
     let playlistURL: URL
     let kind: XtreamStreamKind
+
     @EnvironmentObject var store: M3UPlaylistStore
     @EnvironmentObject var contentManagement: ContentManagementService
     @EnvironmentObject var appSettings: AppSettings
+
     @State private var showEPG = false
 
     var body: some View {
         NavigationStack {
-            Group {
-                if store.isLoading {
-                    VStack(spacing: 12) {
-                        ProgressView()
-                        Text("Caricamento playlist...")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+            content
+                .navigationTitle(kind.displayName)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        GlassSearchButton()
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let errorMessage = store.errorMessage {
-                    VStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle").font(.largeTitle).foregroundStyle(.orange)
-                        Text(errorMessage).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        Button("Riprova") { Task { await store.reload(url: playlistURL) } }
-                    }
-                    .padding()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if store.totalCount(for: kind) == 0 {
-                    VStack(spacing: 8) {
-                        Image(systemName: kind.systemImage).font(.largeTitle).foregroundStyle(.secondary)
-                        Text("Nessun contenuto \(kind.displayName) trovato in questa playlist.")
-                            .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    }
-                    .padding()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List {
-                        Section {
-                            ForEach(store.groups(for: kind), id: \.self) { group in
-                                NavigationLink {
-                                    M3UGroupChannelsView(
-                                        groupTitle: group,
-                                        channels: store.channels(for: kind, group: group),
-                                        sourceKey: playlistURL.absoluteString
-                                    )
-                                } label: {
-                                    HStack(spacing: 10) {
-                                        GroupIconView(
-                                            logoURL: store.groupIcon(for: kind, group: group),
-                                            fallbackSystemImage: kind.systemImage
-                                        )
-                                        Text(group)
-                                        Spacer()
-                                        Text("\(store.channels(for: kind, group: group).count)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        } header: {
-                            Text("\(kind.displayName) · \(store.totalCount(for: kind)) contenuti")
-                        }
-                    }
-                }
-            }
-            .navigationTitle(kind.displayName)
-            .toolbar {
-                if #available(iOS 26.0, *) {
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
+
                     if kind == .live && appSettings.epgEnabled {
                         ToolbarItem(placement: .navigationBarTrailing) {
-                            Button { showEPG = true } label: {
-                                Label("EPG", systemImage: "calendar.badge.clock")
+                            Button {
+                                showEPG = true
+                            } label: {
+                                Label(
+                                    "EPG",
+                                    systemImage: "calendar.badge.clock"
+                                )
                             }
                             .modifier(M3UGlassButtonStyle())
                         }
                     }
-                    ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
-                } else {
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        GlassSettingsButton()
+                    }
+                }
+                .task(id: playlistURL) {
+                    await store.loadIfNeeded(url: playlistURL)
+                }
+                .sheet(isPresented: $showEPG) {
+                    M3UEPGView(
+                        channels: store.allChannels(for: .live)
+                    )
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if store.isLoading {
+            VStack(spacing: 12) {
+                ProgressView()
+
+                Text("Caricamento playlist…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+        } else if let errorMessage = store.errorMessage {
+            VStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.largeTitle)
+                    .foregroundStyle(.orange)
+
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                Button("Riprova") {
+                    Task {
+                        await store.reload(url: playlistURL)
+                    }
                 }
             }
-            .task(id: playlistURL) { await store.loadIfNeeded(url: playlistURL) }
-            .sheet(isPresented: $showEPG) {
-                M3UEPGView(channels: store.channels(for: .live, group: "Tutti i contenuti"))
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+        } else if store.totalCount(for: kind) == 0 {
+            VStack(spacing: 8) {
+                Image(systemName: kind.systemImage)
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+
+                Text(
+                    "Nessun contenuto \(kind.displayName) trovato in questa playlist."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+        } else {
+            List {
+                Section {
+                    ForEach(store.groups(for: kind), id: \.self) { group in
+                        NavigationLink {
+                            M3UGroupChannelsView(
+                                groupTitle: group,
+                                channels: store.channels(
+                                    for: kind,
+                                    group: group
+                                ),
+                                sourceKey: playlistURL.absoluteString
+                            )
+                        } label: {
+                            HStack(spacing: 10) {
+                                GroupIconView(
+                                    logoURL: store.groupIcon(
+                                        for: kind,
+                                        group: group
+                                    ),
+                                    fallbackSystemImage: kind.systemImage
+                                )
+
+                                Text(group)
+
+                                Spacer()
+
+                                Text(
+                                    "\(store.channels(for: kind, group: group).count)"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text(
+                        "\(kind.displayName) · \(store.totalCount(for: kind)) contenuti"
+                    )
+                }
             }
         }
     }
@@ -98,19 +147,30 @@ private struct GroupIconView: View {
 
     var body: some View {
         Group {
-            if let logoURL, let url = URL(string: logoURL) {
+            if let logoURL,
+               let url = URL(string: logoURL)
+            {
                 AsyncImage(url: url) { phase in
                     switch phase {
-                    case .success(let image): image.resizable().scaledToFit()
-                    default: Image(systemName: fallbackSystemImage).foregroundStyle(.secondary)
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+
+                    default:
+                        Image(systemName: fallbackSystemImage)
+                            .foregroundStyle(.secondary)
                     }
                 }
             } else {
-                Image(systemName: fallbackSystemImage).foregroundStyle(.secondary)
+                Image(systemName: fallbackSystemImage)
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(width: 24, height: 24)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .clipShape(
+            RoundedRectangle(cornerRadius: 6)
+        )
     }
 }
 
@@ -118,10 +178,15 @@ struct M3UGroupChannelsView: View {
     let groupTitle: String
     let channels: [M3UChannel]
     let sourceKey: String
+
     @EnvironmentObject var contentManagement: ContentManagementService
     @EnvironmentObject var appSettings: AppSettings
-    @State private var showEPG = false
+
     @State private var selectedChannel: M3UChannel?
+
+    /// Fix build: la variabile era utilizzata nel List e nel task XMLTV,
+    /// ma non era mai stata dichiarata.
+    @State private var epgByID: [String: [EPGProgram]] = [:]
 
     var body: some View {
         List(channels) { channel in
@@ -133,20 +198,34 @@ struct M3UGroupChannelsView: View {
                         AsyncImage(url: URL(string: channel.logoURL ?? "")) { phase in
                             switch phase {
                             case .success(let image):
-                                image.resizable().scaledToFit()
+                                image
+                                    .resizable()
+                                    .scaledToFit()
+
                             default:
-                                Image(systemName: channel.kind.systemImage).foregroundStyle(.secondary)
+                                Image(systemName: channel.kind.systemImage)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                         .frame(width: 36, height: 36)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .clipShape(
+                            RoundedRectangle(cornerRadius: 8)
+                        )
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text(channel.title)
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
-                            if appSettings.epgEnabled, let id = channel.tvgId,
-                               let current = epgByID[id]?.first(where: { $0.start <= Date() && $0.end > Date() }) {
+
+                            if appSettings.epgEnabled,
+                               let id = channel.tvgId,
+                               let current = epgByID[id]?.first(
+                                   where: {
+                                       $0.start <= Date() &&
+                                       $0.end > Date()
+                                   }
+                               )
+                            {
                                 Text("● \(current.title)")
                                     .font(.caption2)
                                     .foregroundStyle(.tint)
@@ -160,34 +239,66 @@ struct M3UGroupChannelsView: View {
                 Spacer()
 
                 Button {
-                    contentManagement.toggleFavorite(id: "\(sourceKey)-\(channel.id)", title: channel.title, kind: channel.kind.rawValue)
+                    contentManagement.toggleFavorite(
+                        id: "\(sourceKey)-\(channel.id)",
+                        title: channel.title,
+                        kind: channel.kind.rawValue
+                    )
                 } label: {
-                    Image(systemName: contentManagement.isFavorite(id: "\(sourceKey)-\(channel.id)") ? "star.fill" : "star")
-                        .foregroundStyle(.yellow)
+                    Image(
+                        systemName: contentManagement.isFavorite(
+                            id: "\(sourceKey)-\(channel.id)"
+                        )
+                        ? "star.fill"
+                        : "star"
+                    )
+                    .foregroundStyle(.yellow)
                 }
                 .buttonStyle(.plain)
             }
         }
         .navigationTitle(groupTitle)
-        .task {
-            guard appSettings.epgEnabled,
-                  let url = URL(string: appSettings.epgURL),
-                  !appSettings.epgURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        .task(id: appSettings.epgURL) {
+            guard appSettings.epgEnabled else {
+                epgByID = [:]
+                return
+            }
+
+            let trimmedURL = appSettings.epgURL
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard let url = URL(string: trimmedURL),
+                  !trimmedURL.isEmpty
+            else {
+                epgByID = [:]
+                return
+            }
+
             epgByID = (try? await XMLTVEPGService().load(from: url)) ?? [:]
         }
         .fullScreenCover(item: $selectedChannel) { channel in
-            PlayerView(url: channel.streamURL, title: channel.title)
+            PlayerView(
+                url: channel.streamURL,
+                title: channel.title
+            )
         }
     }
 }
 
-
 private struct M3UGlassButtonStyle: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.buttonStyle(.glass).buttonBorderShape(.circle)
+            content
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
         } else {
-            content.buttonStyle(.plain).padding(7).background(.ultraThinMaterial, in: Circle())
+            content
+                .buttonStyle(.plain)
+                .padding(7)
+                .background(
+                    .ultraThinMaterial,
+                    in: Circle()
+                )
         }
     }
 }
