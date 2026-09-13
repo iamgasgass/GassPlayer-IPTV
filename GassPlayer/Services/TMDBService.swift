@@ -65,6 +65,14 @@ actor TMDBService {
 
     private let session: URLSession
     private var cache: [String: TMDBSearchResult] = [:]
+    /// FIX: le ricerche fallite (nessuna corrispondenza) non venivano mai
+    /// memorizzate — solo i successi. Con le celle di LazyVGrid che si
+    /// deallocano/ricreano scorrendo (didAttemptLookup e' uno @State per
+    /// istanza di view, azzerato ad ogni ricomparsa), un titolo senza
+    /// corrispondenza su TMDB veniva ri-interrogato in rete ad ogni singolo
+    /// passaggio in vista, inutilmente. Ora anche i "nessun risultato" sono
+    /// cachati (con un marcatore) cosi' non si ripete la richiesta a vuoto.
+    private var noResultCache: Set<String> = []
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -74,6 +82,21 @@ actor TMDBService {
         !(UserDefaults.standard.string(forKey: apiKeyDefaultsKey) ?? "").isEmpty
     }
 
+    /// FIX CRITICO: la versione precedente usava
+    /// `replacingOccurrences(of: word, ...)` senza confini di parola, quindi
+    /// cercava la SOTTOSTRINGA "HD", "SD", "ITA", "ENG", "SUB", "MULTI" ecc.
+    /// ovunque comparisse — anche dentro parole completamente diverse.
+    /// Risultato: titoli come "Suburbicon" (contiene "SUB"), "Vengeance"
+    /// (contiene "ENG"), "Italian Job" (contiene "ITA"), "Multiverse"
+    /// (contiene "MULTI") o "Wednesday" (contiene "SD") venivano storpiati
+    /// prima ancora di essere inviati a TMDB, la ricerca falliva o
+    /// restituiva un match sbagliato, e la card VOD restava con
+    /// l'icona placeholder o un poster errato — esattamente il sintomo "i
+    /// VOD non vengono visualizzati tutti correttamente", per un
+    /// sottoinsieme di titoli che sembrava casuale ma era deterministico.
+    /// Ora si usano confini di parola (\b) per rimuovere solo le
+    /// occorrenze isolate (es. "Movie HD 2024" -> "Movie 2024"), lasciando
+    /// intatte le parole che le contengono solo come sottostringa.
     private func cleanedQuery(from rawTitle: String) -> String {
         var cleaned = rawTitle
         for pattern in [#"\(.*?\)"#, #"\[.*?\]"#, #"\{.*?\}"#] {
@@ -81,7 +104,9 @@ actor TMDBService {
         }
         let noiseWords = ["4K", "HD", "FHD", "SD", "HDR", "ITA", "ENG", "SUB", "DUAL", "MULTI"]
         for word in noiseWords {
-            cleaned = cleaned.replacingOccurrences(of: word, with: "", options: [.caseInsensitive])
+            let escaped = NSRegularExpression.escapedPattern(for: word)
+            let pattern = "\\b\(escaped)\\b"
+            cleaned = cleaned.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
         }
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -93,6 +118,7 @@ actor TMDBService {
         let query = cleanedQuery(from: rawTitle)
         let cacheKey = "\(isSeries ? "tv" : "movie")::\(query.lowercased())"
         if let cached = cache[cacheKey] { return cached }
+        if noResultCache.contains(cacheKey) { throw TMDBError.noResults }
 
         let endpoint = isSeries ? "search/tv" : "search/movie"
         var components = URLComponents(string: "https://api.themoviedb.org/3/\(endpoint)")!
@@ -106,7 +132,10 @@ actor TMDBService {
         do {
             let (data, _) = try await session.data(from: url)
             let decoded = try JSONDecoder().decode(TMDBSearchResponse.self, from: data)
-            guard let first = decoded.results.first else { throw TMDBError.noResults }
+            guard let first = decoded.results.first else {
+                noResultCache.insert(cacheKey)
+                throw TMDBError.noResults
+            }
             cache[cacheKey] = first
             return first
         } catch let error as TMDBError {
