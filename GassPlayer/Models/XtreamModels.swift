@@ -55,7 +55,13 @@ extension XtreamStream: Decodable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        streamId = container.decodeFlexibleInt(forKey: .streamId) ?? 0
+        guard let decodedStreamId = container.decodeFlexibleInt(forKey: .streamId) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .streamId, in: container,
+                debugDescription: "stream_id assente o non interpretabile: la voce non e' riproducibile e viene scartata"
+            )
+        }
+        streamId = decodedStreamId
         name = (try? container.decode(String.self, forKey: .name)) ?? "Senza nome"
         streamIcon = try? container.decode(String.self, forKey: .streamIcon)
         categoryId = container.decodeFlexibleString(forKey: .categoryId)
