@@ -42,16 +42,6 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         self.originalURL = url
         self.title = title
         self.candidateURLs = Self.buildCandidateURLs(from: url)
-        // FIX: prima si inizializzava AVPlayer con l'URL originale
-        // (`url`), ma candidateURLs[0] puo' essere un URL DIVERSO se
-        // l'estensione originale non e' tra quelle riproducibili native
-        // (es. l'URL non ha affatto estensione, o ne ha una non elencata in
-        // playableExtensions). In quel caso il player partiva su un URL,
-        // mentre tutta la logica di retry/candidati (currentURL,
-        // candidateIndex) ragionava su un URL diverso — un disallineamento
-        // che poteva far sembrare "non parte" un caso in cui in realta' si
-        // stava tentando l'URL sbagliato silenziosamente. Ora il player usa
-        // sempre candidateURLs[0], coerente con tutta la logica di retry.
         self.player = AVPlayer(url: candidateURLs.first ?? url)
         super.init()
         Self.configureAudioSession()
@@ -68,20 +58,15 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
             lastError = "Questo contenuto e' in formato .\(originalExt.uppercased()), non supportato dal player nativo di iOS (AVPlayer supporta solo MP4, MOV e flussi HLS). Il fornitore dovrebbe offrire una versione MP4 di questo contenuto."
         }
 
-        observe()
+        observePlayerLevelEvents()
+        if let item = player.currentItem {
+            attachItemObservers(to: item)
+        }
         observeNetwork()
         configureRemoteCommandCenter()
         updateNowPlayingInfo()
         startWatchdog()
 
-        // FIX AUTOPLAY: chiamata esplicita di sicurezza. AVPlayer(url:)
-        // crea l'AVPlayerItem in modo sincrono ma lo status parte da
-        // .unknown: normalmente basta chiamare play() una volta e AVPlayer
-        // "ricorda" l'intento e parte da solo appena l'item e' pronto, ma
-        // questa e' una garanzia aggiuntiva a costo zero (play() su un
-        // item gia' in riproduzione o non ancora pronto e' un no-op
-        // sicuro) per eliminare qualunque finestra di corsa residua tra
-        // creazione del player e la chiamata a play() fatta da PlayerView.
         player.play()
     }
 
@@ -155,33 +140,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         }
     }
 
-    private func observe() {
-        stallObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemPlaybackStalled, object: player.currentItem, queue: nil
-        ) { [weak self] _ in
-            DebugLogger.logAsync(.warning, "Playback stalled")
-            Task { @MainActor in self?.handleStall() }
-        }
-
-        statusObserver = player.currentItem?.observe(\.status, options: [.new]) { [weak self] item, _ in
-            if item.status == .failed {
-                let underlying = item.error?.localizedDescription ?? "errore sconosciuto"
-                Task { @MainActor in
-                    guard let self else { return }
-                    DebugLogger.logAsync(.error, "AVPlayerItem fallito per URL \(self.currentURL.absoluteString): \(underlying)")
-                    self.handleFailure(lastKnownError: underlying)
-                }
-            } else if item.status == .readyToPlay {
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.updateNowPlayingInfo()
-                    if self.player.rate == 0, self.player.timeControlStatus != .playing {
-                        self.player.play()
-                    }
-                }
-            }
-        }
-
+    private func observePlayerLevelEvents() {
         timeControlObserver = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
             Task { @MainActor in
                 self?.isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
@@ -202,6 +161,45 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
                 Task { @MainActor in self?.player.play() }
             }
         }
+    }
+
+    private func attachItemObservers(to item: AVPlayerItem) {
+        statusObserver?.invalidate()
+        if let stallObserver { NotificationCenter.default.removeObserver(stallObserver) }
+
+        stallObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled, object: item, queue: nil
+        ) { [weak self] _ in
+            DebugLogger.logAsync(.warning, "Playback stalled")
+            Task { @MainActor in self?.handleStall() }
+        }
+
+        statusObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            if item.status == .failed {
+                let underlying = item.error?.localizedDescription ?? "errore sconosciuto"
+                Task { @MainActor in
+                    guard let self else { return }
+                    DebugLogger.logAsync(.error, "AVPlayerItem fallito per URL \(self.currentURL.absoluteString): \(underlying)")
+                    self.handleFailure(lastKnownError: underlying)
+                }
+            } else if item.status == .readyToPlay {
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.updateNowPlayingInfo()
+                    if self.player.rate == 0, self.player.timeControlStatus != .playing {
+                        self.player.play()
+                    }
+                }
+            }
+        }
+    }
+
+    private func replaceItem(with url: URL) {
+        let newItem = AVPlayerItem(url: url)
+        newItem.preferredForwardBufferDuration = preferredBufferSeconds
+        newItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        player.replaceCurrentItem(with: newItem)
+        attachItemObservers(to: newItem)
     }
 
     private func configureRemoteCommandCenter() {
@@ -245,10 +243,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         if candidateIndex < candidateURLs.count - 1 {
             candidateIndex += 1
             DebugLogger.logAsync(.warning, "URL fallita, provo estensione alternativa: \(currentURL.absoluteString)")
-            let newItem = AVPlayerItem(url: currentURL)
-            newItem.preferredForwardBufferDuration = preferredBufferSeconds
-            newItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
-            player.replaceCurrentItem(with: newItem)
+            replaceItem(with: currentURL)
             player.play()
             startWatchdog()
             return
@@ -276,10 +271,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         DebugLogger.logAsync(.warning, "Tentativo di riconnessione \(reconnectAttempts)/\(maxAttemptsPerCandidate) su \(currentURL.absoluteString)")
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
-            let newItem = AVPlayerItem(url: self.currentURL)
-            newItem.preferredForwardBufferDuration = self.preferredBufferSeconds
-            newItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
-            self.player.replaceCurrentItem(with: newItem)
+            self.replaceItem(with: self.currentURL)
             self.player.play()
             self.isBuffering = false
             self.startWatchdog()
@@ -291,10 +283,7 @@ final class SmartReconnectPlayer: NSObject, ObservableObject {
         candidateIndex = 0
         lastError = nil
         hasEverStartedPlaying = false
-        let newItem = AVPlayerItem(url: originalURL)
-        newItem.preferredForwardBufferDuration = preferredBufferSeconds
-        newItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
-        player.replaceCurrentItem(with: newItem)
+        replaceItem(with: originalURL)
         startWatchdog()
     }
 

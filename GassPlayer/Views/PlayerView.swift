@@ -293,13 +293,13 @@ struct ExternalPlayer: Identifiable {
         guard let encoded = streamURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return [] }
         var candidates: [ExternalPlayer] = []
 
-        if let vlcURL = URL(string: "vlc://\(streamURL.absoluteString)") {
+        if let vlcURL = URL(string: "vlc-x-callback://x-callback-url/stream?url=\(encoded)") {
             candidates.append(ExternalPlayer(displayName: "VLC", url: vlcURL))
         }
         if let infuseURL = URL(string: "infuse://x-callback-url/play?url=\(encoded)") {
             candidates.append(ExternalPlayer(displayName: "Infuse", url: infuseURL))
         }
-        if let outplayerURL = URL(string: "outplayer://\(streamURL.absoluteString)") {
+        if let outplayerURL = URL(string: "outplayer://\(encoded)") {
             candidates.append(ExternalPlayer(displayName: "Outplayer", url: outplayerURL))
         }
         return candidates.filter { UIApplication.shared.canOpenURL($0.url) }
