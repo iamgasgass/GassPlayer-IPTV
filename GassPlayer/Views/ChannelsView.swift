@@ -11,90 +11,111 @@ struct ChannelsView: View {
     var kind: XtreamStreamKind = .live
 
     @EnvironmentObject private var contentManagement: ContentManagementService
-    @State private var categories: [XtreamCategory] = []
-    @State private var allStreams: [XtreamStream] = []
-    @State private var streams: [XtreamStream] = []
-    @State private var seriesItems: [XtreamSeriesItem] = []
+    @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
+
     @State private var selectedCategory: CategorySelection = .all
     @State private var selectedStream: XtreamStream?
     @State private var selectedSeries: XtreamSeriesItem?
-    @State private var errorMessage: String?
-    @State private var isLoading = false
     @State private var showUnplayableAlert = false
 
-    private var repository: CachedXtreamRepository { CachedXtreamRepository(credentials: credentials) }
-    private var service: XtreamAPIService { XtreamAPIService(credentials: credentials) }
+    private var service: XtreamAPIService {
+        XtreamAPIService(credentials: credentials)
+    }
+
+    private var categories: [XtreamCategory] {
+        xtreamCatalog.categories(for: kind)
+    }
+
+    private var allStreams: [XtreamStream] {
+        xtreamCatalog.streams(for: kind)
+    }
+
+    private var displayedStreams: [XtreamStream] {
+        switch selectedCategory {
+        case .all:
+            return allStreams
+
+        case .category(let categoryID):
+            return allStreams.filter {
+                normalizedCategoryID($0.categoryId) == categoryID
+            }
+
+        case .uncategorized:
+            return allStreams.filter(isUncategorized)
+        }
+    }
+
+    private var visibleCategories: [XtreamCategory] {
+        guard kind != .series else { return categories }
+
+        return categories.filter {
+            categoryCount(for: $0.categoryId) > 0
+        }
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                if let errorMessage {
+                switch xtreamCatalog.state {
+                case .failed(let message):
                     Section {
-                        Label(errorMessage, systemImage: "exclamationmark.triangle")
+                        Label(message, systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+
+                default:
+                    EmptyView()
                 }
 
                 Section("Categorie") {
                     if kind != .series {
-                        categoryButton("Tutti (\(allStreams.count))", selection: .all)
+                        categoryButton(
+                            title: "Tutti",
+                            count: allStreams.count,
+                            selection: .all
+                        )
+
                         if uncategorizedCount > 0 {
-                            categoryButton("Senza categoria (\(uncategorizedCount))", selection: .uncategorized)
+                            categoryButton(
+                                title: "Senza categoria",
+                                count: uncategorizedCount,
+                                selection: .uncategorized
+                            )
                         }
                     }
 
                     ForEach(visibleCategories) { category in
                         categoryButton(
-                            "\(category.categoryName) (\(categoryCount(for: category.categoryId)))",
+                            title: category.categoryName,
+                            count: categoryCount(for: category.categoryId),
                             selection: .category(category.categoryId)
                         )
                     }
                 }
 
                 Section("Contenuti") {
-                    if isLoading {
-                        HStack { Spacer(); ProgressView(); Spacer() }
-                    } else if kind == .series {
-                        ForEach(seriesItems) { series in
-                            Button(series.name) { selectedSeries = series }
+                    if case .loading = xtreamCatalog.state,
+                       allStreams.isEmpty,
+                       kind != .series {
+                        HStack {
+                            Spacer()
+                            ProgressView("Caricamento playlist…")
+                            Spacer()
                         }
-                    } else if streams.isEmpty {
+                    } else if kind == .series {
+                        seriesContent
+                    } else if displayedStreams.isEmpty {
                         ContentUnavailableView(
                             "Nessun contenuto",
                             systemImage: kind.systemImage,
-                            description: Text("Non ci sono elementi nella categoria selezionata.")
+                            description: Text(
+                                "Non ci sono elementi nella categoria selezionata."
+                            )
                         )
                     } else {
-                        ForEach(streams) { stream in
-                            HStack(spacing: 12) {
-                                Button { selectStream(stream) } label: {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(stream.name).foregroundStyle(.primary)
-                                        if kind == .movie, let extensionName = stream.containerExtension, !extensionName.isEmpty {
-                                            Text(extensionName.uppercased())
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                }
-                                .buttonStyle(.plain)
-
-                                Spacer()
-
-                                Button {
-                                    contentManagement.toggleFavorite(
-                                        id: favoriteID(for: stream),
-                                        title: stream.name,
-                                        kind: kind.rawValue
-                                    )
-                                } label: {
-                                    Image(systemName: contentManagement.isFavorite(id: favoriteID(for: stream)) ? "star.fill" : "star")
-                                        .foregroundStyle(.yellow)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Preferito: \(stream.name)")
-                            }
+                        ForEach(displayedStreams) { stream in
+                            streamRow(stream)
                         }
                     }
                 }
@@ -102,42 +123,117 @@ struct ChannelsView: View {
             .navigationTitle(kind.displayName)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { Task { await refresh() } } label: {
+                    Button {
+                        Task {
+                            await xtreamCatalog.refresh(
+                                credentials: credentials,
+                                kind: kind
+                            )
+                        }
+                    } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .accessibilityLabel("Aggiorna catalogo")
+                    .accessibilityLabel("Aggiorna \(kind.displayName)")
                 }
             }
-            .task(id: kind) { await loadInitialContent(forceRefresh: false) }
             .fullScreenCover(item: $selectedStream) { stream in
                 if let url = service.streamURL(for: stream, kind: kind) {
                     AdaptivePlayerView(url: url, title: stream.name)
                 }
             }
             .navigationDestination(item: $selectedSeries) { series in
-                SeriesEpisodesView(credentials: credentials, seriesId: series.seriesId, seriesName: series.name)
+                SeriesEpisodesView(
+                    credentials: credentials,
+                    seriesId: series.seriesId,
+                    seriesName: series.name
+                )
             }
             .alert("Impossibile riprodurre", isPresented: $showUnplayableAlert) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("Non è stato possibile costruire un URL di streaming valido per questo contenuto.")
+                Text(
+                    "Non è stato possibile costruire un URL di streaming valido per questo contenuto."
+                )
             }
         }
     }
 
-    private var visibleCategories: [XtreamCategory] {
-        guard kind != .series else { return categories }
-        return categories.filter { categoryCount(for: $0.categoryId) > 0 }
+    @ViewBuilder
+    private var seriesContent: some View {
+        if xtreamCatalog.seriesItems.isEmpty {
+            ContentUnavailableView(
+                "Nessuna serie disponibile",
+                systemImage: "rectangle.stack.fill"
+            )
+        } else {
+            ForEach(xtreamCatalog.seriesItems) { series in
+                Button(series.name) {
+                    selectedSeries = series
+                }
+            }
+        }
     }
 
-    private func categoryButton(_ title: String, selection: CategorySelection) -> some View {
+    private func streamRow(_ stream: XtreamStream) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                selectStream(stream)
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(stream.name)
+                        .foregroundStyle(.primary)
+
+                    if kind == .movie,
+                       let extensionName = stream.containerExtension,
+                       !extensionName.isEmpty {
+                        Text(extensionName.uppercased())
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Button {
+                contentManagement.toggleFavorite(
+                    id: favoriteID(for: stream),
+                    title: stream.name,
+                    kind: kind.rawValue
+                )
+            } label: {
+                Image(
+                    systemName: contentManagement.isFavorite(
+                        id: favoriteID(for: stream)
+                    )
+                    ? "star.fill"
+                    : "star"
+                )
+                .foregroundStyle(.yellow)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Preferito: \(stream.name)")
+        }
+    }
+
+    private func categoryButton(
+        title: String,
+        count: Int,
+        selection: CategorySelection
+    ) -> some View {
         Button {
             selectedCategory = selection
-            applyFilter()
         } label: {
             HStack {
                 Text(title)
+
                 Spacer()
+
+                Text("\(count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+
                 if selectedCategory == selection {
                     Image(systemName: "checkmark")
                         .foregroundStyle(.tint)
@@ -146,71 +242,32 @@ struct ChannelsView: View {
         }
     }
 
-    private func loadInitialContent(forceRefresh: Bool) async {
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-
-        do {
-            categories = try await repository.categories(kind: kind, forceRefresh: forceRefresh)
-
-            if kind == .series {
-                selectedCategory = .all
-                if let category = categories.first {
-                    seriesItems = try await service.fetchSeriesList(categoryId: category.categoryId)
-                } else {
-                    seriesItems = try await service.fetchSeriesList()
-                }
-                return
-            }
-
-            allStreams = try await repository.allStreams(kind: kind, forceRefresh: forceRefresh)
-            selectedCategory = .all
-            applyFilter()
-        } catch let error as XtreamError {
-            allStreams = []
-            streams = []
-            errorMessage = error.errorDescription
-        } catch {
-            allStreams = []
-            streams = []
-            errorMessage = "Errore imprevisto: \(error.localizedDescription)"
-        }
-    }
-
-    private func applyFilter() {
-        switch selectedCategory {
-        case .all:
-            streams = allStreams
-        case .category(let categoryID):
-            streams = allStreams.filter { normalizedCategoryID($0.categoryId) == categoryID }
-        case .uncategorized:
-            streams = allStreams.filter(isUncategorized)
-        }
-    }
-
-    private func refresh() async {
-        await repository.invalidate(kind: kind)
-        await loadInitialContent(forceRefresh: true)
-    }
-
     private func selectStream(_ stream: XtreamStream) {
         guard service.streamURL(for: stream, kind: kind) != nil else {
             showUnplayableAlert = true
             return
         }
+
         selectedStream = stream
     }
 
     private func normalizedCategoryID(_ categoryID: String?) -> String? {
         guard let categoryID else { return nil }
-        let normalized = categoryID.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let normalized = categoryID.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
         return normalized.isEmpty ? nil : normalized
     }
 
     private func isUncategorized(_ stream: XtreamStream) -> Bool {
-        guard let categoryID = normalizedCategoryID(stream.categoryId) else { return true }
-        return categoryID == "0" || !Set(categories.map(\.categoryId)).contains(categoryID)
+        guard let categoryID = normalizedCategoryID(stream.categoryId) else {
+            return true
+        }
+
+        let knownCategoryIDs = Set(categories.map(\.categoryId))
+        return categoryID == "0" || !knownCategoryIDs.contains(categoryID)
     }
 
     private var uncategorizedCount: Int {
@@ -218,11 +275,16 @@ struct ChannelsView: View {
     }
 
     private func categoryCount(for categoryID: String) -> Int {
-        allStreams.lazy.filter { normalizedCategoryID($0.categoryId) == categoryID }.count
+        allStreams.lazy.filter {
+            normalizedCategoryID($0.categoryId) == categoryID
+        }.count
     }
 
     private func favoriteID(for stream: XtreamStream) -> String {
-        let normalizedHost = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return "\(normalizedHost)|\(credentials.username)|\(kind.rawValue)|\(stream.streamId)"
+        let host = credentials.host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        return "\(host)|\(credentials.username)|\(kind.rawValue)|\(stream.streamId)"
     }
 }
