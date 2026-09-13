@@ -6,24 +6,27 @@ struct GlassTabItem: Identifiable {
     let systemImage: String
 }
 
-/// Tab bar Liquid Glass — fix strutturale definitivo.
+/// Tab bar Liquid Glass — fix allineamento ombra (round 5).
 ///
-/// CAUSA REALE della corruzione (round 4, confermata da screenshot): un
-/// GlassEffectContainer e' documentato per contenere SOLO forme con
-/// .glassEffect() applicato — e' una pipeline di compositing dedicata al
-/// vetro, non uno ZStack generico. Le versioni precedenti mettevano anche
-/// l'HStack dei bottoni (contenuto normale: icone SF Symbols, testo) DENTRO
-/// il container insieme alle Capsule di vetro. Il container trattava quel
-/// contenuto come se fosse ulteriore vetro da compositare, risultando in
-/// icone/testo che sparivano lasciando solo la sfocatura rossastra visibile
-/// nello screenshot (il vetro che campiona i canali Rai sottostanti).
+/// CAUSA CONFERMATA DA SCREENSHOT: lo sfondo dell'intera barra e
+/// l'indicatore scorrevole erano DUE forme di vetro SOVRAPPOSTE
+/// (l'indicatore vive sempre dentro i confini dello sfondo) nello stesso
+/// GlassEffectContainer. Con due forme di vetro annidate/sovrapposte, il
+/// container applica una logica di fusione (pensata per forme ADIACENTI
+/// che si toccano, come in un segmented control) che sposta la geometria
+/// finale dell'indicatore rispetto a dove l'ho effettivamente posizionato
+/// con .offset() — da cui l'ombra visibilmente disallineata a sinistra
+/// nello screenshot, mentre il livello di testo/icona (fuori dal
+/// container, non toccato da questo problema) restava correttamente
+/// posizionato.
 ///
-/// Fix: SOLO le due Capsule (sfondo barra + indicatore) stanno dentro
-/// GlassEffectContainer. L'HStack di bottoni (icone + testo, contenuto
-/// completamente normale) sta FUORI, come livello successivo dello stesso
-/// ZStack esterno — quindi disegnato sopra, con la semantica standard di
-/// SwiftUI, garantita a prescindere da qualunque comportamento speciale
-/// del compositor di vetro.
+/// Fix: lo sfondo della barra torna a un materiale semplice, NON vetro
+/// (nessun bisogno di calcoli di fusione per uno sfondo statico pieno).
+/// L'UNICA forma di vetro rimasta e' l'indicatore, da solo nel proprio
+/// GlassEffectContainer: frame e offset si applicano al container stesso
+/// (una vista dimensionata in modo esplicito), esattamente con la stessa
+/// semantica di posizionamento della riga di bottoni — nessuna geometria
+/// nascosta di mezzo, nessuna ambiguita' possibile.
 struct GlassTabBar: View {
     let items: [GlassTabItem]
     @Binding var selection: Int
@@ -34,38 +37,31 @@ struct GlassTabBar: View {
     var body: some View {
         GeometryReader { geometry in
             let itemWidth = geometry.size.width / CGFloat(max(items.count, 1))
+            let indicatorWidth = itemWidth - indicatorInset * 2
+            let indicatorHeight = barHeight - 16
 
             ZStack(alignment: .leading) {
-                // Livello 1: SOLO vetro, dentro il container dedicato.
+                Capsule()
+                    .fill(.ultraThinMaterial)
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+
                 if #available(iOS 26.0, *) {
-                    GlassEffectContainer(spacing: 24) {
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.clear).glassEffect(.regular, in: .capsule)
-
-                            Capsule()
-                                .fill(.clear)
-                                .glassEffect(.regular.tint(.white.opacity(0.18)).interactive(), in: .capsule)
-                                .frame(width: itemWidth - indicatorInset * 2, height: barHeight - 16)
-                                .offset(x: itemWidth * CGFloat(selection) + indicatorInset, y: 8)
-                                .animation(.spring(response: 0.4, dampingFraction: 0.78), value: selection)
-                        }
+                    GlassEffectContainer(spacing: 0) {
+                        Capsule()
+                            .fill(.clear)
+                            .glassEffect(.regular.tint(.white.opacity(0.2)).interactive(), in: .capsule)
                     }
+                    .frame(width: indicatorWidth, height: indicatorHeight)
+                    .offset(x: itemWidth * CGFloat(selection) + indicatorInset, y: 8)
+                    .animation(.spring(response: 0.4, dampingFraction: 0.8), value: selection)
                 } else {
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(.ultraThinMaterial)
-                            .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
-
-                        Capsule()
-                            .fill(Color.white.opacity(0.14))
-                            .frame(width: itemWidth - indicatorInset * 2, height: barHeight - 16)
-                            .offset(x: itemWidth * CGFloat(selection) + indicatorInset, y: 8)
-                            .animation(.spring(response: 0.4, dampingFraction: 0.78), value: selection)
-                    }
+                    Capsule()
+                        .fill(Color.white.opacity(0.14))
+                        .frame(width: indicatorWidth, height: indicatorHeight)
+                        .offset(x: itemWidth * CGFloat(selection) + indicatorInset, y: 8)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: selection)
                 }
 
-                // Livello 2: contenuto NORMALE (icone/testo), fuori dal
-                // container, disegnato sopra come qualunque vista SwiftUI.
                 HStack(spacing: 0) {
                     ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                         tabButton(index, item)
@@ -82,7 +78,7 @@ struct GlassTabBar: View {
     private func tabButton(_ index: Int, _ item: GlassTabItem) -> some View {
         let isSelected = selection == index
         return Button {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.78)) { selection = index }
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { selection = index }
         } label: {
             VStack(spacing: 2) {
                 Image(systemName: item.systemImage).font(.system(size: 20, weight: .semibold))
