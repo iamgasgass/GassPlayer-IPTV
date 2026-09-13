@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Pulsante circolare traslucido realizzato soltanto con API SwiftUI pubbliche
-/// disponibili dal deployment target iOS 17 del progetto.
+/// Pulsante circolare traslucido compatibile con iOS 17+.
+/// `isInSystemToolbar` evita di disegnare un secondo sfondo quando la toolbar
+/// di sistema fornisce gia' il proprio contenitore visivo.
 struct GlassIconButton: View {
     let systemImage: String
     var tint: Color? = nil
@@ -37,28 +38,5 @@ private struct GlassCircleStyle: ViewModifier {
                 }
                 .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
         }
-    }
-}
-
-struct GlassPrimaryButton: View {
-    let title: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.headline)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-                .frame(minHeight: 44)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.primary)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
-        .accessibilityAddTraits(.isButton)
     }
 }
