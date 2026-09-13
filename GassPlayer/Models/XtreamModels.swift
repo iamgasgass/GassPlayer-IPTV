@@ -11,24 +11,41 @@ struct XtreamAuthResponse: Codable {
         let username: String
         let status: String
         let expDate: String?
-        enum CodingKeys: String, CodingKey { case username, status; case expDate = "exp_date" }
+
+        enum CodingKeys: String, CodingKey {
+            case username, status
+            case expDate = "exp_date"
+        }
     }
-    struct ServerInfo: Codable { let url: String; let port: String }
+
+    struct ServerInfo: Codable {
+        let url: String
+        let port: String
+    }
+
     let userInfo: UserInfo
     let serverInfo: ServerInfo
-    enum CodingKeys: String, CodingKey { case userInfo = "user_info"; case serverInfo = "server_info" }
+
+    enum CodingKeys: String, CodingKey {
+        case userInfo = "user_info"
+        case serverInfo = "server_info"
+    }
 }
 
-struct XtreamCategory: Identifiable, Hashable {
+struct XtreamCategory: Codable, Identifiable, Hashable {
     let categoryId: String
     let categoryName: String
-    var id: String { categoryId }
-}
 
-extension XtreamCategory: Decodable {
+    var id: String { categoryId }
+
     enum CodingKeys: String, CodingKey {
         case categoryId = "category_id"
         case categoryName = "category_name"
+    }
+
+    init(categoryId: String, categoryName: String) {
+        self.categoryId = categoryId
+        self.categoryName = categoryName
     }
 
     init(from decoder: Decoder) throws {
@@ -38,26 +55,43 @@ extension XtreamCategory: Decodable {
     }
 }
 
-struct XtreamStream: Identifiable, Hashable {
+struct XtreamStream: Codable, Identifiable, Hashable {
     let streamId: Int
     let name: String
     let streamIcon: String?
     let categoryId: String?
     let containerExtension: String?
-    var id: Int { streamId }
-}
 
-extension XtreamStream: Decodable {
+    var id: Int { streamId }
+
     enum CodingKeys: String, CodingKey {
-        case streamId = "stream_id", name, categoryId = "category_id"
-        case streamIcon = "stream_icon", containerExtension = "container_extension"
+        case streamId = "stream_id"
+        case name
+        case streamIcon = "stream_icon"
+        case categoryId = "category_id"
+        case containerExtension = "container_extension"
+    }
+
+    init(
+        streamId: Int,
+        name: String,
+        streamIcon: String? = nil,
+        categoryId: String? = nil,
+        containerExtension: String? = nil
+    ) {
+        self.streamId = streamId
+        self.name = name
+        self.streamIcon = streamIcon
+        self.categoryId = categoryId
+        self.containerExtension = containerExtension
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         guard let decodedStreamId = container.decodeFlexibleInt(forKey: .streamId) else {
             throw DecodingError.dataCorruptedError(
-                forKey: .streamId, in: container,
+                forKey: .streamId,
+                in: container,
                 debugDescription: "stream_id assente o non interpretabile: la voce non e' riproducibile e viene scartata"
             )
         }
@@ -69,12 +103,21 @@ extension XtreamStream: Decodable {
     }
 }
 
-enum XtreamStreamKind: String, CaseIterable, Identifiable {
-    case live, movie, series
+enum XtreamStreamKind: String, Codable, CaseIterable, Identifiable {
+    case live
+    case movie
+    case series
+
     var id: String { rawValue }
+
     var pathComponent: String {
-        switch self { case .live: return "live"; case .movie: return "movie"; case .series: return "series" }
+        switch self {
+        case .live: return "live"
+        case .movie: return "movie"
+        case .series: return "series"
+        }
     }
+
     var displayName: String {
         switch self {
         case .live: return "Live TV"
@@ -82,6 +125,7 @@ enum XtreamStreamKind: String, CaseIterable, Identifiable {
         case .series: return "Serie TV"
         }
     }
+
     var systemImage: String {
         switch self {
         case .live: return "tv"
@@ -89,8 +133,12 @@ enum XtreamStreamKind: String, CaseIterable, Identifiable {
         case .series: return "rectangle.stack.fill"
         }
     }
+
     var defaultExtension: String {
-        switch self { case .live: return "m3u8"; case .movie, .series: return "mp4" }
+        switch self {
+        case .live: return "m3u8"
+        case .movie, .series: return "mp4"
+        }
     }
 }
 
@@ -123,5 +171,74 @@ enum XtreamError: LocalizedError {
         case .noProviderVPN:
             return "Questo fornitore non pubblica una configurazione VPN propria."
         }
+    }
+}
+
+struct XtreamSeriesItem: Codable, Identifiable, Hashable {
+    let seriesId: Int
+    let name: String
+    let cover: String?
+    let categoryId: String?
+
+    var id: Int { seriesId }
+
+    enum CodingKeys: String, CodingKey {
+        case seriesId = "series_id"
+        case name
+        case cover
+        case categoryId = "category_id"
+    }
+
+    init(seriesId: Int, name: String, cover: String? = nil, categoryId: String? = nil) {
+        self.seriesId = seriesId
+        self.name = name
+        self.cover = cover
+        self.categoryId = categoryId
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        seriesId = container.decodeFlexibleInt(forKey: .seriesId) ?? 0
+        name = (try? container.decode(String.self, forKey: .name)) ?? "Serie senza nome"
+        cover = try? container.decode(String.self, forKey: .cover)
+        categoryId = container.decodeFlexibleString(forKey: .categoryId)
+    }
+}
+
+struct XtreamSeriesInfo: Decodable {
+    struct Episode: Identifiable, Hashable {
+        let id: String
+        let episodeNum: Int
+        let title: String
+        let containerExtension: String?
+
+        var streamId: Int { Int(id) ?? 0 }
+    }
+
+    let episodes: [String: [Episode]]
+
+    var sortedSeasonNumbers: [Int] {
+        episodes.keys.compactMap(Int.init).sorted()
+    }
+
+    func episodes(forSeason season: Int) -> [Episode] {
+        (episodes[String(season)] ?? []).sorted { $0.episodeNum < $1.episodeNum }
+    }
+}
+
+extension XtreamSeriesInfo.Episode: Decodable {
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case episodeNum = "episode_num"
+        case containerExtension = "container_extension"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = container.decodeFlexibleString(forKey: .id) ?? UUID().uuidString
+        episodeNum = container.decodeFlexibleInt(forKey: .episodeNum) ?? 0
+        title = (try? container.decode(String.self, forKey: .title)) ?? "Episodio senza titolo"
+        containerExtension = try? container.decode(String.self, forKey: .containerExtension)
     }
 }
