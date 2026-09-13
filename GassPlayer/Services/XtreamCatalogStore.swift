@@ -2,10 +2,8 @@ import Foundation
 import Combine
 
 /// Catalogo Xtream condiviso per l'intera sessione applicativa.
-///
-/// Il catalogo viene caricato una sola volta per la coppia host + username
-/// della sorgente attiva. Live, VOD e Serie leggono gli stessi dati in memoria:
-/// cambiare tab o categoria non causa ulteriori richieste di playlist.
+/// Live, VOD e Serie leggono gli stessi dati in memoria: cambiare tab o
+/// categoria non avvia ulteriori download della playlist.
 @MainActor
 final class XtreamCatalogStore: ObservableObject {
     enum LoadState: Equatable {
@@ -31,8 +29,6 @@ final class XtreamCatalogStore: ObservableObject {
         loadingTask?.cancel()
     }
 
-    /// Esegue un bootstrap soltanto se la sorgente attiva non e' ancora stata
-    /// caricata in questa sessione. Chiamate simultanee attendono lo stesso task.
     func loadIfNeeded(credentials: XtreamCredentials) async {
         let fingerprint = Self.sourceFingerprint(credentials)
 
@@ -46,7 +42,12 @@ final class XtreamCatalogStore: ObservableObject {
         }
 
         let task = Task { [weak self] in
-            await self?.loadAll(credentials: credentials, fingerprint: fingerprint, forceRefresh: false)
+            guard let self else { return }
+            await self.loadAll(
+                credentials: credentials,
+                fingerprint: fingerprint,
+                forceRefresh: false
+            )
         }
 
         loadingTask = task
@@ -54,8 +55,6 @@ final class XtreamCatalogStore: ObservableObject {
         loadingTask = nil
     }
 
-    /// Refresh esplicito. Se `kind` e' nil aggiorna l'intero catalogo;
-    /// altrimenti ricarica soltanto la sezione richiesta.
     func refresh(
         credentials: XtreamCredentials,
         kind: XtreamStreamKind? = nil
@@ -79,7 +78,7 @@ final class XtreamCatalogStore: ObservableObject {
                     credentials: credentials,
                     forceRefresh: true
                 )
-                if self.state != .failed("") {
+                if case .loaded = self.state {
                     self.loadedSourceFingerprint = fingerprint
                 }
             } else {
@@ -96,8 +95,6 @@ final class XtreamCatalogStore: ObservableObject {
         loadingTask = nil
     }
 
-    /// Cancella il catalogo in memoria. Va chiamato soltanto in caso di logout,
-    /// rimozione sorgente o cambio effettivo di host/username.
     func reset() {
         loadingTask?.cancel()
         loadingTask = nil
@@ -113,23 +110,17 @@ final class XtreamCatalogStore: ObservableObject {
 
     func categories(for kind: XtreamStreamKind) -> [XtreamCategory] {
         switch kind {
-        case .live:
-            return liveCategories
-        case .movie:
-            return vodCategories
-        case .series:
-            return seriesCategories
+        case .live: return liveCategories
+        case .movie: return vodCategories
+        case .series: return seriesCategories
         }
     }
 
     func streams(for kind: XtreamStreamKind) -> [XtreamStream] {
         switch kind {
-        case .live:
-            return liveStreams
-        case .movie:
-            return vodStreams
-        case .series:
-            return []
+        case .live: return liveStreams
+        case .movie: return vodStreams
+        case .series: return []
         }
     }
 
@@ -267,8 +258,6 @@ final class XtreamCatalogStore: ObservableObject {
         }
     }
 
-    /// Il fingerprint separa account diversi sullo stesso host senza includere
-    /// la password nella memoria applicativa, nella cache o nei log.
     private static func sourceFingerprint(_ credentials: XtreamCredentials) -> String {
         let host = credentials.host
             .trimmingCharacters(in: .whitespacesAndNewlines)
