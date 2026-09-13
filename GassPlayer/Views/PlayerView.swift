@@ -15,6 +15,7 @@ struct PlayerView: View {
     @State private var showBufferSettings = false
     @State private var showQualityPicker = false
     @State private var showExternalPlayerMenu = false
+    @State private var showSpeedPicker = false
     @State private var brightnessOverlay: Double = 0
     @State private var volumeOverlay: Double = 0
     @State private var showBrightnessHUD = false
@@ -28,48 +29,55 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        ZStack {
-            KSPlayerContainerView(controller: controller)
-                .ignoresSafeArea()
-                .transaction { transaction in
-                    transaction.disablesAnimations = true
-                }
-                .onAppear { scheduleAutoHide() }
-                .onDisappear {
-                    controller.layer.pause()
-                    hideControlsTask?.cancel()
-                }
-                .simultaneousGesture(dragGesture)
-                .onTapGesture { toggleControls() }
-
-            if showBrightnessHUD { hudOverlay(icon: "sun.max.fill", value: brightnessOverlay) }
-            if showVolumeHUD { hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay) }
-
-            if let errorMessage = controller.lastError {
-                playbackErrorBanner(errorMessage)
-            } else if showControls {
-                unifiedControlSurface
+        KSPlayerContainerView(controller: controller)
+            .ignoresSafeArea()
+            .onAppear { scheduleAutoHide() }
+            .onDisappear {
+                controller.layer.pause()
+                hideControlsTask?.cancel()
             }
-        }
-        .statusBarHidden(true)
-        .sheet(isPresented: $showTrackPicker) {
-            TrackPickerView(controller: controller)
-        }
-        .sheet(isPresented: $showBufferSettings) {
-            BufferSettingsView(controller: controller)
-        }
-        .sheet(isPresented: $showQualityPicker) {
-            QualityPickerView(controller: controller)
-        }
-        .confirmationDialog("Apri con un altro player", isPresented: $showExternalPlayerMenu, titleVisibility: .visible) {
-            ForEach(ExternalPlayer.available(for: url)) { player in
-                Button(player.displayName) {
-                    controller.layer.pause()
-                    UIApplication.shared.open(player.url)
+            .simultaneousGesture(dragGesture)
+            .onTapGesture { toggleControls() }
+            .overlay {
+                if showBrightnessHUD { hudOverlay(icon: "sun.max.fill", value: brightnessOverlay) }
+            }
+            .overlay {
+                if showVolumeHUD { hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay) }
+            }
+            .overlay {
+                if let errorMessage = controller.lastError {
+                    playbackErrorBanner(errorMessage)
+                } else if showControls {
+                    unifiedControlSurface
                 }
             }
-            Button("Annulla", role: .cancel) {}
-        }
+            .statusBarHidden(true)
+            .sheet(isPresented: $showTrackPicker) {
+                TrackPickerView(controller: controller)
+            }
+            .sheet(isPresented: $showBufferSettings) {
+                BufferSettingsView(controller: controller)
+            }
+            .sheet(isPresented: $showQualityPicker) {
+                QualityPickerView(controller: controller)
+            }
+            .confirmationDialog("Apri con un altro player", isPresented: $showExternalPlayerMenu, titleVisibility: .visible) {
+                ForEach(ExternalPlayer.available(for: url)) { player in
+                    Button(player.displayName) {
+                        controller.layer.pause()
+                        UIApplication.shared.open(player.url)
+                    }
+                }
+                Button("Annulla", role: .cancel) {}
+            }
+            .confirmationDialog("Velocità di riproduzione", isPresented: $showSpeedPicker, titleVisibility: .visible) {
+                ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { rate in
+                    Button(rate == 1.0 ? "Normale (1x)" : "\(rate.formatted())x") {
+                        controller.setPlaybackRate(Float(rate))
+                    }
+                }
+                Button("Annulla", role: .cancel) {}
+            }
     }
 
     private var unifiedControlSurface: some View {
@@ -90,6 +98,7 @@ struct PlayerView: View {
                     GlassIconButton(systemImage: "pip.enter") { controller.isPipActive = true }
                 }
                 GlassIconButton(systemImage: "arrow.up.forward.app") { showExternalPlayerMenu = true }
+                GlassIconButton(systemImage: "speedometer") { showSpeedPicker = true }
                 GlassIconButton(systemImage: "4k.tv") { showQualityPicker = true }
                 GlassIconButton(systemImage: "dial.low") { showBufferSettings = true }
                 GlassIconButton(systemImage: "text.bubble") { showTrackPicker = true }
@@ -107,9 +116,17 @@ struct PlayerView: View {
                     ), in: 0...max(controller.duration, 1))
                     .tint(.white)
                 }
-                HStack {
-                    GlassIconButton(systemImage: controller.isPlaying ? "pause.fill" : "play.fill", size: 40) {
+                HStack(spacing: 28) {
+                    GlassIconButton(systemImage: "gobackward.15", size: 34) {
+                        controller.skip(by: -15)
+                        scheduleAutoHide()
+                    }
+                    GlassIconButton(systemImage: controller.isPlaying ? "pause.fill" : "play.fill", size: 44) {
                         controller.togglePlayPause()
+                        scheduleAutoHide()
+                    }
+                    GlassIconButton(systemImage: "goforward.15", size: 34) {
+                        controller.skip(by: 15)
                         scheduleAutoHide()
                     }
                     if controller.duration > 0 {

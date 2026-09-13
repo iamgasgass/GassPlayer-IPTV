@@ -3,17 +3,11 @@ import AVFoundation
 import MediaPlayer
 import KSPlayer
 
-/// Sostituisce SmartReconnectPlayer: bridge SwiftUI-friendly per KSPlayerLayer,
-/// che ora e' l'UNICO motore di riproduzione dell'app (AVPlayer nativo +
-/// FFmpeg via KSMEPlayer, con switch automatico incorporato nella libreria
-/// stessa — vedi KSPlayerLayer.finish(player:error:), che ritenta con
+/// Bridge SwiftUI-friendly per KSPlayerLayer, ora l'UNICO motore di
+/// riproduzione dell'app (AVPlayer nativo + FFmpeg via KSMEPlayer, con
+/// switch automatico incorporato nella libreria stessa — vedi
+/// KSPlayerLayer.finish(player:error:), che ritenta con
 /// KSOptions.secondPlayerType su qualunque errore prima di arrendersi).
-///
-/// Rispetto alla vecchia coppia SmartReconnectPlayer/AdaptivePlayerView,
-/// questo elimina tutta la logica manuale di candidateURLs/estensioni
-/// indovinate: KSPlayerLayer prova gia' da solo un secondo motore su
-/// qualunque fallimento, quale che sia la causa (estensione sbagliata,
-/// contenitore non supportato dal primo motore, errore di rete transitorio).
 @MainActor
 final class KSPlaybackController: NSObject, ObservableObject {
     @Published var state: KSPlayerState = .initialized
@@ -65,6 +59,15 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     func seek(to time: TimeInterval) {
         layer.seek(time: time, autoPlay: true) { _ in }
+    }
+
+    func skip(by interval: TimeInterval) {
+        let target = max(0, min(layer.player.currentPlaybackTime + interval, duration > 0 ? duration : .greatestFiniteMagnitude))
+        seek(to: target)
+    }
+
+    func setPlaybackRate(_ rate: Float) {
+        layer.player.playbackRate = rate
     }
 
     func resetAttempts() {
