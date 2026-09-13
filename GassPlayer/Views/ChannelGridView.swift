@@ -7,6 +7,39 @@ struct ChannelGridView: View {
         case uncategorized
     }
 
+    private struct CatalogIndex {
+        let categoryIDs: Set<String>
+        let streamsByCategory: [String: [XtreamStream]]
+        let uncategorizedStreams: [XtreamStream]
+
+        init(streams: [XtreamStream], categories: [XtreamCategory]) {
+            categoryIDs = Set(categories.map(\.categoryId))
+
+            var grouped: [String: [XtreamStream]] = [:]
+            var uncategorized: [XtreamStream] = []
+            grouped.reserveCapacity(categories.count)
+
+            for stream in streams {
+                guard let categoryID = Self.normalizedCategoryID(stream.categoryId),
+                      categoryID != "0",
+                      categoryIDs.contains(categoryID) else {
+                    uncategorized.append(stream)
+                    continue
+                }
+                grouped[categoryID, default: []].append(stream)
+            }
+
+            streamsByCategory = grouped
+            uncategorizedStreams = uncategorized
+        }
+
+        static func normalizedCategoryID(_ categoryID: String?) -> String? {
+            guard let categoryID else { return nil }
+            let normalized = categoryID.trimmingCharacters(in: .whitespacesAndNewlines)
+            return normalized.isEmpty ? nil : normalized
+        }
+    }
+
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
 
@@ -17,6 +50,8 @@ struct ChannelGridView: View {
     @State private var selectedStream: XtreamStream?
     @State private var selectedSeries: XtreamSeriesItem?
     @State private var epgByStream: [Int: EPGProgram] = [:]
+    @State private var catalogIndex = CatalogIndex(streams: [], categories: [])
+    @State private var indexedSourceIdentity = ""
 
     private var service: XtreamAPIService {
         XtreamAPIService(credentials: credentials)
@@ -43,9 +78,9 @@ struct ChannelGridView: View {
         case .all:
             return allStreams
         case .category(let categoryID):
-            return allStreams.filter { normalizedCategoryID($0.categoryId) == categoryID }
+            return catalogIndex.streamsByCategory[categoryID] ?? []
         case .uncategorized:
-            return allStreams.filter { isUncategorized($0.categoryId) }
+            return catalogIndex.uncategorizedStreams
         }
     }
 
@@ -54,25 +89,41 @@ struct ChannelGridView: View {
         case .all:
             return allSeries
         case .category(let categoryID):
-            return allSeries.filter { normalizedCategoryID($0.categoryId) == categoryID }
+            return allSeries.filter { CatalogIndex.normalizedCategoryID($0.categoryId) == categoryID }
         case .uncategorized:
-            return allSeries.filter { isUncategorized($0.categoryId) }
+            let categoryIDs = Set(categories.map(\.categoryId))
+            return allSeries.filter {
+                guard let categoryID = CatalogIndex.normalizedCategoryID($0.categoryId) else { return true }
+                return categoryID == "0" || !categoryIDs.contains(categoryID)
+            }
         }
     }
 
     private var visibleCategories: [XtreamCategory] {
-        categories.filter { categoryCount(for: $0.categoryId) > 0 }
+        if kind == .series {
+            return categories.filter { categoryCount(for: $0.categoryId) > 0 }
+        }
+        return categories.filter { !(catalogIndex.streamsByCategory[$0.categoryId] ?? []).isEmpty }
     }
 
     private var uncategorizedCount: Int {
-        if kind == .series {
-            return allSeries.lazy.filter { isUncategorized($0.categoryId) }.count
-        }
-        return allStreams.lazy.filter { isUncategorized($0.categoryId) }.count
+        kind == .series ? seriesUncategorizedCount : catalogIndex.uncategorizedStreams.count
+    }
+
+    private var seriesUncategorizedCount: Int {
+        let categoryIDs = Set(categories.map(\.categoryId))
+        return allSeries.lazy.filter {
+            guard let categoryID = CatalogIndex.normalizedCategoryID($0.categoryId) else { return true }
+            return categoryID == "0" || !categoryIDs.contains(categoryID)
+        }.count
     }
 
     private var itemCount: Int {
         kind == .series ? allSeries.count : allStreams.count
+    }
+
+    private var sourceIdentity: String {
+        "\(kind.rawValue)|\(categories.map(\.categoryId).joined(separator: ","))|\(allStreams.count)"
     }
 
     private var isInitialLoadPending: Bool {
@@ -116,7 +167,8 @@ struct ChannelGridView: View {
                     .accessibilityLabel("Aggiorna \(kind.displayName)")
                 }
             }
-            .task(id: "\(kind.rawValue)-\(itemCount)") {
+            .task(id: sourceIdentity) {
+                rebuildIndexIfNeeded()
                 guard kind == .live else { return }
                 await loadEPGForVisibleStreams()
             }
@@ -172,7 +224,7 @@ struct ChannelGridView: View {
                 }
             }
             .padding()
-            .animation(.snappy(duration: 0.22), value: selectedCategory)
+            .transaction { $0.animation = .snappy(duration: 0.18) }
         }
     }
 
@@ -196,7 +248,7 @@ struct ChannelGridView: View {
             }
         }
         .padding()
-        .animation(.snappy(duration: 0.22), value: selectedCategory)
+        .transaction { $0.animation = nil }
     }
 
     private var loadingView: some View {
@@ -212,20 +264,10 @@ struct ChannelGridView: View {
     private var categoryChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                categoryButton(
-                    title: "Tutti",
-                    icon: "square.grid.2x2",
-                    count: itemCount,
-                    selection: .all
-                )
+                categoryButton(title: "Tutti", icon: "square.grid.2x2", count: itemCount, selection: .all)
 
                 if uncategorizedCount > 0 {
-                    categoryButton(
-                        title: "Senza categoria",
-                        icon: "tray",
-                        count: uncategorizedCount,
-                        selection: .uncategorized
-                    )
+                    categoryButton(title: "Senza categoria", icon: "tray", count: uncategorizedCount, selection: .uncategorized)
                 }
 
                 ForEach(visibleCategories) { category in
@@ -246,7 +288,7 @@ struct ChannelGridView: View {
         let isSelected = selectedCategory == selection
         return Button {
             guard selectedCategory != selection else { return }
-            withAnimation(.snappy(duration: 0.22, extraBounce: 0.08)) {
+            withAnimation(.snappy(duration: 0.16, extraBounce: 0.04)) {
                 selectedCategory = selection
             }
         } label: {
@@ -271,23 +313,17 @@ struct ChannelGridView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    private func normalizedCategoryID(_ categoryID: String?) -> String? {
-        guard let categoryID else { return nil }
-        let normalized = categoryID.trimmingCharacters(in: .whitespacesAndNewlines)
-        return normalized.isEmpty ? nil : normalized
-    }
-
-    private func isUncategorized(_ categoryID: String?) -> Bool {
-        guard let categoryID = normalizedCategoryID(categoryID) else { return true }
-        let knownCategoryIDs = Set(categories.map(\.categoryId))
-        return categoryID == "0" || !knownCategoryIDs.contains(categoryID)
+    private func rebuildIndexIfNeeded() {
+        guard kind != .series, indexedSourceIdentity != sourceIdentity else { return }
+        catalogIndex = CatalogIndex(streams: allStreams, categories: categories)
+        indexedSourceIdentity = sourceIdentity
     }
 
     private func categoryCount(for categoryID: String) -> Int {
         if kind == .series {
-            return allSeries.lazy.filter { normalizedCategoryID($0.categoryId) == categoryID }.count
+            return allSeries.lazy.filter { CatalogIndex.normalizedCategoryID($0.categoryId) == categoryID }.count
         }
-        return allStreams.lazy.filter { normalizedCategoryID($0.categoryId) == categoryID }.count
+        return catalogIndex.streamsByCategory[categoryID]?.count ?? 0
     }
 
     private func favoriteID(for stream: XtreamStream) -> String {
