@@ -5,6 +5,8 @@ struct M3UChannelsView: View {
     let kind: XtreamStreamKind
     @EnvironmentObject var store: M3UPlaylistStore
     @EnvironmentObject var contentManagement: ContentManagementService
+    @EnvironmentObject var appSettings: AppSettings
+    @State private var showEPG = false
 
     var body: some View {
         NavigationStack {
@@ -67,6 +69,14 @@ struct M3UChannelsView: View {
             .toolbar {
                 if #available(iOS 26.0, *) {
                     ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
+                    if kind == .live && appSettings.epgEnabled {
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Button { showEPG = true } label: {
+                                Label("EPG", systemImage: "calendar.badge.clock")
+                            }
+                            .modifier(M3UGlassButtonStyle())
+                        }
+                    }
                     ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
                     ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
                 } else {
@@ -75,6 +85,9 @@ struct M3UChannelsView: View {
                 }
             }
             .task(id: playlistURL) { await store.loadIfNeeded(url: playlistURL) }
+            .sheet(isPresented: $showEPG) {
+                M3UEPGView(channels: store.channels(for: .live, group: "Tutti i contenuti"))
+            }
         }
     }
 }
@@ -106,6 +119,8 @@ struct M3UGroupChannelsView: View {
     let channels: [M3UChannel]
     let sourceKey: String
     @EnvironmentObject var contentManagement: ContentManagementService
+    @EnvironmentObject var appSettings: AppSettings
+    @State private var showEPG = false
     @State private var selectedChannel: M3UChannel?
 
     var body: some View {
@@ -126,9 +141,18 @@ struct M3UGroupChannelsView: View {
                         .frame(width: 36, height: 36)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                        Text(channel.title)
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(channel.title)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            if appSettings.epgEnabled, let id = channel.tvgId,
+                               let current = epgByID[id]?.first(where: { $0.start <= Date() && $0.end > Date() }) {
+                                Text("● \(current.title)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tint)
+                                    .lineLimit(1)
+                            }
+                        }
                     }
                 }
                 .buttonStyle(.plain)
@@ -145,8 +169,25 @@ struct M3UGroupChannelsView: View {
             }
         }
         .navigationTitle(groupTitle)
+        .task {
+            guard appSettings.epgEnabled,
+                  let url = URL(string: appSettings.epgURL),
+                  !appSettings.epgURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            epgByID = (try? await XMLTVEPGService().load(from: url)) ?? [:]
+        }
         .fullScreenCover(item: $selectedChannel) { channel in
             PlayerView(url: channel.streamURL, title: channel.title)
+        }
+    }
+}
+
+
+private struct M3UGlassButtonStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.buttonStyle(.glass).buttonBorderShape(.circle)
+        } else {
+            content.buttonStyle(.plain).padding(7).background(.ultraThinMaterial, in: Circle())
         }
     }
 }

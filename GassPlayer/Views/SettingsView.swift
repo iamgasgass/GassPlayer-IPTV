@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var sourceManager: SourceManager
     @EnvironmentObject var lockManager: ParentalLockManager
     @EnvironmentObject var themeManager: ThemeManager
@@ -9,6 +10,8 @@ struct SettingsView: View {
     @State private var subtitleLanguage = "it"
     @State private var traktConnected = false
     @State private var preferredDNS = "1.1.1.1"
+    @EnvironmentObject var appSettings: AppSettings
+    @State private var showEPGTest = false
 
     var body: some View {
         NavigationStack {
@@ -28,7 +31,49 @@ struct SettingsView: View {
                 } header: { Label("Sincronizzazione", systemImage: "icloud") }
 
                 Section {
-                    Toggle(isOn: $downloadManager.wifiOnly) { Label("Scarica solo su Wi-Fi", systemImage: "wifi") }
+                    Toggle(isOn: $appSettings.epgEnabled) {
+                        Label("EPG integrato", systemImage: "calendar.badge.clock")
+                    }
+                    Toggle(isOn: $appSettings.showEPGOnLiveCards) {
+                        Label("Programma corrente sulle card", systemImage: "rectangle.on.rectangle")
+                    }
+                    TextField("URL XMLTV / EPG per playlist M3U", text: $appSettings.epgURL)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                    Picker("Aggiorna ogni", selection: $appSettings.epgRefreshMinutes) {
+                        Text("15 min").tag(15)
+                        Text("30 min").tag(30)
+                        Text("60 min").tag(60)
+                        Text("Manuale").tag(0)
+                    }
+                    Button {
+                        showEPGTest = true
+                    } label: {
+                        Label("Verifica sorgente EPG", systemImage: "checkmark.shield")
+                    }
+                    Text("Xtream usa l'EPG del provider. Per M3U puoi collegare un feed XMLTV e associare i programmi tramite tvg-id.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } header: { Label("Guida TV (EPG)", systemImage: "calendar") }
+
+                Section {
+                    Picker("Layout contenuti", selection: $appSettings.preferredContentLayout) {
+                        ForEach(AppSettings.ContentLayout.allCases) { layout in
+                            Text(layout.rawValue).tag(layout)
+                        }
+                    }
+                    Toggle(isOn: $appSettings.showUncategorizedGroup) {
+                        Label("Mostra contenuti senza categoria", systemImage: "tray.full")
+                    }
+                    Toggle(isOn: $appSettings.deduplicateM3U) {
+                        Label("Elimina duplicati M3U", systemImage: "square.stack.3d.up")
+                    }
+                    Text("Il parser conserva i titoli anche quando il provider omette group-title e riconosce VOD/Serie anche da tvg-type, URL e convenzioni S01E02.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } header: { Label("Catalogo e playlist", systemImage: "rectangle.3.group") }
+
+                Section {
+                    Toggle("Scarica solo su Wi-Fi", isOn: $downloadManager.wifiOnly)
                 } header: { Label("Download offline", systemImage: "arrow.down.circle") }
 
                 Section {
@@ -69,6 +114,21 @@ struct SettingsView: View {
                 } header: { Label("Trasparenza", systemImage: "info.circle") }
             }
             .navigationTitle("Impostazioni")
+            .toolbar {
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Fine") { dismiss() }
+                            .buttonStyle(.glassProminent)
+                    }
+                }
+            }
+            .alert("Sorgente EPG", isPresented: $showEPGTest) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(appSettings.epgURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                     ? "Inserisci prima un URL XMLTV."
+                     : "La sorgente verrà utilizzata dalle viste Live compatibili con XMLTV.")
+            }
         }
     }
 }

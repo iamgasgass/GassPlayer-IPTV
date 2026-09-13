@@ -6,6 +6,7 @@ final class M3UPlaylistStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var channelsByKind: [XtreamStreamKind: [M3UChannel]] = [:]
+    @Published private(set) var sourceCount: Int = 0
 
     private var loadedURL: URL?
 
@@ -21,7 +22,10 @@ final class M3UPlaylistStore: ObservableObject {
                 isLoading = false
                 return
             }
-            channelsByKind = Dictionary(grouping: loaded, by: { $0.kind })
+            let deduplicate = UserDefaults.standard.object(forKey: "settings.deduplicateM3U") as? Bool ?? true
+            let normalized = deduplicate ? Self.normalized(loaded) : loaded
+            sourceCount = normalized.count
+            channelsByKind = Dictionary(grouping: normalized, by: { $0.kind })
             loadedURL = url
         } catch {
             errorMessage = "Errore nel caricamento della playlist: \(error.localizedDescription)"
@@ -36,8 +40,34 @@ final class M3UPlaylistStore: ObservableObject {
 
     func groups(for kind: XtreamStreamKind) -> [String] {
         let channels = channelsByKind[kind] ?? []
-        let groups = Array(Set(channels.compactMap { $0.groupTitle })).sorted()
-        return groups.isEmpty && !channels.isEmpty ? ["Tutti i canali"] : groups
+        let named = Set(channels.compactMap { group in
+            let value = group.groupTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return value.isEmpty ? nil : value
+        })
+        var result = named.sorted()
+        let unnamedCount = channels.filter { ($0.groupTitle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) }.count
+        let showUncategorized = UserDefaults.standard.object(forKey: "settings.showUncategorized") as? Bool ?? true
+        if unnamedCount > 0 && showUncategorized { result.append("Senza categoria (\(unnamedCount))") }
+        if result.isEmpty && !channels.isEmpty { result = ["Tutti i contenuti"] }
+        return result
+    }
+
+    func channels(for kind: XtreamStreamKind, group: String) -> [M3UChannel] {
+        let channels = channelsByKind[kind] ?? []
+        if group == "Tutti i contenuti" { return channels }
+        if group.hasPrefix("Senza categoria") {
+            return channels.filter { $0.groupTitle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true }
+        }
+        return channels.filter { $0.groupTitle == group }
+    }
+
+    private static func normalized(_ channels: [M3UChannel]) -> [M3UChannel] {
+        // Preserve every distinct title/URL pair; repeated EPG/logo metadata is harmless.
+        var seen = Set<String>()
+        return channels.filter {
+            let key = "\($0.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current))|\($0.streamURL.absoluteString)"
+            return seen.insert(key).inserted
+        }
     }
 
     func channels(for kind: XtreamStreamKind, group: String) -> [M3UChannel] {
