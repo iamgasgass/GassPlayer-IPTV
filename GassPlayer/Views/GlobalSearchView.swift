@@ -1,16 +1,22 @@
 import SwiftUI
 
-private struct SelectedSeriesResult: Identifiable {
+private struct SelectedSeriesResult: Identifiable, Hashable {
     let id = UUID()
     let credentials: XtreamCredentials
     let seriesId: Int
     let name: String
+
+    static func == (lhs: SelectedSeriesResult, rhs: SelectedSeriesResult) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
-private struct SelectedPlayable: Identifiable {
+private struct SelectedPlayable: Identifiable, Hashable {
     let id = UUID()
     let url: URL
     let title: String
+
+    static func == (lhs: SelectedPlayable, rhs: SelectedPlayable) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
 struct GlobalSearchView: View {
