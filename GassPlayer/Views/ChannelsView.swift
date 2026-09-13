@@ -15,18 +15,3 @@ struct ChannelsView: View {
         }
     }
 }
-
-extension XtreamStreamKind {
-    var title: String {
-        switch self {
-        case .live:
-            return "Canali"
-
-        case .movie:
-            return "Film"
-
-        case .series:
-            return "Serie"
-        }
-    }
-}
