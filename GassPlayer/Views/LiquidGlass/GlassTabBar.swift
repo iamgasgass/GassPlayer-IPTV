@@ -6,6 +6,24 @@ struct GlassTabItem: Identifiable {
     let systemImage: String
 }
 
+/// Tab bar Liquid Glass — fix strutturale definitivo.
+///
+/// CAUSA REALE della corruzione (round 4, confermata da screenshot): un
+/// GlassEffectContainer e' documentato per contenere SOLO forme con
+/// .glassEffect() applicato — e' una pipeline di compositing dedicata al
+/// vetro, non uno ZStack generico. Le versioni precedenti mettevano anche
+/// l'HStack dei bottoni (contenuto normale: icone SF Symbols, testo) DENTRO
+/// il container insieme alle Capsule di vetro. Il container trattava quel
+/// contenuto come se fosse ulteriore vetro da compositare, risultando in
+/// icone/testo che sparivano lasciando solo la sfocatura rossastra visibile
+/// nello screenshot (il vetro che campiona i canali Rai sottostanti).
+///
+/// Fix: SOLO le due Capsule (sfondo barra + indicatore) stanno dentro
+/// GlassEffectContainer. L'HStack di bottoni (icone + testo, contenuto
+/// completamente normale) sta FUORI, come livello successivo dello stesso
+/// ZStack esterno — quindi disegnato sopra, con la semantica standard di
+/// SwiftUI, garantita a prescindere da qualunque comportamento speciale
+/// del compositor di vetro.
 struct GlassTabBar: View {
     let items: [GlassTabItem]
     @Binding var selection: Int
@@ -14,38 +32,40 @@ struct GlassTabBar: View {
     private let indicatorInset: CGFloat = 4
 
     var body: some View {
-        Group {
-            if #available(iOS 26.0, *) {
-                GlassEffectContainer(spacing: 24) {
-                    barContent(isModernGlass: true)
-                }
-                .frame(height: barHeight)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
-            } else {
-                barContent(isModernGlass: false)
-                    .frame(height: barHeight)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func barContent(isModernGlass: Bool) -> some View {
         GeometryReader { geometry in
             let itemWidth = geometry.size.width / CGFloat(max(items.count, 1))
 
             ZStack(alignment: .leading) {
-                Capsule().fill(.clear).modifier(GlassBarBackground())
+                // Livello 1: SOLO vetro, dentro il container dedicato.
+                if #available(iOS 26.0, *) {
+                    GlassEffectContainer(spacing: 24) {
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.clear).glassEffect(.regular, in: .capsule)
 
-                Capsule()
-                    .fill(.clear)
-                    .modifier(GlassIndicatorBackground())
-                    .frame(width: itemWidth - indicatorInset * 2, height: barHeight - 16)
-                    .offset(x: itemWidth * CGFloat(selection) + indicatorInset, y: 8)
-                    .animation(.spring(response: 0.4, dampingFraction: 0.78), value: selection)
+                            Capsule()
+                                .fill(.clear)
+                                .glassEffect(.regular.tint(.white.opacity(0.18)).interactive(), in: .capsule)
+                                .frame(width: itemWidth - indicatorInset * 2, height: barHeight - 16)
+                                .offset(x: itemWidth * CGFloat(selection) + indicatorInset, y: 8)
+                                .animation(.spring(response: 0.4, dampingFraction: 0.78), value: selection)
+                        }
+                    }
+                } else {
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(.ultraThinMaterial)
+                            .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
 
+                        Capsule()
+                            .fill(Color.white.opacity(0.14))
+                            .frame(width: itemWidth - indicatorInset * 2, height: barHeight - 16)
+                            .offset(x: itemWidth * CGFloat(selection) + indicatorInset, y: 8)
+                            .animation(.spring(response: 0.4, dampingFraction: 0.78), value: selection)
+                    }
+                }
+
+                // Livello 2: contenuto NORMALE (icone/testo), fuori dal
+                // container, disegnato sopra come qualunque vista SwiftUI.
                 HStack(spacing: 0) {
                     ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                         tabButton(index, item)
@@ -54,6 +74,9 @@ struct GlassTabBar: View {
                 }
             }
         }
+        .frame(height: barHeight)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
     }
 
     private func tabButton(_ index: Int, _ item: GlassTabItem) -> some View {
@@ -71,31 +94,6 @@ struct GlassTabBar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-}
-
-private struct GlassBarBackground: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(.regular, in: .capsule)
-        } else {
-            content
-                .background(.ultraThinMaterial, in: Capsule())
-                .background(Color.black.opacity(0.35), in: Capsule())
-                .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
-        }
-    }
-}
-
-private struct GlassIndicatorBackground: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(.regular.tint(.white.opacity(0.18)).interactive(), in: .capsule)
-        } else {
-            content
-                .background(.ultraThinMaterial, in: Capsule())
-                .background(Color.white.opacity(0.12), in: Capsule())
-        }
     }
 }
 
