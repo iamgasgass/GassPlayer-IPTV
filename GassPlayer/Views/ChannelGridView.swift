@@ -38,12 +38,8 @@ struct ChannelGridView: View {
         switch selectedCategory {
         case .all:
             return allStreams
-
         case .category(let categoryID):
-            return allStreams.filter {
-                normalizedCategoryID($0.categoryId) == categoryID
-            }
-
+            return allStreams.filter { normalizedCategoryID($0.categoryId) == categoryID }
         case .uncategorized:
             return allStreams.filter(isUncategorized)
         }
@@ -51,14 +47,23 @@ struct ChannelGridView: View {
 
     private var visibleCategories: [XtreamCategory] {
         guard kind != .series else { return categories }
-
-        return categories.filter {
-            categoryCount(for: $0.categoryId) > 0
-        }
+        return categories.filter { categoryCount(for: $0.categoryId) > 0 }
     }
 
     private var uncategorizedCount: Int {
         allStreams.filter(isUncategorized).count
+    }
+
+    private var isInitialLoadPending: Bool {
+        guard kind != .series else { return false }
+        guard allStreams.isEmpty else { return false }
+
+        switch xtreamCatalog.state {
+        case .idle, .loading:
+            return true
+        default:
+            return false
+        }
     }
 
     var body: some View {
@@ -66,19 +71,16 @@ struct ChannelGridView: View {
             ScrollView {
                 categoryChips
 
-                switch xtreamCatalog.state {
-                case .idle, .loading where allStreams.isEmpty && kind != .series:
+                if isInitialLoadPending {
                     loadingView
-
-                case .failed(let message):
+                } else if case .failed(let message) = xtreamCatalog.state, allStreams.isEmpty, kind != .series {
                     ContentUnavailableView(
                         "Impossibile caricare il catalogo",
                         systemImage: "exclamationmark.triangle",
                         description: Text(message)
                     )
                     .padding(.vertical, 32)
-
-                default:
+                } else {
                     content
                 }
             }
@@ -87,10 +89,7 @@ struct ChannelGridView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         Task {
-                            await xtreamCatalog.refresh(
-                                credentials: credentials,
-                                kind: kind
-                            )
+                            await xtreamCatalog.refresh(credentials: credentials, kind: kind)
                         }
                     } label: {
                         Image(systemName: "arrow.clockwise")
@@ -104,26 +103,17 @@ struct ChannelGridView: View {
             }
             .onChange(of: selectedCategory) { _, _ in
                 guard kind == .live else { return }
-                Task {
-                    await loadEPGForVisibleStreams()
-                }
+                Task { await loadEPGForVisibleStreams() }
             }
             .fullScreenCover(item: $selectedStream) { stream in
                 if let url = service.streamURL(for: stream, kind: kind) {
                     AdaptivePlayerView(url: url, title: stream.name)
                 } else {
-                    ContentUnavailableView(
-                        "URL dello stream non valido",
-                        systemImage: "exclamationmark.triangle"
-                    )
+                    ContentUnavailableView("URL dello stream non valido", systemImage: "exclamationmark.triangle")
                 }
             }
             .navigationDestination(item: $selectedSeries) { series in
-                SeriesEpisodesView(
-                    credentials: credentials,
-                    seriesId: series.seriesId,
-                    seriesName: series.name
-                )
+                SeriesEpisodesView(credentials: credentials, seriesId: series.seriesId, seriesName: series.name)
             }
         }
     }
@@ -131,62 +121,62 @@ struct ChannelGridView: View {
     @ViewBuilder
     private var content: some View {
         if kind == .series {
-            let series = xtreamCatalog.seriesItems
-
-            if series.isEmpty {
-                ContentUnavailableView(
-                    "Nessuna serie disponibile",
-                    systemImage: "rectangle.stack.fill"
-                )
-                .padding(.vertical, 32)
-            } else {
-                LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(series) { item in
-                        SeriesTile(series: item) {
-                            selectedSeries = item
-                        }
-                    }
-                }
-                .padding()
-            }
+            seriesGrid
         } else if displayedStreams.isEmpty {
             ContentUnavailableView(
                 "Nessun contenuto in questa sezione",
                 systemImage: kind.systemImage,
                 description: Text(
                     selectedCategory == .all
-                    ? "La sorgente non ha restituito contenuti."
-                    : "Prova una categoria diversa o aggiorna la sorgente."
+                        ? "La sorgente non ha restituito contenuti."
+                        : "Prova una categoria diversa o aggiorna la sorgente."
                 )
             )
             .padding(.vertical, 32)
         } else {
+            streamsGrid
+        }
+    }
+
+    @ViewBuilder
+    private var seriesGrid: some View {
+        let series = xtreamCatalog.seriesItems
+
+        if series.isEmpty {
+            ContentUnavailableView("Nessuna serie disponibile", systemImage: "rectangle.stack.fill")
+                .padding(.vertical, 32)
+        } else {
             LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(displayedStreams) { stream in
-                    ChannelTile(
-                        stream: stream,
-                        kind: kind,
-                        isFavorite: contentManagement.isFavorite(
-                            id: favoriteID(for: stream)
-                        ),
-                        currentProgram: kind == .live
-                        ? epgByStream[stream.streamId]
-                        : nil,
-                        onTap: {
-                            selectedStream = stream
-                        },
-                        onFavoriteToggle: {
-                            contentManagement.toggleFavorite(
-                                id: favoriteID(for: stream),
-                                title: stream.name,
-                                kind: kind.rawValue
-                            )
-                        }
-                    )
+                ForEach(series) { item in
+                    SeriesTile(series: item) { selectedSeries = item }
                 }
             }
             .padding()
+            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: series.count)
         }
+    }
+
+    private var streamsGrid: some View {
+        LazyVGrid(columns: columns, spacing: 16) {
+            ForEach(displayedStreams) { stream in
+                ChannelTile(
+                    stream: stream,
+                    kind: kind,
+                    isFavorite: contentManagement.isFavorite(id: favoriteID(for: stream)),
+                    currentProgram: kind == .live ? epgByStream[stream.streamId] : nil,
+                    onTap: { selectedStream = stream },
+                    onFavoriteToggle: {
+                        contentManagement.toggleFavorite(
+                            id: favoriteID(for: stream),
+                            title: stream.name,
+                            kind: kind.rawValue
+                        )
+                    }
+                )
+            }
+        }
+        .padding()
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: displayedStreams.count)
     }
 
     private var loadingView: some View {
@@ -203,20 +193,10 @@ struct ChannelGridView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 if kind != .series {
-                    categoryButton(
-                        title: "Tutti",
-                        icon: "square.grid.2x2",
-                        count: allStreams.count,
-                        selection: .all
-                    )
+                    categoryButton(title: "Tutti", icon: "square.grid.2x2", count: allStreams.count, selection: .all)
 
                     if uncategorizedCount > 0 {
-                        categoryButton(
-                            title: "Senza categoria",
-                            icon: "tray",
-                            count: uncategorizedCount,
-                            selection: .uncategorized
-                        )
+                        categoryButton(title: "Senza categoria", icon: "tray", count: uncategorizedCount, selection: .uncategorized)
                     }
                 }
 
@@ -234,89 +214,49 @@ struct ChannelGridView: View {
         }
     }
 
-    private func categoryButton(
-        title: String,
-        icon: String,
-        count: Int,
-        selection: CategorySelection
-    ) -> some View {
+    private func categoryButton(title: String, icon: String, count: Int, selection: CategorySelection) -> some View {
         Button {
-            withAnimation(.snappy) {
-                selectedCategory = selection
-            }
+            withAnimation(.snappy) { selectedCategory = selection }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.caption)
-
-                Text(title)
-                    .lineLimit(1)
-
+                Image(systemName: icon).font(.caption)
+                Text(title).lineLimit(1)
                 Text("\(count)")
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(
-                        selectedCategory == selection
-                        ? Color.white.opacity(0.78)
-                        : Color.secondary
-                    )
+                    .foregroundStyle(selectedCategory == selection ? Color.white.opacity(0.78) : Color.secondary)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(
-            selectedCategory == selection ? Color.white : Color.primary
-        )
-        .background(
-            selectedCategory == selection ? Color.accentColor : Color.clear,
-            in: Capsule()
-        )
+        .foregroundStyle(selectedCategory == selection ? Color.white : Color.primary)
+        .background(selectedCategory == selection ? Color.accentColor : Color.clear, in: Capsule())
         .background(.ultraThinMaterial, in: Capsule())
         .overlay {
-            Capsule()
-                .strokeBorder(
-                    Color.white.opacity(
-                        selectedCategory == selection ? 0.22 : 0.12
-                    ),
-                    lineWidth: 0.5
-                )
+            Capsule().strokeBorder(Color.white.opacity(selectedCategory == selection ? 0.22 : 0.12), lineWidth: 0.5)
         }
         .accessibilityLabel("\(title), \(count) contenuti")
-        .accessibilityAddTraits(
-            selectedCategory == selection ? .isSelected : []
-        )
+        .accessibilityAddTraits(selectedCategory == selection ? .isSelected : [])
     }
 
     private func normalizedCategoryID(_ categoryID: String?) -> String? {
         guard let categoryID else { return nil }
-
-        let normalized = categoryID.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-
+        let normalized = categoryID.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalized.isEmpty ? nil : normalized
     }
 
     private func isUncategorized(_ stream: XtreamStream) -> Bool {
-        guard let categoryID = normalizedCategoryID(stream.categoryId) else {
-            return true
-        }
-
+        guard let categoryID = normalizedCategoryID(stream.categoryId) else { return true }
         let knownCategoryIDs = Set(categories.map(\.categoryId))
         return categoryID == "0" || !knownCategoryIDs.contains(categoryID)
     }
 
     private func categoryCount(for categoryID: String) -> Int {
-        allStreams.lazy.filter {
-            normalizedCategoryID($0.categoryId) == categoryID
-        }.count
+        allStreams.lazy.filter { normalizedCategoryID($0.categoryId) == categoryID }.count
     }
 
     private func favoriteID(for stream: XtreamStream) -> String {
-        let host = credentials.host
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-
+        let host = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return "\(host)|\(credentials.username)|\(kind.rawValue)|\(stream.streamId)"
     }
 
@@ -333,18 +273,13 @@ struct ChannelGridView: View {
             await withTaskGroup(of: (Int, EPGProgram?).self) { group in
                 for stream in batch where epgByStream[stream.streamId] == nil {
                     group.addTask {
-                        let result = try? await epg.shortEPG(
-                            streamId: stream.streamId,
-                            limit: 2
-                        )
+                        let result = try? await epg.shortEPG(streamId: stream.streamId, limit: 2)
                         return (stream.streamId, result?.first)
                     }
                 }
 
                 for await (streamID, program) in group {
-                    if let program {
-                        epgByStream[streamID] = program
-                    }
+                    if let program { epgByStream[streamID] = program }
                 }
             }
         }
@@ -352,45 +287,14 @@ struct ChannelGridView: View {
 
     private static func categoryIcon(for name: String) -> String {
         let normalized = name.lowercased()
-
-        if normalized.contains("sport") {
-            return "sportscourt"
-        }
-
-        if normalized.contains("kids") ||
-            normalized.contains("cartoon") ||
-            normalized.contains("bambini") {
-            return "gamecontroller"
-        }
-
-        if normalized.contains("news") || normalized.contains("notizie") {
-            return "newspaper"
-        }
-
-        if normalized.contains("music") || normalized.contains("musica") {
-            return "music.note"
-        }
-
-        if normalized.contains("cinema") ||
-            normalized.contains("film") ||
-            normalized.contains("movie") {
-            return "film"
-        }
-
-        if normalized.contains("document") {
-            return "video"
-        }
-
-        if normalized.contains("relig") {
-            return "building.columns"
-        }
-
-        if normalized.contains("adult") ||
-            normalized.contains("+18") ||
-            normalized.contains("xxx") {
-            return "eye.slash"
-        }
-
+        if normalized.contains("sport") { return "sportscourt" }
+        if normalized.contains("kids") || normalized.contains("cartoon") || normalized.contains("bambini") { return "gamecontroller" }
+        if normalized.contains("news") || normalized.contains("notizie") { return "newspaper" }
+        if normalized.contains("music") || normalized.contains("musica") { return "music.note" }
+        if normalized.contains("cinema") || normalized.contains("film") || normalized.contains("movie") { return "film" }
+        if normalized.contains("document") { return "video" }
+        if normalized.contains("relig") { return "building.columns" }
+        if normalized.contains("adult") || normalized.contains("+18") || normalized.contains("xxx") { return "eye.slash" }
         return "tv"
     }
 }
@@ -408,41 +312,20 @@ private struct ChannelTile: View {
             VStack(spacing: 6) {
                 ZStack(alignment: .topTrailing) {
                     if kind == .movie {
-                        TMDBEnrichedPoster(
-                            title: stream.name,
-                            isSeries: false,
-                            fallbackIconURL: stream.streamIcon,
-                            width: 100,
-                            height: 150
-                        )
+                        TMDBEnrichedPoster(title: stream.name, isSeries: false, fallbackIconURL: stream.streamIcon, width: 100, height: 150)
                     } else {
-                        AsyncImage(url: URL(string: stream.streamIcon ?? "")) {
-                            phase in
+                        AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
                             switch phase {
                             case .success(let image):
-                                image
-                                    .resizable()
-                                    .scaledToFit()
-
+                                image.resizable().scaledToFit()
                             default:
-                                RoundedRectangle(
-                                    cornerRadius: 12,
-                                    style: .continuous
-                                )
-                                .fill(.ultraThinMaterial)
-                                .overlay {
-                                    Image(systemName: "tv")
-                                        .foregroundStyle(.secondary)
-                                }
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(.ultraThinMaterial)
+                                    .overlay { Image(systemName: "tv").foregroundStyle(.secondary) }
                             }
                         }
                         .frame(width: 100, height: 100)
-                        .clipShape(
-                            RoundedRectangle(
-                                cornerRadius: 12,
-                                style: .continuous
-                            )
-                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
 
                     Button(action: onFavoriteToggle) {
@@ -454,11 +337,7 @@ private struct ChannelTile: View {
                     .buttonStyle(.plain)
                     .background(.ultraThinMaterial, in: Circle())
                     .padding(4)
-                    .accessibilityLabel(
-                        isFavorite
-                        ? "Rimuovi dai preferiti"
-                        : "Aggiungi ai preferiti"
-                    )
+                    .accessibilityLabel(isFavorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti")
                 }
 
                 Text(stream.name)
@@ -487,18 +366,8 @@ private struct SeriesTile: View {
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 4) {
-                TMDBEnrichedPoster(
-                    title: series.name,
-                    isSeries: true,
-                    fallbackIconURL: series.cover,
-                    width: 100,
-                    height: 140
-                )
-
-                Text(series.name)
-                    .font(.caption)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
+                TMDBEnrichedPoster(title: series.name, isSeries: true, fallbackIconURL: series.cover, width: 100, height: 140)
+                Text(series.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
             }
         }
         .buttonStyle(.plain)

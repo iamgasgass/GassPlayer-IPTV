@@ -23,73 +23,9 @@ struct ContentView: View {
                     loadActiveSource()
                 }
             } else if credentials != nil || m3uPlaylistURL != nil {
-                TabView(selection: $selectedTab) {
-                    liveTab
-                        .tabItem { Label("Live", systemImage: "tv") }
-                        .tag(0)
-
-                    filmTab
-                        .tabItem { Label("Film", systemImage: "film") }
-                        .tag(1)
-
-                    serieTab
-                        .tabItem { Label("Serie", systemImage: "rectangle.stack.fill") }
-                        .tag(2)
-
-                    SourcesView()
-                        .tabItem { Label("Sorgenti", systemImage: "square.stack.3d.up") }
-                        .tag(3)
-
-                    PersonalVPNView()
-                        .tabItem { Label("VPN", systemImage: "lock.shield") }
-                        .tag(4)
-                }
-                .background(Color.black.ignoresSafeArea())
-                .sheet(isPresented: $overlayState.showSearch) {
-                    GlobalSearchView()
-                }
-                .sheet(isPresented: $overlayState.showSettings) {
-                    SettingsView()
-                }
-                .onChange(of: sourceManager.activeSourceId) { _, _ in
-                    loadActiveSource()
-                }
-                .task(id: sourceManager.activeSourceId) {
-                    guard let credentials else { return }
-                    await xtreamCatalog.loadIfNeeded(credentials: credentials)
-                    vpnManager.handleAppBecameActive()
-                }
+                mainTabs
             } else {
-                LoginView(
-                    onLogin: { credentials in
-                        self.credentials = credentials
-                        m3uPlaylistURL = nil
-                        xtreamCatalog.reset()
-
-                        sourceManager.add(
-                            MediaSourceConfig(
-                                name: "Sorgente principale",
-                                type: .xtream,
-                                host: credentials.host,
-                                username: credentials.username,
-                                password: credentials.password
-                            )
-                        )
-                    },
-                    onM3ULoaded: { url in
-                        m3uPlaylistURL = url
-                        credentials = nil
-                        xtreamCatalog.reset()
-
-                        sourceManager.add(
-                            MediaSourceConfig(
-                                name: "Playlist M3U",
-                                type: .m3u8,
-                                host: url.absoluteString
-                            )
-                        )
-                    }
-                )
+                login
             }
         }
         .preferredColorScheme(themeManager.theme.colorScheme)
@@ -101,6 +37,91 @@ struct ContentView: View {
         .environmentObject(overlayState)
         .environmentObject(vpnManager)
         .environmentObject(xtreamCatalog)
+    }
+
+    private var mainTabs: some View {
+        TabView(selection: $selectedTab) {
+            liveTab
+                .tabItem { Label("Live", systemImage: "tv") }
+                .tag(0)
+
+            filmTab
+                .tabItem { Label("Film", systemImage: "film") }
+                .tag(1)
+
+            seriesTab
+                .tabItem { Label("Serie", systemImage: "rectangle.stack.fill") }
+                .tag(2)
+
+            SourcesView()
+                .tabItem { Label("Sorgenti", systemImage: "square.stack.3d.up") }
+                .tag(3)
+
+            PersonalVPNView()
+                .tabItem { Label("VPN", systemImage: "lock.shield") }
+                .tag(4)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .sheet(isPresented: $overlayState.showSearch) {
+            GlobalSearchView()
+        }
+        .sheet(isPresented: $overlayState.showSettings) {
+            SettingsView()
+        }
+        .onChange(of: sourceManager.activeSourceId) { _, _ in
+            loadActiveSource()
+        }
+        .task(id: xtreamSourceTaskID) {
+            guard let credentials else { return }
+            await xtreamCatalog.loadIfNeeded(credentials: credentials)
+            vpnManager.handleAppBecameActive()
+        }
+    }
+
+    private var login: some View {
+        LoginView(
+            onLogin: { newCredentials in
+                credentials = newCredentials
+                m3uPlaylistURL = nil
+                selectedTab = 0
+                xtreamCatalog.reset()
+
+                sourceManager.add(
+                    MediaSourceConfig(
+                        name: "Sorgente principale",
+                        type: .xtream,
+                        host: newCredentials.host,
+                        username: newCredentials.username,
+                        password: newCredentials.password
+                    )
+                )
+            },
+            onM3ULoaded: { url in
+                credentials = nil
+                m3uPlaylistURL = url
+                selectedTab = 0
+                xtreamCatalog.reset()
+
+                sourceManager.add(
+                    MediaSourceConfig(
+                        name: "Playlist M3U",
+                        type: .m3u8,
+                        host: url.absoluteString
+                    )
+                )
+            }
+        )
+    }
+
+    private var xtreamSourceTaskID: String {
+        guard let credentials else { return "no-xtream-source" }
+
+        let host = credentials.host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
+
+        return "\(sourceManager.activeSourceId?.uuidString ?? "none")|\(host)|\(credentials.username)"
     }
 
     @ViewBuilder
@@ -122,7 +143,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var serieTab: some View {
+    private var seriesTab: some View {
         if let credentials {
             ChannelGridView(credentials: credentials, kind: .series)
         } else if let m3uPlaylistURL {
@@ -134,14 +155,17 @@ struct ContentView: View {
         guard let active = sourceManager.activeSource else {
             credentials = nil
             m3uPlaylistURL = nil
+            selectedTab = 0
             xtreamCatalog.reset()
             return
         }
 
         switch active.type {
         case .xtream:
-            guard let username = active.username,
-                  let password = active.password else {
+            guard let username = active.username?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !username.isEmpty,
+                  let password = active.password,
+                  !password.isEmpty else {
                 credentials = nil
                 m3uPlaylistURL = nil
                 xtreamCatalog.reset()
@@ -154,8 +178,7 @@ struct ContentView: View {
                 password: password
             )
 
-            if credentials?.host != newCredentials.host ||
-                credentials?.username != newCredentials.username {
+            if shouldResetCatalog(current: credentials, next: newCredentials) {
                 xtreamCatalog.reset()
             }
 
@@ -164,13 +187,31 @@ struct ContentView: View {
 
         case .m3u8:
             credentials = nil
-            xtreamCatalog.reset()
             m3uPlaylistURL = URL(string: active.host)
+            xtreamCatalog.reset()
 
         case .plex, .jellyfin, .emby:
             credentials = nil
             m3uPlaylistURL = nil
             xtreamCatalog.reset()
         }
+    }
+
+    private func shouldResetCatalog(
+        current: XtreamCredentials?,
+        next: XtreamCredentials
+    ) -> Bool {
+        guard let current else { return true }
+
+        let currentHost = current.host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
+        let nextHost = next.host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
+
+        return currentHost != nextHost || current.username != next.username
     }
 }
