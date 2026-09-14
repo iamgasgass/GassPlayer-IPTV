@@ -1,21 +1,13 @@
 import SwiftUI
 
-/// GlassIconButton: da .glassEffect() manuale a stile nativo .glass/.glassProminent.
+/// Pulsante circolare adattivo: sfrutta Liquid Glass nativo su iOS 26 e
+/// materiale di sistema sulle versioni precedenti.
 struct GlassIconButton: View {
     let systemImage: String
     var tint: Color? = nil
     var size: CGFloat = 44
-    /// FIX "rettangolo scuro nei toggle Settings/Search": quando questo
-    /// bottone vive dentro una toolbar di sistema (NavigationStack
-    /// .toolbar), iOS 26 raggruppa automaticamente TUTTI gli elementi
-    /// della stessa posizione (es. .navigationBarTrailing) in un'unica
-    /// "pillola" di Liquid Glass condivisa. Applicare ANCHE
-    /// .buttonStyle(.glass) sul singolo bottone in quel contesto
-    /// sovrappone un SECONDO strato di vetro (circolare) dentro quello
-    /// gia' fornito dal sistema, visibile come un rettangolo/cerchio
-    /// leggermente piu' scuro. Con isInSystemToolbar = true si usa uno
-    /// stile "plain" e si lascia che sia il sistema a rendere il vetro.
-    var isInSystemToolbar: Bool = false
+    var isInSystemToolbar = false
+    var accessibilityLabel: String? = nil
     let action: () -> Void
 
     var body: some View {
@@ -23,14 +15,22 @@ struct GlassIconButton: View {
             Image(systemName: systemImage)
                 .font(.system(size: size * 0.41, weight: .semibold))
                 .frame(width: size, height: size)
+                .contentShape(Circle())
         }
-        .modifier(NativeOrLegacyGlassCircle(tint: tint, isInSystemToolbar: isInSystemToolbar))
+        .modifier(
+            NativeOrLegacyGlassCircle(
+                tint: tint,
+                isInSystemToolbar: isInSystemToolbar
+            )
+        )
+        .accessibilityLabel(accessibilityLabel ?? systemImage)
     }
 }
 
 private struct NativeOrLegacyGlassCircle: ViewModifier {
     let tint: Color?
-    var isInSystemToolbar: Bool = false
+    let isInSystemToolbar: Bool
+
     func body(content: Content) -> some View {
         if isInSystemToolbar {
             content
@@ -44,22 +44,40 @@ private struct NativeOrLegacyGlassCircle: ViewModifier {
         } else {
             content
                 .buttonStyle(.plain)
-                .contentShape(Circle())
-                .background(.ultraThinMaterial, in: Circle())
                 .foregroundStyle(tint ?? .primary)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay {
+                    Circle()
+                        .strokeBorder(
+                            Color.white.opacity(0.16),
+                            lineWidth: 0.5
+                        )
+                }
         }
     }
 }
 
 struct GlassPrimaryButton: View {
     let title: String
+    var systemImage: String? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Text(title).font(.headline).padding(.horizontal, 24).padding(.vertical, 12)
+            HStack(spacing: 8) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                }
+
+                Text(title)
+            }
+            .font(.headline)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
         }
         .modifier(NativeOrLegacyGlassCapsule())
+        .accessibilityLabel(title)
     }
 }
 
@@ -73,7 +91,15 @@ private struct NativeOrLegacyGlassCapsule: ViewModifier {
         } else {
             content
                 .buttonStyle(.plain)
-                .background(.ultraThinMaterial, in: Capsule())
+                .foregroundStyle(.white)
+                .background(Color.accentColor, in: Capsule())
+                .overlay {
+                    Capsule()
+                        .strokeBorder(
+                            Color.white.opacity(0.18),
+                            lineWidth: 0.5
+                        )
+                }
         }
     }
 }
