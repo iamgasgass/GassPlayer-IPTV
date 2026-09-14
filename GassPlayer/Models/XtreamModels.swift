@@ -11,200 +11,86 @@ struct XtreamAuthResponse: Codable {
         let username: String
         let status: String
         let expDate: String?
-
-        enum CodingKeys: String, CodingKey {
-            case username
-            case status
-            case expDate = "exp_date"
-        }
+        enum CodingKeys: String, CodingKey { case username, status; case expDate = "exp_date" }
     }
-
-    struct ServerInfo: Codable {
-        let url: String
-        let port: String
-    }
-
+    struct ServerInfo: Codable { let url: String; let port: String }
     let userInfo: UserInfo
     let serverInfo: ServerInfo
-
-    enum CodingKeys: String, CodingKey {
-        case userInfo = "user_info"
-        case serverInfo = "server_info"
-    }
+    enum CodingKeys: String, CodingKey { case userInfo = "user_info"; case serverInfo = "server_info" }
 }
 
-struct XtreamCategory: Codable, Identifiable, Hashable {
+struct XtreamCategory: Identifiable, Hashable {
     let categoryId: String
     let categoryName: String
+    var id: String { categoryId }
+}
 
-    var id: String {
-        categoryId
-    }
-
+extension XtreamCategory: Decodable {
     enum CodingKeys: String, CodingKey {
         case categoryId = "category_id"
         case categoryName = "category_name"
     }
 
-    init(
-        categoryId: String,
-        categoryName: String
-    ) {
-        self.categoryId = categoryId
-        self.categoryName = categoryName
-    }
-
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(
-            keyedBy: CodingKeys.self
-        )
-
-        categoryId = container.decodeFlexibleString(
-            forKey: .categoryId
-        ) ?? UUID().uuidString
-
-        categoryName = (
-            try? container.decode(
-                String.self,
-                forKey: .categoryName
-            )
-        ) ?? "Categoria senza nome"
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        categoryId = container.decodeFlexibleString(forKey: .categoryId) ?? UUID().uuidString
+        categoryName = (try? container.decode(String.self, forKey: .categoryName)) ?? "Categoria senza nome"
     }
 }
 
-struct XtreamStream: Codable, Identifiable, Hashable {
+struct XtreamStream: Identifiable, Hashable {
     let streamId: Int
     let name: String
     let streamIcon: String?
     let categoryId: String?
     let containerExtension: String?
+    var id: Int { streamId }
+}
 
-    var id: Int {
-        streamId
-    }
-
+extension XtreamStream: Decodable {
     enum CodingKeys: String, CodingKey {
-        case streamId = "stream_id"
-        case name
-        case streamIcon = "stream_icon"
-        case categoryId = "category_id"
-        case containerExtension = "container_extension"
-    }
-
-    init(
-        streamId: Int,
-        name: String,
-        streamIcon: String? = nil,
-        categoryId: String? = nil,
-        containerExtension: String? = nil
-    ) {
-        self.streamId = streamId
-        self.name = name
-        self.streamIcon = streamIcon
-        self.categoryId = categoryId
-        self.containerExtension = containerExtension
+        case streamId = "stream_id", name, categoryId = "category_id"
+        case streamIcon = "stream_icon", containerExtension = "container_extension"
     }
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(
-            keyedBy: CodingKeys.self
-        )
-
-        guard let decodedStreamId = container.decodeFlexibleInt(
-            forKey: .streamId
-        ) else {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard let decodedStreamId = container.decodeFlexibleInt(forKey: .streamId) else {
             throw DecodingError.dataCorruptedError(
-                forKey: .streamId,
-                in: container,
-                debugDescription: "stream_id assente o non interpretabile."
+                forKey: .streamId, in: container,
+                debugDescription: "stream_id assente o non interpretabile: la voce non e' riproducibile e viene scartata"
             )
         }
-
         streamId = decodedStreamId
-
-        name = (
-            try? container.decode(
-                String.self,
-                forKey: .name
-            )
-        ) ?? "Senza nome"
-
-        streamIcon = try? container.decode(
-            String.self,
-            forKey: .streamIcon
-        )
-
-        categoryId = container.decodeFlexibleString(
-            forKey: .categoryId
-        )
-
-        containerExtension = try? container.decode(
-            String.self,
-            forKey: .containerExtension
-        )
+        name = (try? container.decode(String.self, forKey: .name)) ?? "Senza nome"
+        streamIcon = try? container.decode(String.self, forKey: .streamIcon)
+        categoryId = container.decodeFlexibleString(forKey: .categoryId)
+        containerExtension = try? container.decode(String.self, forKey: .containerExtension)
     }
 }
 
-enum XtreamStreamKind: String, Codable, CaseIterable, Identifiable {
-    case live
-    case movie
-    case series
-
-    var id: String {
-        rawValue
-    }
-
+enum XtreamStreamKind: String, CaseIterable, Identifiable {
+    case live, movie, series
+    var id: String { rawValue }
     var pathComponent: String {
-        switch self {
-        case .live:
-            return "live"
-        case .movie:
-            return "movie"
-        case .series:
-            return "series"
-        }
+        switch self { case .live: return "live"; case .movie: return "movie"; case .series: return "series" }
     }
-
     var displayName: String {
         switch self {
-        case .live:
-            return "Live TV"
-        case .movie:
-            return "Film (VOD)"
-        case .series:
-            return "Serie TV"
+        case .live: return "Live TV"
+        case .movie: return "Film (VOD)"
+        case .series: return "Serie TV"
         }
     }
-
-    var title: String {
-        switch self {
-        case .live:
-            return "Canali"
-        case .movie:
-            return "Film"
-        case .series:
-            return "Serie"
-        }
-    }
-
     var systemImage: String {
         switch self {
-        case .live:
-            return "tv"
-        case .movie:
-            return "film"
-        case .series:
-            return "rectangle.stack.fill"
+        case .live: return "tv"
+        case .movie: return "film"
+        case .series: return "rectangle.stack.fill"
         }
     }
-
     var defaultExtension: String {
-        switch self {
-        case .live:
-            return "m3u8"
-        case .movie, .series:
-            return "mp4"
-        }
+        switch self { case .live: return "m3u8"; case .movie, .series: return "mp4" }
     }
 }
 
@@ -223,15 +109,15 @@ enum XtreamError: LocalizedError {
         case .malformedHost(let host):
             return "L'host \"\(host)\" non è un URL valido. Usa il formato http://dominio-o-ip:porta."
         case .invalidURL:
-            return "Impossibile costruire l'URL di richiesta."
+            return "Impossibile costruire l'URL di richiesta. Controlla host, username e password."
         case .unreachable:
             return "Il server non risponde. Verifica connessione e host/porta."
         case .timeout:
-            return "Il server ha impiegato troppo tempo a rispondere."
+            return "Il server ha impiegato troppo tempo a rispondere (timeout)."
         case .httpStatus(let code):
             return "Il server ha risposto con codice HTTP \(code)."
         case .wrongCredentials:
-            return "Username o password non corretti."
+            return "Username o password non corretti per questo server."
         case .decoding:
             return "Risposta del server in un formato inatteso."
         case .noProviderVPN:

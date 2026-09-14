@@ -1,119 +1,74 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @ObservedObject var catalog: XtreamCatalogStore
-    @ObservedObject var settings: CatalogSettings
-    let credentials: XtreamCredentials?
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var refreshing = false
-    @State private var clearing = false
+    @EnvironmentObject var sourceManager: SourceManager
+    @EnvironmentObject var lockManager: ParentalLockManager
+    @EnvironmentObject var themeManager: ThemeManager
+    @StateObject private var cloudSync = CloudSyncService()
+    @StateObject private var downloadManager = DownloadManager()
+    @State private var subtitleLanguage = "it"
+    @State private var traktConnected = false
+    @State private var preferredDNS = "1.1.1.1"
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Catalogo e sincronizzazione") {
-                    Picker(
-                        "Aggiornamento automatico",
-                        selection: $settings.refreshInterval
-                    ) {
-                        ForEach(
-                            CatalogSettings.RefreshInterval.allCases
-                        ) { interval in
-                            Text(interval.title)
-                                .tag(interval)
-                        }
+                Section {
+                    Picker(selection: $themeManager.theme) {
+                        ForEach(AppTheme.allCases) { Text($0.rawValue).tag($0) }
+                    } label: { Label("Tema", systemImage: "circle.lefthalf.filled") }
+                } header: { Label("Aspetto", systemImage: "paintbrush") }
+
+                Section {
+                    Button { cloudSync.pushSources(sourceManager.sources) } label: {
+                        Label("Sincronizza ora con iCloud", systemImage: "icloud.and.arrow.up")
                     }
+                    Text("Sorgenti, preferiti e progresso visione su tutti i tuoi dispositivi Apple.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } header: { Label("Sincronizzazione", systemImage: "icloud") }
 
-                    Toggle(
-                        "Aggiorna all’apertura",
-                        isOn: $settings.refreshOnLaunch
-                    )
+                Section {
+                    Toggle(isOn: $downloadManager.wifiOnly) { Label("Scarica solo su Wi-Fi", systemImage: "wifi") }
+                } header: { Label("Download offline", systemImage: "arrow.down.circle") }
 
-                    if let date = settings.lastRefreshDate {
-                        LabeledContent("Ultimo aggiornamento") {
-                            Text(
-                                date,
-                                format: .dateTime
-                                    .day()
-                                    .month()
-                                    .year()
-                                    .hour()
-                                    .minute()
-                            )
-                            .foregroundStyle(.secondary)
-                        }
+                Section {
+                    Picker(selection: $preferredDNS) {
+                        Text("1.1.1.1 (Cloudflare)").tag("1.1.1.1")
+                        Text("8.8.8.8 (Google)").tag("8.8.8.8")
+                        Text("Automatico (di sistema)").tag("system")
+                    } label: { Label("DNS preferito", systemImage: "network") }
+                    Text("Se i canali vanno spesso in buffering, prova a cambiare DNS.").font(.caption).foregroundStyle(.secondary)
+                } header: { Label("Rete e streaming", systemImage: "antenna.radiowaves.left.and.right") }
+
+                Section {
+                    Picker(selection: $subtitleLanguage) {
+                        Text("Italiano").tag("it"); Text("English").tag("en"); Text("Español").tag("es")
+                    } label: { Label("Lingua sottotitoli", systemImage: "captions.bubble") }
+                } header: { Label("Audio e sottotitoli", systemImage: "waveform") }
+
+                Section {
+                    HStack {
+                        Label("Trakt.tv", systemImage: "checkmark.seal")
+                        Spacer()
+                        Text(traktConnected ? "Connesso" : "Non connesso").foregroundStyle(.secondary)
                     }
+                } header: { Label("Integrazioni", systemImage: "puzzlepiece.extension") }
 
-                    Button {
-                        Task {
-                            await refreshCatalog()
-                        }
-                    } label: {
-                        Label(
-                            "Aggiorna ora",
-                            systemImage: "arrow.clockwise"
-                        )
-                    }
-                    .disabled(refreshing || credentials == nil)
+                Section {
+                    NavigationLink { ParentalLockView() } label: { Label("Parental Lock", systemImage: "lock.shield") }
+                } header: { Label("Sicurezza", systemImage: "checkmark.shield") }
 
-                    Button(role: .destructive) {
-                        Task {
-                            await clearCache()
-                        }
-                    } label: {
-                        Label(
-                            "Cancella cache catalogo",
-                            systemImage: "trash"
-                        )
-                    }
-                    .disabled(clearing)
-                }
+                Section {
+                    NavigationLink { DebugConsoleView() } label: { Label("Debug Mode e log", systemImage: "ladybug") }
+                    NavigationLink { ATSDiagnosticView() } label: { Label("Diagnostica rete (ATS)", systemImage: "network.badge.shield.half.filled") }
+                } header: { Label("Diagnostica", systemImage: "wrench.and.screwdriver") }
 
-                Section("Riproduzione") {
-                    Toggle(
-                        "Mostra programma corrente",
-                        isOn: $settings.showEPGInChannelTiles
-                    )
-
-                    Toggle(
-                        "Precarica dettagli delle serie",
-                        isOn: $settings.preloadSeries
-                    )
-                }
+                Section {
+                    Text("Nessun livello Pro: ogni modulo è attivo di default per tutti gli utenti.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } header: { Label("Trasparenza", systemImage: "info.circle") }
             }
             .navigationTitle("Impostazioni")
-            .toolbar {
-                ToolbarItem(
-                    placement: .topBarTrailing
-                ) {
-                    Button("Fine") {
-                        dismiss()
-                    }
-                }
-            }
         }
-    }
-
-    private func refreshCatalog() async {
-        guard let credentials, !refreshing else {
-            return
-        }
-
-        refreshing = true
-        await catalog.refresh(credentials: credentials)
-        refreshing = false
-    }
-
-    private func clearCache() async {
-        guard !clearing else {
-            return
-        }
-
-        clearing = true
-        await catalog.clearPersistedCache(
-            credentials: credentials
-        )
-        clearing = false
     }
 }
