@@ -11,7 +11,7 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    titleSection
+                    heading
 
                     if hasActiveSource {
                         connectedSourceCard
@@ -19,19 +19,19 @@ struct HomeView: View {
                         emptySourceCard
                     }
 
-                    destinationCard(
+                    libraryDestination(
                         title: "Live TV",
                         subtitle: hasActiveSource
-                            ? "Canali in diretta dalla sorgente attiva."
-                            : "I canali appariranno qui.",
+                            ? "Canali in diretta dalla sorgente attiva"
+                            : "I canali appariranno qui",
                         systemImage: "tv.fill",
                         tint: .red,
                         destination: .liveTV
                     )
 
-                    vodAndSeriesSection
+                    onDemandSection
 
-                    sourceStatusCard
+                    sourceSummary
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -39,17 +39,13 @@ struct HomeView: View {
             }
             .background(background)
             .navigationTitle("Home")
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 toolbarContent
             }
         }
     }
 
-    // MARK: - Toolbar (stessa struttura usata in ChannelGridView / SourcesView:
-    // pulsanti Ricerca e Impostazioni SEMPRE separati, non raggruppati in un
-    // unico menu. Su iOS 26 viene inserito un ToolbarSpacer fisso tra i due
-    // pulsanti così il sistema li disegna come due "pillole" di vetro
-    // distinte invece di un'unica pillola condivisa.)
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if #available(iOS 26.0, *) {
@@ -70,14 +66,14 @@ struct HomeView: View {
         }
     }
 
-    private var titleSection: some View {
+    private var heading: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Tutto il tuo intrattenimento")
                 .font(.title2.bold())
 
             Text(
                 hasActiveSource
-                    ? "Scegli cosa guardare dalla tua sorgente attiva."
+                    ? "Scegli cosa guardare dalla sorgente attiva."
                     : "Configura una sorgente dalle Impostazioni quando vuoi."
             )
             .font(.subheadline)
@@ -95,16 +91,12 @@ struct HomeView: View {
                         .frame(width: 48, height: 48)
                         .background(
                             Color.accentColor.opacity(0.16),
-                            in: RoundedRectangle(
-                                cornerRadius: 15,
-                                style: .continuous
-                            )
+                            in: RoundedRectangle(cornerRadius: 15, style: .continuous)
                         )
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Inizia quando vuoi")
                             .font(.headline)
-
                         Text("Nessuna sorgente configurata")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -119,12 +111,13 @@ struct HomeView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-                GlassPrimaryButton(title: "Aggiungi sorgente") {
+                GlassPrimaryButton(
+                    title: "Aggiungi sorgente",
+                    systemImage: "plus"
+                ) {
                     overlayState.showSettings = true
                 }
-                .accessibilityHint(
-                    "Apre le Impostazioni per configurare una sorgente"
-                )
+                .accessibilityHint("Apre le Impostazioni per configurare una sorgente")
             }
         }
     }
@@ -139,65 +132,23 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Sorgente pronta")
                         .font(.headline)
-
-                    Text(
-                        sourceManager.activeSource?.name
-                            ?? "La sorgente attiva è pronta."
-                    )
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button {
-                    overlayState.showSettings = true
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.title3)
+                    Text(sourceManager.activeSource?.name ?? "Sorgente attiva")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
-                        .frame(width: 36, height: 36)
+                        .lineLimit(1)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Gestisci sorgente")
-            }
-        }
-    }
-
-    private var vodAndSeriesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("On demand")
-                    .font(.title3.weight(.semibold))
 
                 Spacer()
-            }
 
-            HStack(spacing: 12) {
-                compactDestinationCard(
-                    title: "VOD",
-                    subtitle: hasActiveSource
-                        ? "Film e contenuti on demand"
-                        : "Disponibile con una sorgente",
-                    systemImage: "film.fill",
-                    tint: .purple,
-                    destination: .vod
-                )
-
-                compactDestinationCard(
-                    title: "Serie TV",
-                    subtitle: hasActiveSource
-                        ? "Scopri le tue serie"
-                        : "Disponibile con una sorgente",
-                    systemImage: "rectangle.stack.fill",
-                    tint: .blue,
-                    destination: .series
-                )
+                Button("Gestisci") {
+                    overlayState.showSettings = true
+                }
+                .font(.subheadline.weight(.semibold))
             }
         }
     }
 
-    private func destinationCard(
+    private func libraryDestination(
         title: String,
         subtitle: String,
         systemImage: String,
@@ -208,13 +159,9 @@ struct HomeView: View {
             HStack {
                 Text(title)
                     .font(.title3.weight(.semibold))
-
                 Spacer()
-
-                Button("Apri") {
-                    selectedTab = destination
-                }
-                .font(.subheadline.weight(.semibold))
+                Button("Apri") { selectedTab = destination }
+                    .font(.subheadline.weight(.semibold))
             }
 
             Button {
@@ -228,21 +175,16 @@ struct HomeView: View {
                             .frame(width: 50, height: 50)
                             .background(
                                 tint.opacity(0.16),
-                                in: RoundedRectangle(
-                                    cornerRadius: 15,
-                                    style: .continuous
-                                )
+                                in: RoundedRectangle(cornerRadius: 15, style: .continuous)
                             )
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text(title)
                                 .font(.headline)
                                 .foregroundStyle(.primary)
-
                             Text(subtitle)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.leading)
                         }
 
                         Spacer(minLength: 8)
@@ -259,7 +201,32 @@ struct HomeView: View {
         }
     }
 
-    private func compactDestinationCard(
+    private var onDemandSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("On demand")
+                .font(.title3.weight(.semibold))
+
+            HStack(spacing: 12) {
+                compactDestination(
+                    title: "VOD",
+                    subtitle: hasActiveSource ? "Film e contenuti on demand" : "Disponibile con una sorgente",
+                    systemImage: "film.fill",
+                    tint: .purple,
+                    destination: .vod
+                )
+
+                compactDestination(
+                    title: "Serie TV",
+                    subtitle: hasActiveSource ? "Scopri le tue serie" : "Disponibile con una sorgente",
+                    systemImage: "rectangle.stack.fill",
+                    tint: .blue,
+                    destination: .series
+                )
+            }
+        }
+    }
+
+    private func compactDestination(
         title: String,
         subtitle: String,
         systemImage: String,
@@ -277,10 +244,7 @@ struct HomeView: View {
                         .frame(width: 42, height: 42)
                         .background(
                             tint.opacity(0.16),
-                            in: RoundedRectangle(
-                                cornerRadius: 13,
-                                style: .continuous
-                            )
+                            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
                         )
 
                     Spacer(minLength: 8)
@@ -302,25 +266,20 @@ struct HomeView: View {
         .accessibilityHint(subtitle)
     }
 
-    private var sourceStatusCard: some View {
+    private var sourceSummary: some View {
         GlassCard {
             HStack(spacing: 12) {
                 Image(systemName: "square.stack.3d.up.fill")
-                    .font(.body.weight(.semibold))
                     .foregroundStyle(.blue)
                     .frame(width: 38, height: 38)
                     .background(
                         Color.blue.opacity(0.15),
-                        in: RoundedRectangle(
-                            cornerRadius: 12,
-                            style: .continuous
-                        )
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                     )
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Sorgenti")
                         .font(.subheadline.weight(.medium))
-
                     Text(
                         sourceManager.sources.isEmpty
                             ? "Nessuna sorgente configurata"
@@ -382,34 +341,40 @@ struct EmptyLibraryView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
 
-                GlassPrimaryButton(title: "Aggiungi sorgente") {
+                GlassPrimaryButton(
+                    title: "Aggiungi sorgente",
+                    systemImage: "plus"
+                ) {
                     overlayState.showSettings = true
                 }
-                .accessibilityHint(
-                    "Apre le Impostazioni per configurare una sorgente"
-                )
 
                 Spacer()
             }
             .padding()
             .navigationTitle(kind.displayName)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if #available(iOS 26.0, *) {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        GlassSearchButton()
-                    }
-                    ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        GlassSettingsButton()
-                    }
-                } else {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        GlassSearchButton()
-                    }
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        GlassSettingsButton()
-                    }
-                }
+                toolbarContent
+            }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSearchButton()
+            }
+            ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSettingsButton()
+            }
+        } else {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSearchButton()
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSettingsButton()
             }
         }
     }
