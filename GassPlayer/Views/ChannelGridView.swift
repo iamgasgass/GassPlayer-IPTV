@@ -156,17 +156,34 @@ struct ChannelGridView: View {
             }
             .navigationTitle(kind.displayName)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
-                ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        Task {
-                            await xtreamCatalog.refresh(credentials: credentials, kind: kind)
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
+                    ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+                    ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button {
+                            Task {
+                                await xtreamCatalog.refresh(credentials: credentials, kind: kind)
+                            }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
                         }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
+                        .accessibilityLabel("Aggiorna \(kind.displayName)")
                     }
-                    .accessibilityLabel("Aggiorna \(kind.displayName)")
+                } else {
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
+                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button {
+                            Task {
+                                await xtreamCatalog.refresh(credentials: credentials, kind: kind)
+                            }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .accessibilityLabel("Aggiorna \(kind.displayName)")
+                    }
                 }
             }
             .task(id: sourceIdentity) {
