@@ -21,34 +21,33 @@ private struct SelectedPlayable: Identifiable, Hashable {
 
 struct GlobalSearchView: View {
     @EnvironmentObject var sourceManager: SourceManager
+    @StateObject private var history = SearchHistoryStore()
+
     @State private var query = ""
     @State private var results: [SearchResult] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
     @State private var selectedPlayable: SelectedPlayable?
     @State private var selectedSeries: SelectedSeriesResult?
+    @State private var selectedKindFilter: XtreamStreamKind?
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var filteredResults: [SearchResult] {
+        guard let selectedKindFilter else { return results }
+        return results.filter { $0.kind == selectedKindFilter }
+    }
 
     var body: some View {
         NavigationStack {
-            List(results) { result in
-                Button {
-                    open(result)
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(result.title).font(.headline)
-                            Text(result.sourceName).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Image(systemName: result.kind.systemImage)
-                            .foregroundStyle(.secondary)
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                    .contentShape(Rectangle())
+            Group {
+                if trimmedQuery.count < 2 {
+                    recentSearchesView
+                } else {
+                    searchResultsView
                 }
-                .buttonStyle(.plain)
             }
             .navigationTitle("Ricerca globale")
             .searchable(text: $query, prompt: "Cerca in tutte le playlist")
@@ -59,6 +58,104 @@ struct GlobalSearchView: View {
             }
             .navigationDestination(item: $selectedSeries) { selection in
                 SeriesEpisodesView(credentials: selection.credentials, seriesId: selection.seriesId, seriesName: selection.name)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var searchResultsView: some View {
+        VStack(spacing: 0) {
+            filterChips
+            if filteredResults.isEmpty && !isSearching {
+                ContentUnavailableView.search(text: query)
+            } else {
+                List(filteredResults) { result in
+                    Button {
+                        open(result)
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(result.title).font(.headline)
+                                Text(result.sourceName).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: result.kind.systemImage)
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .listStyle(.plain)
+            }
+        }
+    }
+
+    private var filterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                filterChip(title: "Tutti (\(results.count))", isSelected: selectedKindFilter == nil) {
+                    selectedKindFilter = nil
+                }
+                ForEach(XtreamStreamKind.allCases) { kind in
+                    let count = results.filter { $0.kind == kind }.count
+                    filterChip(title: "\(kind.displayName) (\(count))", isSelected: selectedKindFilter == kind) {
+                        selectedKindFilter = kind
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func filterChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption)
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected ? Color.white : Color.primary)
+        .background(isSelected ? Color.accentColor : Color.secondary.opacity(0.15), in: Capsule())
+    }
+
+    @ViewBuilder
+    private var recentSearchesView: some View {
+        if history.items.isEmpty {
+            ContentUnavailableView(
+                "Cerca nel catalogo",
+                systemImage: "magnifyingglass",
+                description: Text("Inserisci almeno due caratteri per cercare canali, film e serie in tutte le tue sorgenti.")
+            )
+        } else {
+            List {
+                Section {
+                    ForEach(history.items, id: \.self) { item in
+                        Button {
+                            query = item
+                        } label: {
+                            Label(item, systemImage: "clock.arrow.circlepath")
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) { history.remove(item) } label: {
+                                Label("Rimuovi", systemImage: "trash")
+                            }
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Ricerche recenti")
+                        Spacer()
+                        Button("Cancella") { history.clear() }
+                            .font(.caption)
+                    }
+                }
             }
         }
     }
@@ -87,12 +184,17 @@ struct GlobalSearchView: View {
     }
 
     private func runSearch(_ text: String) async {
-        guard text.count >= 2 else { results = []; return }
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 else {
+            results = []
+            return
+        }
         isSearching = true
         let service = GlobalSearchService(configs: sourceManager.sources)
         let newResults = await service.search(text)
         guard !Task.isCancelled else { return }
         results = newResults
+        history.record(text)
+        selectedKindFilter = nil
         isSearching = false
     }
 }
