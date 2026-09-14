@@ -1,23 +1,59 @@
 import SwiftUI
 
 struct GlassCard<Content: View>: View {
-    @ViewBuilder let content: Content
+    private let content: Content
+    private let cornerRadius: CGFloat
+    private let padding: CGFloat
+
+    init(
+        cornerRadius: CGFloat = 20,
+        padding: CGFloat = 16,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.cornerRadius = cornerRadius
+        self.padding = padding
+        self.content = content()
+    }
 
     var body: some View {
         content
-            .padding()
-            .modifier(GlassCardBackground())
+            .padding(padding)
+            .modifier(GlassCardBackground(cornerRadius: cornerRadius))
     }
 }
 
 struct GlassCardBackground: ViewModifier {
+    let cornerRadius: CGFloat
+
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.glassEffect(.regular, in: .rect(cornerRadius: 20, style: .continuous))
+            content
+                .glassEffect(
+                    .regular,
+                    in: .rect(
+                        cornerRadius: cornerRadius,
+                        style: .continuous
+                    )
+                )
         } else {
             content
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.15), lineWidth: 1))
+                .background(
+                    .ultraThinMaterial,
+                    in: RoundedRectangle(
+                        cornerRadius: cornerRadius,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: cornerRadius,
+                        style: .continuous
+                    )
+                    .strokeBorder(
+                        Color.white.opacity(0.15),
+                        lineWidth: 0.5
+                    )
+                }
         }
     }
 }
