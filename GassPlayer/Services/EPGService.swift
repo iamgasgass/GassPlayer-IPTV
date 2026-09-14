@@ -1,7 +1,17 @@
 import Foundation
 
+/// Client EPG per provider Xtream.
+///
+/// Caratteristiche:
+/// - Richiede il breve palinsesto per canale con limite validato.
+/// - Mantiene una cache in memoria per canale/giorno/limite.
+/// - Decodifica i campi Base64 diffusi nelle risposte Xtream.
+/// - Costruisce URL catch-up senza lasciare che username/password contenenti
+///   slash o caratteri riservati alterino la struttura del path.
+/// - Riconosce timeout, credenziali errate e status HTTP non riusciti.
 struct EPGService {
     let credentials: XtreamCredentials
+
     private let session: URLSession
     private let cachePrefix: String
 
@@ -11,45 +21,74 @@ struct EPGService {
         self.cachePrefix = Self.makeCachePrefix(credentials: credentials)
     }
 
-    func shortEPG(streamId: Int, limit: Int = 10, forceRefresh: Bool = false) async throws -> [EPGProgram] {
+    func shortEPG(
+        streamId: Int,
+        limit: Int = 10,
+        forceRefresh: Bool = false
+    ) async throws -> [EPGProgram] {
+        guard streamId > 0 else {
+            throw XtreamError.invalidURL
+        }
+
         let boundedLimit = min(max(limit, 1), 100)
         let dayKey = Self.dayFormatter.string(from: Date())
         let key = "\(cachePrefix).short.\(streamId).\(dayKey).\(boundedLimit)"
 
-        if !forceRefresh, let cached: [EPGProgram] = await CacheService.shared.value(for: key) {
+        if !forceRefresh,
+           let cached: [EPGProgram] = await CacheService.shared.value(for: key) {
             return cached
         }
 
-        let data = try await performRequest(
-            action: "get_short_epg",
-            extra: [
-                "stream_id": String(streamId),
-                "limit": String(boundedLimit)
-            ]
-        )
-        let programs = try decodePrograms(from: data)
-        await CacheService.shared.set(programs, for: key, ttl: 900)
+        let payload = try await RetryPolicy.withRetry(
+            maxAttempts: 3,
+            shouldRetry: Self.shouldRetry
+        ) {
+            try await performRequest(
+                action: "get_short_epg",
+                extra: [
+                    "stream_id": String(streamId),
+                    "limit": String(boundedLimit)
+                ]
+            )
+        }
+
+        let programs = try decodePrograms(from: payload)
+        await CacheService.shared.set(programs, for: key, ttl: 15 * 60)
         return programs
     }
 
+    /// Restituisce l'URL catch-up soltanto per richieste valide.
+    /// Il chiamante deve inoltre verificare `EPGProgram.hasArchive` prima di
+    /// presentare l'azione di riproduzione catch-up all'utente.
     func catchupURL(for request: CatchupRequest) -> URL? {
-        var host = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines)
-        while host.hasSuffix("/") { host.removeLast() }
-        guard !host.isEmpty else { return nil }
+        guard request.streamId > 0, request.durationMinutes > 0 else {
+            return nil
+        }
 
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone.autoupdatingCurrent
-        formatter.dateFormat = "yyyy-MM-dd:HH-mm"
+        guard let baseURL = normalizedBaseURL() else {
+            return nil
+        }
 
-        let user = safePathSegment(credentials.username)
-        let password = safePathSegment(credentials.password)
-        let start = safePathSegment(formatter.string(from: request.start))
-        return URL(string: "\(host)/timeshift/\(user)/\(password)/\(max(1, request.durationMinutes))/\(start)/\(request.streamId).ts")
+        let duration = min(max(request.durationMinutes, 1), 24 * 60)
+        let start = Self.catchupDateFormatter.string(from: request.start)
+
+        return appendingPathComponents(
+            [
+                "timeshift",
+                credentials.username,
+                credentials.password,
+                String(duration),
+                start,
+                String(request.streamId) + ".ts"
+            ],
+            to: baseURL
+        )
     }
 
-    private func performRequest(action: String, extra: [String: String]) async throws -> Data {
+    private func performRequest(
+        action: String,
+        extra: [String: String]
+    ) async throws -> Data {
         let url = try endpoint(action: action, extra: extra)
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -63,6 +102,8 @@ struct EPGService {
             return data
         } catch let error as XtreamError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as URLError where error.code == .timedOut {
             throw XtreamError.timeout
         } catch let error as URLError {
@@ -72,31 +113,83 @@ struct EPGService {
         }
     }
 
-    private func endpoint(action: String, extra: [String: String]) throws -> URL {
-        var host = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !host.isEmpty,
-              let parsed = URL(string: host),
-              let scheme = parsed.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              parsed.host != nil else {
-            throw XtreamError.malformedHost(host)
+    private func endpoint(
+        action: String,
+        extra: [String: String]
+    ) throws -> URL {
+        guard var components = normalizedBaseComponents() else {
+            throw XtreamError.malformedHost(credentials.host)
         }
 
-        while host.hasSuffix("/") { host.removeLast() }
-        guard var components = URLComponents(string: host + "/player_api.php") else {
-            throw XtreamError.invalidURL
-        }
+        let existingPath = components.path.trimmingCharacters(
+            in: CharacterSet(charactersIn: "/")
+        )
+        components.path = existingPath.isEmpty
+            ? "/player_api.php"
+            : "/\(existingPath)/player_api.php"
+        components.fragment = nil
 
-        var items = [
+        var queryItems = [
             URLQueryItem(name: "username", value: credentials.username),
             URLQueryItem(name: "password", value: credentials.password),
             URLQueryItem(name: "action", value: action)
         ]
+
         for (key, value) in extra.sorted(by: { $0.key < $1.key }) {
-            items.append(URLQueryItem(name: key, value: value))
+            queryItems.append(URLQueryItem(name: key, value: value))
         }
-        components.queryItems = items
-        guard let url = components.url else { throw XtreamError.invalidURL }
+
+        components.queryItems = queryItems
+
+        guard let url = components.url else {
+            throw XtreamError.invalidURL
+        }
+
+        return url
+    }
+
+    private func normalizedBaseURL() -> URL? {
+        normalizedBaseComponents()?.url
+    }
+
+    private func normalizedBaseComponents() -> URLComponents? {
+        let rawHost = credentials.host.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
+        guard !rawHost.isEmpty,
+              var components = URLComponents(string: rawHost),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              components.host != nil,
+              components.query == nil,
+              components.fragment == nil else {
+            return nil
+        }
+
+        components.scheme = scheme
+        components.path = components.path.trimmingCharacters(
+            in: CharacterSet(charactersIn: "/")
+        )
+        components.query = nil
+        components.fragment = nil
+        return components
+    }
+
+    private func appendingPathComponents(
+        _ components: [String],
+        to baseURL: URL
+    ) -> URL? {
+        var url = baseURL
+
+        for component in components {
+            let encoded = Self.encodePathSegment(component)
+            guard !encoded.isEmpty else {
+                return nil
+            }
+            url.appendPathComponent(encoded)
+        }
+
         return url
     }
 
@@ -111,7 +204,11 @@ struct EPGService {
                 let hasArchive: Int?
 
                 enum CodingKeys: String, CodingKey {
-                    case id, title, description, start, end
+                    case id
+                    case title
+                    case description
+                    case start
+                    case end
                     case hasArchive = "has_archive"
                 }
             }
@@ -124,24 +221,39 @@ struct EPGService {
         }
 
         let response: RawEPGResponse
+
         do {
             response = try JSONDecoder().decode(RawEPGResponse.self, from: data)
         } catch {
             if let object = try? JSONSerialization.jsonObject(with: data),
-               let dictionary = object as? [String: Any], dictionary.isEmpty {
+               let dictionary = object as? [String: Any],
+               dictionary.isEmpty {
                 return []
             }
             throw XtreamError.decoding(error)
         }
 
         let programs = response.epgListings.compactMap { item -> EPGProgram? in
-            guard let start = Self.parseDate(item.start), let end = Self.parseDate(item.end), end > start else {
-                DebugLogger.logAsync(.warning, "EPG: programma scartato per data non valida sul canale richiesto")
+            guard let start = Self.parseDate(item.start),
+                  let end = Self.parseDate(item.end),
+                  end > start else {
+                DebugLogger.logAsync(
+                    .warning,
+                    "EPG: programma scartato per date non valide sul canale richiesto"
+                )
                 return nil
             }
+
+            let title = Self.decodeIfBase64(item.title)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard !title.isEmpty else {
+                return nil
+            }
+
             return EPGProgram(
                 id: item.id,
-                title: Self.decodeIfBase64(item.title),
+                title: title,
                 description: item.description.map(Self.decodeIfBase64),
                 start: start,
                 end: end,
@@ -149,39 +261,93 @@ struct EPGService {
             )
         }
 
-        return programs.sorted { $0.start < $1.start }
+        return stableDeduplicated(programs.sorted { $0.start < $1.start })
     }
 
-    private static func parseDate(_ value: String) -> Date? {
-        for formatter in dateFormatters where formatter.date(from: value) != nil {
-            return formatter.date(from: value)
+    private static func stableDeduplicated(
+        _ programs: [EPGProgram]
+    ) -> [EPGProgram] {
+        var seen = Set<String>()
+
+        return programs.filter { program in
+            let key = "\(program.id)|\(program.start.timeIntervalSince1970)|\(program.end.timeIntervalSince1970)"
+            return seen.insert(key).inserted
         }
+    }
+
+    private static func parseDate(_ rawValue: String) -> Date? {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !value.isEmpty else {
+            return nil
+        }
+
+        for formatter in dateFormatters {
+            if let date = formatter.date(from: value) {
+                return date
+            }
+        }
+
         return nil
     }
 
     private static func decodeIfBase64(_ value: String) -> String {
-        guard let data = Data(base64Encoded: value, options: .ignoreUnknownCharacters),
-              let decoded = String(data: data, encoding: .utf8),
-              !decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard let data = Data(
+            base64Encoded: value,
+            options: .ignoreUnknownCharacters
+        ),
+        let decoded = String(data: data, encoding: .utf8),
+        !decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return value
         }
+
         return decoded
     }
 
-    private func safePathSegment(_ raw: String) -> String {
-        raw.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? raw
-    }
-
     private func validate(_ response: URLResponse) throws {
-        guard let http = response as? HTTPURLResponse else { return }
-        switch http.statusCode {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw XtreamError.unreachable(
+                underlying: URLError(.badServerResponse)
+            )
+        }
+
+        switch httpResponse.statusCode {
         case 200..<300:
             return
         case 401, 403:
             throw XtreamError.wrongCredentials
         default:
-            throw XtreamError.httpStatus(http.statusCode)
+            throw XtreamError.httpStatus(httpResponse.statusCode)
         }
+    }
+
+    private static func shouldRetry(_ error: Error) -> Bool {
+        guard let xtreamError = error as? XtreamError else {
+            return !(error is CancellationError)
+        }
+
+        switch xtreamError {
+        case .wrongCredentials,
+             .malformedHost,
+             .invalidURL,
+             .decoding:
+            return false
+
+        case .unreachable,
+             .timeout,
+             .httpStatus,
+             .noProviderVPN:
+            return true
+        }
+    }
+
+    /// Codifica un singolo componente path, non un URL completo.
+    /// `.urlPathAllowed` non è adatto a username/password perché include `/`.
+    private static func encodePathSegment(_ value: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#%")
+
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
     }
 
     private static let dayFormatter: DateFormatter = {
@@ -190,6 +356,15 @@ struct EPGService {
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.timeZone = TimeZone.autoupdatingCurrent
         formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static let catchupDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone.autoupdatingCurrent
+        formatter.dateFormat = "yyyy-MM-dd:HH-mm"
         return formatter
     }()
 
@@ -208,15 +383,21 @@ struct EPGService {
         return formatter
     }
 
-    private static func makeCachePrefix(credentials: XtreamCredentials) -> String {
+    private static func makeCachePrefix(
+        credentials: XtreamCredentials
+    ) -> String {
         let host = credentials.host
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             .lowercased()
+
         let stableInput = "\(host)|\(credentials.username)"
-        let digest = stableInput.utf8.reduce(UInt64(14695981039346656037)) { partial, byte in
-            (partial ^ UInt64(byte)) &* UInt64(1099511628211)
+        let digest = stableInput.utf8.reduce(UInt64(14_695_981_039_346_656_037)) {
+            partial,
+            byte in
+            (partial ^ UInt64(byte)) &* UInt64(1_099_511_628_211)
         }
+
         return "epg.\(String(digest, radix: 16))"
     }
 }
