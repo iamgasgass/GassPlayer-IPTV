@@ -26,6 +26,7 @@ struct ChannelGridView: View {
                     uncategorized.append(stream)
                     continue
                 }
+
                 grouped[categoryID, default: []].append(stream)
             }
 
@@ -35,9 +36,36 @@ struct ChannelGridView: View {
 
         static func normalizedCategoryID(_ categoryID: String?) -> String? {
             guard let categoryID else { return nil }
-            let normalized = categoryID.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let normalized = categoryID.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
             return normalized.isEmpty ? nil : normalized
         }
+    }
+
+    private enum GridMetrics {
+        static let comfortableColumnMinimum: CGFloat = 110
+        static let comfortableColumnMaximum: CGFloat = 140
+        static let comfortableColumnSpacing: CGFloat = 14
+        static let comfortableRowSpacing: CGFloat = 16
+        static let comfortableHorizontalPadding: CGFloat = 16
+
+        static let compactColumnMinimum: CGFloat = 84
+        static let compactColumnMaximum: CGFloat = 110
+        static let compactColumnSpacing: CGFloat = 10
+        static let compactRowSpacing: CGFloat = 10
+        static let compactHorizontalPadding: CGFloat = 10
+
+        static let comfortableArtworkSize: CGFloat = 100
+        static let compactArtworkSize: CGFloat = 84
+
+        static let comfortableMoviePosterHeight: CGFloat = 150
+        static let compactMoviePosterHeight: CGFloat = 126
+
+        static let comfortableSeriesPosterHeight: CGFloat = 140
+        static let compactSeriesPosterHeight: CGFloat = 118
     }
 
     let credentials: XtreamCredentials
@@ -45,6 +73,12 @@ struct ChannelGridView: View {
 
     @EnvironmentObject private var contentManagement: ContentManagementService
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
+
+    @AppStorage("gassplayer.grid.density")
+    private var channelGridDensity = "comfortable"
+
+    @AppStorage("gassplayer.grid.showChannelNumbers")
+    private var showChannelNumbers = false
 
     @State private var selectedCategory: CategorySelection = .all
     @State private var selectedStream: XtreamStream?
@@ -57,9 +91,63 @@ struct ChannelGridView: View {
         XtreamAPIService(credentials: credentials)
     }
 
-    private let columns = [
-        GridItem(.adaptive(minimum: 110, maximum: 140), spacing: 14)
-    ]
+    private var isCompactGrid: Bool {
+        channelGridDensity == "compact"
+    }
+
+    private var columns: [GridItem] {
+        if isCompactGrid {
+            return [
+                GridItem(
+                    .adaptive(
+                        minimum: GridMetrics.compactColumnMinimum,
+                        maximum: GridMetrics.compactColumnMaximum
+                    ),
+                    spacing: GridMetrics.compactColumnSpacing
+                )
+            ]
+        }
+
+        return [
+            GridItem(
+                .adaptive(
+                    minimum: GridMetrics.comfortableColumnMinimum,
+                    maximum: GridMetrics.comfortableColumnMaximum
+                ),
+                spacing: GridMetrics.comfortableColumnSpacing
+            )
+        ]
+    }
+
+    private var gridRowSpacing: CGFloat {
+        isCompactGrid
+            ? GridMetrics.compactRowSpacing
+            : GridMetrics.comfortableRowSpacing
+    }
+
+    private var gridHorizontalPadding: CGFloat {
+        isCompactGrid
+            ? GridMetrics.compactHorizontalPadding
+            : GridMetrics.comfortableHorizontalPadding
+    }
+
+    private var artworkSize: CGFloat {
+        isCompactGrid
+            ? GridMetrics.compactArtworkSize
+            : GridMetrics.comfortableArtworkSize
+    }
+
+    private var moviePosterHeight: CGFloat {
+        isCompactGrid
+            ? GridMetrics.compactMoviePosterHeight
+            : GridMetrics.comfortableMoviePosterHeight
+    }
+
+    private var seriesPosterHeight: CGFloat {
+        isCompactGrid
+            ? GridMetrics.compactSeriesPosterHeight
+            : GridMetrics.comfortableSeriesPosterHeight
+    }
 
     private var categories: [XtreamCategory] {
         xtreamCatalog.categories(for: kind)
@@ -77,8 +165,10 @@ struct ChannelGridView: View {
         switch selectedCategory {
         case .all:
             return allStreams
+
         case .category(let categoryID):
             return catalogIndex.streamsByCategory[categoryID] ?? []
+
         case .uncategorized:
             return catalogIndex.uncategorizedStreams
         }
@@ -88,12 +178,22 @@ struct ChannelGridView: View {
         switch selectedCategory {
         case .all:
             return allSeries
+
         case .category(let categoryID):
-            return allSeries.filter { CatalogIndex.normalizedCategoryID($0.categoryId) == categoryID }
+            return allSeries.filter {
+                CatalogIndex.normalizedCategoryID($0.categoryId) == categoryID
+            }
+
         case .uncategorized:
             let categoryIDs = Set(categories.map(\.categoryId))
+
             return allSeries.filter {
-                guard let categoryID = CatalogIndex.normalizedCategoryID($0.categoryId) else { return true }
+                guard let categoryID = CatalogIndex.normalizedCategoryID(
+                    $0.categoryId
+                ) else {
+                    return true
+                }
+
                 return categoryID == "0" || !categoryIDs.contains(categoryID)
             }
         }
@@ -101,21 +201,35 @@ struct ChannelGridView: View {
 
     private var visibleCategories: [XtreamCategory] {
         if kind == .series {
-            return categories.filter { categoryCount(for: $0.categoryId) > 0 }
+            return categories.filter {
+                categoryCount(for: $0.categoryId) > 0
+            }
         }
-        return categories.filter { !(catalogIndex.streamsByCategory[$0.categoryId] ?? []).isEmpty }
+
+        return categories.filter {
+            !(catalogIndex.streamsByCategory[$0.categoryId] ?? []).isEmpty
+        }
     }
 
     private var uncategorizedCount: Int {
-        kind == .series ? seriesUncategorizedCount : catalogIndex.uncategorizedStreams.count
+        kind == .series
+            ? seriesUncategorizedCount
+            : catalogIndex.uncategorizedStreams.count
     }
 
     private var seriesUncategorizedCount: Int {
         let categoryIDs = Set(categories.map(\.categoryId))
+
         return allSeries.lazy.filter {
-            guard let categoryID = CatalogIndex.normalizedCategoryID($0.categoryId) else { return true }
+            guard let categoryID = CatalogIndex.normalizedCategoryID(
+                $0.categoryId
+            ) else {
+                return true
+            }
+
             return categoryID == "0" || !categoryIDs.contains(categoryID)
-        }.count
+        }
+        .count
     }
 
     private var itemCount: Int {
@@ -123,17 +237,43 @@ struct ChannelGridView: View {
     }
 
     private var sourceIdentity: String {
-        "\(kind.rawValue)|\(categories.map(\.categoryId).joined(separator: ","))|\(allStreams.count)"
+        let categoryIdentity = categories
+            .map { "\($0.categoryId):\($0.categoryName)" }
+            .joined(separator: "|")
+
+        let streamIdentity = allStreams
+            .map { "\($0.streamId):\($0.categoryId ?? "")" }
+            .joined(separator: "|")
+
+        let seriesIdentity = allSeries
+            .map { "\($0.seriesId):\($0.categoryId ?? "")" }
+            .joined(separator: "|")
+
+        return [
+            kind.rawValue,
+            credentials.host.lowercased(),
+            credentials.username,
+            categoryIdentity,
+            streamIdentity,
+            seriesIdentity
+        ]
+        .joined(separator: "§")
     }
 
     private var isInitialLoadPending: Bool {
         guard itemCount == 0 else { return false }
+
         switch xtreamCatalog.state {
         case .idle, .loading:
             return true
+
         default:
             return false
         }
+    }
+
+    private var shouldShowChannelNumbers: Bool {
+        kind == .live && showChannelNumbers
     }
 
     var body: some View {
@@ -143,7 +283,8 @@ struct ChannelGridView: View {
 
                 if isInitialLoadPending {
                     loadingView
-                } else if case .failed(let message) = xtreamCatalog.state, itemCount == 0 {
+                } else if case .failed(let message) = xtreamCatalog.state,
+                          itemCount == 0 {
                     ContentUnavailableView(
                         "Impossibile caricare il catalogo",
                         systemImage: "exclamationmark.triangle",
@@ -156,59 +297,91 @@ struct ChannelGridView: View {
             }
             .navigationTitle(kind.displayName)
             .toolbar {
-                if #available(iOS 26.0, *) {
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
-                    ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
-                    ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button {
-                            Task {
-                                await xtreamCatalog.refresh(credentials: credentials, kind: kind)
-                            }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .accessibilityLabel("Aggiorna \(kind.displayName)")
-                    }
-                } else {
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
-                    ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button {
-                            Task {
-                                await xtreamCatalog.refresh(credentials: credentials, kind: kind)
-                            }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .accessibilityLabel("Aggiorna \(kind.displayName)")
-                    }
-                }
+                toolbarContent
             }
             .task(id: sourceIdentity) {
                 rebuildIndexIfNeeded()
+
                 guard kind == .live else { return }
+
                 await loadEPGForVisibleStreams()
             }
             .onChange(of: selectedCategory) { _, _ in
                 guard kind == .live else { return }
-                Task { await loadEPGForVisibleStreams() }
+
+                Task {
+                    await loadEPGForVisibleStreams()
+                }
             }
             .fullScreenCover(item: $selectedStream) { stream in
                 if let url = service.streamURL(for: stream, kind: kind) {
                     AdaptivePlayerView(url: url, title: stream.name)
                 } else {
-                    ContentUnavailableView("URL dello stream non valido", systemImage: "exclamationmark.triangle")
+                    ContentUnavailableView(
+                        "URL dello stream non valido",
+                        systemImage: "exclamationmark.triangle"
+                    )
                 }
             }
             .navigationDestination(item: $selectedSeries) { series in
-                SeriesEpisodesView(credentials: credentials, seriesId: series.seriesId, seriesName: series.name)
+                SeriesEpisodesView(
+                    credentials: credentials,
+                    seriesId: series.seriesId,
+                    seriesName: series.name
+                )
             }
         }
         .onChange(of: kind) { _, _ in
             selectedCategory = .all
+            epgByStream = [:]
         }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSearchButton()
+            }
+
+            ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSettingsButton()
+            }
+
+            ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+
+            ToolbarItem(placement: .navigationBarTrailing) {
+                refreshButton
+            }
+        } else {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSearchButton()
+            }
+
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSettingsButton()
+            }
+
+            ToolbarItem(placement: .navigationBarTrailing) {
+                refreshButton
+            }
+        }
+    }
+
+    private var refreshButton: some View {
+        Button {
+            Task {
+                await xtreamCatalog.refresh(
+                    credentials: credentials,
+                    kind: kind
+                )
+            }
+        } label: {
+            Image(systemName: "arrow.clockwise")
+        }
+        .accessibilityLabel("Aggiorna \(kind.displayName)")
     }
 
     @ViewBuilder
@@ -219,7 +392,11 @@ struct ChannelGridView: View {
             ContentUnavailableView(
                 "Nessun contenuto in questa sezione",
                 systemImage: kind.systemImage,
-                description: Text(selectedCategory == .all ? "La sorgente non ha restituito contenuti." : "Prova una categoria diversa o aggiorna la sorgente.")
+                description: Text(
+                    selectedCategory == .all
+                        ? "La sorgente non ha restituito contenuti."
+                        : "Prova una categoria diversa o aggiorna la sorgente."
+                )
             )
             .padding(.vertical, 32)
         } else {
@@ -233,29 +410,55 @@ struct ChannelGridView: View {
             ContentUnavailableView(
                 "Nessuna serie in questa sezione",
                 systemImage: "rectangle.stack.fill",
-                description: Text(selectedCategory == .all ? "La sorgente non ha restituito serie." : "Questa categoria non contiene serie.")
+                description: Text(
+                    selectedCategory == .all
+                        ? "La sorgente non ha restituito serie."
+                        : "Questa categoria non contiene serie."
+                )
             )
             .padding(.vertical, 32)
         } else {
-            LazyVGrid(columns: columns, spacing: 16) {
+            LazyVGrid(columns: columns, spacing: gridRowSpacing) {
                 ForEach(displayedSeries) { item in
-                    SeriesTile(series: item) { selectedSeries = item }
+                    SeriesTile(
+                        series: item,
+                        artworkWidth: artworkSize,
+                        artworkHeight: seriesPosterHeight
+                    ) {
+                        selectedSeries = item
+                    }
                 }
             }
-            .padding()
-            .transaction { $0.animation = .snappy(duration: 0.18) }
+            .padding(.horizontal, gridHorizontalPadding)
+            .padding(.bottom)
+            .transaction {
+                $0.animation = .snappy(duration: 0.18)
+            }
         }
     }
 
     private var streamsGrid: some View {
-        LazyVGrid(columns: columns, spacing: 16) {
-            ForEach(displayedStreams) { stream in
+        LazyVGrid(columns: columns, spacing: gridRowSpacing) {
+            ForEach(
+                Array(displayedStreams.enumerated()),
+                id: \.element.id
+            ) { index, stream in
                 ChannelTile(
                     stream: stream,
                     kind: kind,
-                    isFavorite: contentManagement.isFavorite(id: favoriteID(for: stream)),
-                    currentProgram: kind == .live ? epgByStream[stream.streamId] : nil,
-                    onTap: { selectedStream = stream },
+                    channelNumber: shouldShowChannelNumbers ? index + 1 : nil,
+                    isCompact: isCompactGrid,
+                    artworkSize: artworkSize,
+                    moviePosterHeight: moviePosterHeight,
+                    isFavorite: contentManagement.isFavorite(
+                        id: favoriteID(for: stream)
+                    ),
+                    currentProgram: kind == .live
+                        ? epgByStream[stream.streamId]
+                        : nil,
+                    onTap: {
+                        selectedStream = stream
+                    },
                     onFavoriteToggle: {
                         contentManagement.toggleFavorite(
                             id: favoriteID(for: stream),
@@ -266,13 +469,17 @@ struct ChannelGridView: View {
                 )
             }
         }
-        .padding()
-        .transaction { $0.animation = nil }
+        .padding(.horizontal, gridHorizontalPadding)
+        .padding(.bottom)
+        .transaction {
+            $0.animation = nil
+        }
     }
 
     private var loadingView: some View {
         VStack(spacing: 12) {
             ProgressView()
+
             Text("Caricamento playlist…")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -283,17 +490,31 @@ struct ChannelGridView: View {
     private var categoryChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                categoryButton(title: "Tutti", icon: "square.grid.2x2", count: itemCount, selection: .all)
+                categoryButton(
+                    title: "Tutti",
+                    icon: "square.grid.2x2",
+                    count: itemCount,
+                    selection: .all
+                )
 
                 if uncategorizedCount > 0 {
-                    categoryButton(title: "Senza categoria", icon: "tray", count: uncategorizedCount, selection: .uncategorized)
+                    categoryButton(
+                        title: "Senza categoria",
+                        icon: "tray",
+                        count: uncategorizedCount,
+                        selection: .uncategorized
+                    )
                 }
 
                 ForEach(visibleCategories) { category in
                     categoryButton(
                         title: category.categoryName,
-                        icon: Self.categoryIcon(for: category.categoryName),
-                        count: categoryCount(for: category.categoryId),
+                        icon: Self.categoryIcon(
+                            for: category.categoryName
+                        ),
+                        count: categoryCount(
+                            for: category.categoryId
+                        ),
                         selection: .category(category.categoryId)
                     )
                 }
@@ -303,73 +524,158 @@ struct ChannelGridView: View {
         }
     }
 
-    private func categoryButton(title: String, icon: String, count: Int, selection: CategorySelection) -> some View {
+    private func categoryButton(
+        title: String,
+        icon: String,
+        count: Int,
+        selection: CategorySelection
+    ) -> some View {
         let isSelected = selectedCategory == selection
+
         return Button {
             guard selectedCategory != selection else { return }
-            withAnimation(.snappy(duration: 0.16, extraBounce: 0.04)) {
+
+            withAnimation(
+                .snappy(
+                    duration: 0.16,
+                    extraBounce: 0.04
+                )
+            ) {
                 selectedCategory = selection
             }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: icon).font(.caption)
-                Text(title).lineLimit(1)
+                Image(systemName: icon)
+                    .font(.caption)
+
+                Text(title)
+                    .lineLimit(1)
+
                 Text("\(count)")
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(isSelected ? Color.white.opacity(0.78) : Color.secondary)
+                    .foregroundStyle(
+                        isSelected
+                            ? Color.white.opacity(0.78)
+                            : Color.secondary
+                    )
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
         }
         .buttonStyle(.plain)
         .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .background(isSelected ? Color.accentColor : Color.clear, in: Capsule())
+        .background(
+            isSelected ? Color.accentColor : Color.clear,
+            in: Capsule()
+        )
         .background(.ultraThinMaterial, in: Capsule())
         .overlay {
-            Capsule().strokeBorder(Color.white.opacity(isSelected ? 0.22 : 0.12), lineWidth: 0.5)
+            Capsule()
+                .strokeBorder(
+                    Color.white.opacity(
+                        isSelected ? 0.22 : 0.12
+                    ),
+                    lineWidth: 0.5
+                )
         }
         .accessibilityLabel("\(title), \(count) contenuti")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityAddTraits(
+            isSelected ? .isSelected : []
+        )
     }
 
     private func rebuildIndexIfNeeded() {
-        guard kind != .series, indexedSourceIdentity != sourceIdentity else { return }
-        catalogIndex = CatalogIndex(streams: allStreams, categories: categories)
+        guard kind != .series,
+              indexedSourceIdentity != sourceIdentity else {
+            return
+        }
+
+        catalogIndex = CatalogIndex(
+            streams: allStreams,
+            categories: categories
+        )
+
+        epgByStream = [:]
         indexedSourceIdentity = sourceIdentity
     }
 
     private func categoryCount(for categoryID: String) -> Int {
         if kind == .series {
-            return allSeries.lazy.filter { CatalogIndex.normalizedCategoryID($0.categoryId) == categoryID }.count
+            return allSeries.lazy.filter {
+                CatalogIndex.normalizedCategoryID($0.categoryId)
+                    == categoryID
+            }
+            .count
         }
+
         return catalogIndex.streamsByCategory[categoryID]?.count ?? 0
     }
 
     private func favoriteID(for stream: XtreamStream) -> String {
-        let host = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return "\(host)|\(credentials.username)|\(kind.rawValue)|\(stream.streamId)"
+        let host = credentials.host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        return [
+            host,
+            credentials.username,
+            kind.rawValue,
+            String(stream.streamId)
+        ]
+        .joined(separator: "|")
     }
 
     private func loadEPGForVisibleStreams() async {
         let streams = Array(displayedStreams.prefix(24))
         guard !streams.isEmpty else { return }
 
+        let missingStreams = streams.filter {
+            epgByStream[$0.streamId] == nil
+        }
+
+        guard !missingStreams.isEmpty else { return }
+
         let epg = EPGService(credentials: credentials)
-        let batches = stride(from: 0, to: streams.count, by: 4).map {
-            Array(streams[$0..<min($0 + 4, streams.count)])
+
+        let batches = stride(
+            from: 0,
+            to: missingStreams.count,
+            by: 4
+        )
+        .map {
+            Array(
+                missingStreams[
+                    $0..<min($0 + 4, missingStreams.count)
+                ]
+            )
         }
 
         for batch in batches {
-            await withTaskGroup(of: (Int, EPGProgram?).self) { group in
-                for stream in batch where epgByStream[stream.streamId] == nil {
+            guard !Task.isCancelled else { return }
+
+            await withTaskGroup(
+                of: (Int, EPGProgram?).self
+            ) { group in
+                for stream in batch {
                     group.addTask {
-                        let result = try? await epg.shortEPG(streamId: stream.streamId, limit: 2)
-                        return (stream.streamId, result?.first)
+                        let result = try? await epg.shortEPG(
+                            streamId: stream.streamId,
+                            limit: 2
+                        )
+
+                        return (
+                            stream.streamId,
+                            result?.first
+                        )
                     }
                 }
 
                 for await (streamID, program) in group {
-                    if let program { epgByStream[streamID] = program }
+                    guard !Task.isCancelled else { return }
+
+                    if let program {
+                        epgByStream[streamID] = program
+                    }
                 }
             }
         }
@@ -377,14 +683,47 @@ struct ChannelGridView: View {
 
     private static func categoryIcon(for name: String) -> String {
         let normalized = name.lowercased()
-        if normalized.contains("sport") { return "sportscourt" }
-        if normalized.contains("kids") || normalized.contains("cartoon") || normalized.contains("bambini") { return "gamecontroller" }
-        if normalized.contains("news") || normalized.contains("notizie") { return "newspaper" }
-        if normalized.contains("music") || normalized.contains("musica") { return "music.note" }
-        if normalized.contains("cinema") || normalized.contains("film") || normalized.contains("movie") { return "film" }
-        if normalized.contains("document") { return "video" }
-        if normalized.contains("relig") { return "building.columns" }
-        if normalized.contains("adult") || normalized.contains("+18") || normalized.contains("xxx") { return "eye.slash" }
+
+        if normalized.contains("sport") {
+            return "sportscourt"
+        }
+
+        if normalized.contains("kids")
+            || normalized.contains("cartoon")
+            || normalized.contains("bambini") {
+            return "gamecontroller"
+        }
+
+        if normalized.contains("news")
+            || normalized.contains("notizie") {
+            return "newspaper"
+        }
+
+        if normalized.contains("music")
+            || normalized.contains("musica") {
+            return "music.note"
+        }
+
+        if normalized.contains("cinema")
+            || normalized.contains("film")
+            || normalized.contains("movie") {
+            return "film"
+        }
+
+        if normalized.contains("document") {
+            return "video"
+        }
+
+        if normalized.contains("relig") {
+            return "building.columns"
+        }
+
+        if normalized.contains("adult")
+            || normalized.contains("+18")
+            || normalized.contains("xxx") {
+            return "eye.slash"
+        }
+
         return "tv"
     }
 }
@@ -392,71 +731,201 @@ struct ChannelGridView: View {
 private struct ChannelTile: View {
     let stream: XtreamStream
     let kind: XtreamStreamKind
+    let channelNumber: Int?
+    let isCompact: Bool
+    let artworkSize: CGFloat
+    let moviePosterHeight: CGFloat
     let isFavorite: Bool
     let currentProgram: EPGProgram?
     let onTap: () -> Void
     let onFavoriteToggle: () -> Void
 
+    private var titleFont: Font {
+        isCompact ? .caption2 : .caption
+    }
+
+    private var programFont: Font {
+        .system(size: isCompact ? 8 : 9)
+    }
+
+    private var tileSpacing: CGFloat {
+        isCompact ? 4 : 6
+    }
+
+    private var cornerRadius: CGFloat {
+        isCompact ? 10 : 12
+    }
+
+    private var favoriteIconPadding: CGFloat {
+        isCompact ? 5 : 7
+    }
+
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 6) {
-                ZStack(alignment: .topTrailing) {
-                    if kind == .movie {
-                        TMDBEnrichedPoster(title: stream.name, isSeries: false, fallbackIconURL: stream.streamIcon, width: 100, height: 150)
-                    } else {
-                        AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
-                            switch phase {
-                            case .success(let image): image.resizable().scaledToFit()
-                            default:
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(.ultraThinMaterial)
-                                    .overlay { Image(systemName: "tv").foregroundStyle(.secondary) }
-                            }
-                        }
-                        .frame(width: 100, height: 100)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-
-                    Button(action: onFavoriteToggle) {
-                        Image(systemName: isFavorite ? "star.fill" : "star")
-                            .font(.caption)
-                            .padding(7)
-                            .foregroundStyle(.yellow)
-                    }
-                    .buttonStyle(.plain)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .padding(4)
-                    .accessibilityLabel(isFavorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti")
-                }
+            VStack(spacing: tileSpacing) {
+                artwork
 
                 Text(stream.name)
-                    .font(.caption)
+                    .font(titleFont)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
 
                 if let currentProgram {
                     Text(currentProgram.title)
-                        .font(.system(size: 9))
+                        .font(programFont)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .frame(maxWidth: .infinity)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .top)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(stream.name)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    @ViewBuilder
+    private var artwork: some View {
+        ZStack(alignment: .topTrailing) {
+            if kind == .movie {
+                TMDBEnrichedPoster(
+                    title: stream.name,
+                    isSeries: false,
+                    fallbackIconURL: stream.streamIcon,
+                    width: artworkSize,
+                    height: moviePosterHeight
+                )
+            } else {
+                AsyncImage(
+                    url: URL(string: stream.streamIcon ?? "")
+                ) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+
+                    default:
+                        RoundedRectangle(
+                            cornerRadius: cornerRadius,
+                            style: .continuous
+                        )
+                        .fill(.ultraThinMaterial)
+                        .overlay {
+                            Image(systemName: "tv")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(
+                    width: artworkSize,
+                    height: artworkSize
+                )
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: cornerRadius,
+                        style: .continuous
+                    )
+                )
+            }
+
+            favoriteButton
+
+            if let channelNumber {
+                channelNumberBadge(channelNumber)
+            }
+        }
+        .frame(
+            width: artworkSize,
+            height: kind == .movie
+                ? moviePosterHeight
+                : artworkSize
+        )
+    }
+
+    private var favoriteButton: some View {
+        Button(action: onFavoriteToggle) {
+            Image(
+                systemName: isFavorite ? "star.fill" : "star"
+            )
+            .font(isCompact ? .caption2 : .caption)
+            .padding(favoriteIconPadding)
+            .foregroundStyle(.yellow)
+        }
+        .buttonStyle(.plain)
+        .background(.ultraThinMaterial, in: Circle())
+        .padding(isCompact ? 3 : 4)
+        .accessibilityLabel(
+            isFavorite
+                ? "Rimuovi dai preferiti"
+                : "Aggiungi ai preferiti"
+        )
+    }
+
+    private func channelNumberBadge(
+        _ channelNumber: Int
+    ) -> some View {
+        Text("\(channelNumber)")
+            .font(
+                .system(
+                    size: isCompact ? 9 : 10,
+                    weight: .bold,
+                    design: .rounded
+                )
+            )
+            .monospacedDigit()
+            .foregroundStyle(.primary)
+            .padding(.horizontal, isCompact ? 5 : 6)
+            .padding(.vertical, isCompact ? 2 : 3)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(
+                        Color.white.opacity(0.16),
+                        lineWidth: 0.5
+                    )
+            }
+            .padding(isCompact ? 3 : 4)
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: .infinity,
+                alignment: .bottomLeading
+            )
+            .accessibilityLabel("Canale \(channelNumber)")
+    }
+
+    private var accessibilityLabel: String {
+        guard let channelNumber else {
+            return stream.name
+        }
+
+        return "Canale \(channelNumber), \(stream.name)"
     }
 }
 
 private struct SeriesTile: View {
     let series: XtreamSeriesItem
+    let artworkWidth: CGFloat
+    let artworkHeight: CGFloat
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 4) {
-                TMDBEnrichedPoster(title: series.name, isSeries: true, fallbackIconURL: series.cover, width: 100, height: 140)
-                Text(series.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
+                TMDBEnrichedPoster(
+                    title: series.name,
+                    isSeries: true,
+                    fallbackIconURL: series.cover,
+                    width: artworkWidth,
+                    height: artworkHeight
+                )
+
+                Text(series.name)
+                    .font(.caption)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
             }
         }
         .buttonStyle(.plain)
