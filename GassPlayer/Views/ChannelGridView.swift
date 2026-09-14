@@ -157,14 +157,17 @@ struct ChannelGridView: View {
             .navigationTitle(kind.displayName)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        Task {
-                            await xtreamCatalog.refresh(credentials: credentials, kind: kind)
+                    HStack(spacing: 4) {
+                        GlobalToolbarButtons()
+                        Button {
+                            Task {
+                                await xtreamCatalog.refresh(credentials: credentials, kind: kind)
+                            }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
                         }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
+                        .accessibilityLabel("Aggiorna \(kind.displayName)")
                     }
-                    .accessibilityLabel("Aggiorna \(kind.displayName)")
                 }
             }
             .task(id: sourceIdentity) {
@@ -292,7 +295,7 @@ struct ChannelGridView: View {
                 selectedCategory = selection
             }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Image(systemName: icon).font(.caption)
                 Text(title).lineLimit(1)
                 Text("\(count)")
