@@ -1,6 +1,6 @@
 import SwiftUI
 
-private enum MainTab: Hashable {
+enum MainTab: Hashable {
     case home
     case liveTV
     case vod
@@ -73,7 +73,6 @@ struct ContentView: View {
                 }
                 .tag(MainTab.series)
         }
-        .background(Color.black.ignoresSafeArea())
         .sheet(isPresented: $overlayState.showSearch) {
             GlobalSearchView()
         }
@@ -84,9 +83,7 @@ struct ContentView: View {
             loadActiveSource()
         }
         .task(id: xtreamSourceTaskID) {
-            guard let credentials else {
-                return
-            }
+            guard let credentials else { return }
 
             await xtreamCatalog.loadIfNeeded(credentials: credentials)
             vpnManager.handleAppBecameActive()
@@ -184,22 +181,22 @@ struct ContentView: View {
                 return
             }
 
-            let newCredentials = XtreamCredentials(
+            let nextCredentials = XtreamCredentials(
                 host: activeSource.host,
                 username: username,
                 password: password
             )
 
-            if shouldResetCatalog(current: credentials, next: newCredentials) {
+            if shouldResetCatalog(current: credentials, next: nextCredentials) {
                 xtreamCatalog.reset()
             }
 
-            credentials = newCredentials
+            credentials = nextCredentials
             m3uPlaylistURL = nil
 
         case .m3u8:
             credentials = nil
-            m3uPlaylistURL = URL(string: activeSource.host)
+            m3uPlaylistURL = validURL(from: activeSource.host)
             xtreamCatalog.reset()
 
         case .plex, .jellyfin, .emby:
@@ -209,24 +206,32 @@ struct ContentView: View {
         }
     }
 
+    private func validURL(from string: String) -> URL? {
+        let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: normalized),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+        return url
+    }
+
     private func shouldResetCatalog(
         current: XtreamCredentials?,
         next: XtreamCredentials
     ) -> Bool {
-        guard let current else {
-            return true
-        }
+        guard let current else { return true }
 
-        let currentHost = current.host
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            .lowercased()
-
-        let nextHost = next.host
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            .lowercased()
+        let currentHost = normalizedHost(current.host)
+        let nextHost = normalizedHost(next.host)
 
         return currentHost != nextHost || current.username != next.username
+    }
+
+    private func normalizedHost(_ host: String) -> String {
+        host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
     }
 }
