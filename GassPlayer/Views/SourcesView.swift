@@ -26,43 +26,55 @@ struct SourcesView: View {
     @State private var showAllSourcesLive = false
     @State private var searchQuery = ""
     @State private var sortMode: SourceSortMode = .manual
-    @State private var checkingSourceId: UUID?
+    @State private var checkingSourceID: UUID?
     @State private var connectionCheckResult: ConnectionCheckResult?
 
     private var displayedSources: [MediaSourceConfig] {
-        let filteredSources = sourceManager.sources.filter { source in
-            searchQuery.isEmpty
-                || source.name.localizedCaseInsensitiveContains(searchQuery)
+        let filtered = sourceManager.sources.filter { source in
+            guard !searchQuery.isEmpty else { return true }
+
+            return source.name.localizedCaseInsensitiveContains(searchQuery)
                 || source.host.localizedCaseInsensitiveContains(searchQuery)
+                || source.type.rawValue.localizedCaseInsensitiveContains(searchQuery)
         }
 
         switch sortMode {
         case .manual:
-            return filteredSources
+            return filtered
         case .name:
-            return filteredSources.sorted {
+            return filtered.sorted {
                 $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
         case .type:
-            return filteredSources.sorted {
-                $0.type.rawValue.localizedCaseInsensitiveCompare($1.type.rawValue)
-                    == .orderedAscending
+            return filtered.sorted {
+                let typeOrder = $0.type.rawValue.localizedCaseInsensitiveCompare($1.type.rawValue)
+
+                if typeOrder == .orderedSame {
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+
+                return typeOrder == .orderedAscending
             }
         }
     }
 
-    private var canReorder: Bool {
+    private var isManualOrderingAvailable: Bool {
         sortMode == .manual && searchQuery.isEmpty
     }
 
-    private var xtreamSources: [MediaSourceConfig] {
-        sourceManager.sources.filter { $0.type == .xtream }
+    private var canOpenAllSourcesLive: Bool {
+        sourceManager.sources.contains { $0.type == .xtream && $0.isEnabled }
+    }
+
+    private var sourceCountText: String {
+        let count = displayedSources.count
+        return count == 1 ? "1 sorgente" : "\(count) sorgenti"
     }
 
     var body: some View {
         NavigationStack {
             List {
-                allSourcesSection
+                liveAggregationSection
                 sourcesSection
                 mergedPlaylistsSection
                 favoritesSection
@@ -74,17 +86,23 @@ struct SourcesView: View {
                 toolbarContent
             }
             .sheet(isPresented: $showAddSheet) {
-                AddSourceView { config in
-                    sourceManager.add(config)
+                AddSourceView { configuration in
+                    sourceManager.add(configuration)
                 }
             }
             .sheet(isPresented: $showMergeSheet) {
-                MergePlaylistView(sources: sourceManager.sources) { name, ids in
-                    contentManagement.createMergedPlaylist(name: name, sourceIds: ids)
+                MergePlaylistView(sources: sourceManager.sources) { name, sourceIDs in
+                    contentManagement.createMergedPlaylist(
+                        name: name,
+                        sourceIds: sourceIDs
+                    )
                 }
             }
             .sheet(isPresented: $showAllSourcesLive) {
-                AllSourcesLiveView(sources: sourceManager.sources, kind: .live)
+                AllSourcesLiveView(
+                    sources: sourceManager.sources.filter { $0.isEnabled },
+                    kind: .live
+                )
             }
             .alert(
                 "Rinomina sorgente",
@@ -100,22 +118,14 @@ struct SourcesView: View {
                 TextField("Nome", text: $newName)
 
                 Button("Salva") {
-                    guard let source = renamingSource else { return }
-
-                    let trimmedName = newName.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    )
-
-                    if !trimmedName.isEmpty {
-                        sourceManager.rename(source, to: trimmedName)
-                    }
-
-                    renamingSource = nil
+                    renameSelectedSource()
                 }
 
                 Button("Annulla", role: .cancel) {
                     renamingSource = nil
                 }
+            } message: {
+                Text("Scegli un nome riconoscibile per questa sorgente.")
             }
             .alert(item: $connectionCheckResult) { result in
                 Alert(
@@ -137,19 +147,26 @@ struct SourcesView: View {
             ToolbarItem(placement: .navigationBarLeading) {
                 GlassSearchButton()
             }
+
             ToolbarSpacer(.fixed, placement: .navigationBarLeading)
+
             ToolbarItem(placement: .navigationBarLeading) {
                 GlassSettingsButton()
             }
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 sortMenu
             }
+
             ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 EditButton()
-                    .disabled(!canReorder)
+                    .disabled(!isManualOrderingAvailable)
             }
+
             ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 addSourceButton
             }
@@ -157,16 +174,20 @@ struct SourcesView: View {
             ToolbarItem(placement: .navigationBarLeading) {
                 GlassSearchButton()
             }
+
             ToolbarItem(placement: .navigationBarLeading) {
                 GlassSettingsButton()
             }
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 sortMenu
             }
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 EditButton()
-                    .disabled(!canReorder)
+                    .disabled(!isManualOrderingAvailable)
             }
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 addSourceButton
             }
@@ -184,6 +205,7 @@ struct SourcesView: View {
             Image(systemName: "arrow.up.arrow.down.circle")
         }
         .accessibilityLabel("Ordina sorgenti")
+        .accessibilityHint("Scegli l’ordinamento delle sorgenti")
     }
 
     private var addSourceButton: some View {
@@ -195,7 +217,7 @@ struct SourcesView: View {
         .accessibilityLabel("Aggiungi sorgente")
     }
 
-    private var allSourcesSection: some View {
+    private var liveAggregationSection: some View {
         Section {
             Button {
                 showAllSourcesLive = true
@@ -205,10 +227,12 @@ struct SourcesView: View {
                     systemImage: "square.stack.3d.up.fill"
                 )
             }
-            .disabled(xtreamSources.isEmpty)
+            .disabled(!canOpenAllSourcesLive)
+        } header: {
+            Text("Live TV")
         } footer: {
-            if xtreamSources.isEmpty {
-                Text("Aggiungi almeno una sorgente Xtream per usare questa funzione.")
+            if !canOpenAllSourcesLive {
+                Text("Aggiungi e abilita almeno una sorgente Xtream per unire i canali Live TV.")
             }
         }
     }
@@ -218,15 +242,15 @@ struct SourcesView: View {
             if displayedSources.isEmpty {
                 ContentUnavailableView(
                     searchQuery.isEmpty
-                        ? "Nessuna sorgente"
+                        ? "Nessuna sorgente configurata"
                         : "Nessun risultato",
                     systemImage: searchQuery.isEmpty
                         ? "square.stack.3d.up"
                         : "magnifyingglass",
                     description: Text(
                         searchQuery.isEmpty
-                            ? "Tocca + per aggiungere una playlist o un account supportato."
-                            : "Prova a modificare la ricerca."
+                            ? "Tocca + per aggiungere una playlist M3U o un account supportato."
+                            : "Prova a cercare con un altro nome, host o tipo."
                     )
                 )
                 .listRowBackground(Color.clear)
@@ -241,47 +265,43 @@ struct SourcesView: View {
             HStack {
                 Text("Le mie sorgenti")
                 Spacer()
-                Text("\(displayedSources.count)")
+                Text(sourceCountText)
                     .foregroundStyle(.secondary)
             }
         } footer: {
-            if !canReorder && !displayedSources.isEmpty {
-                Text("Per modificare l’ordine, seleziona Personalizzato e svuota la ricerca.")
+            if !isManualOrderingAvailable && !displayedSources.isEmpty {
+                Text("Per modificare l’ordine, seleziona “Personalizzato” e svuota la ricerca.")
             }
         }
     }
 
     private var mergedPlaylistsSection: some View {
-        // Explicit `content:` is required because `MergePlaylistView` below
-        // declares an initializer parameter named `content`. Using
-        // `Section("...") { ... }` would otherwise resolve to that custom
-        // type in this scope and produce “missing argument label content:”.
         Section {
             if contentManagement.mergedPlaylists.isEmpty {
                 Text("Unisci più sorgenti in una sola playlist.")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(contentManagement.mergedPlaylists) { merged in
+                ForEach(contentManagement.mergedPlaylists) { mergedPlaylist in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(merged.name)
+                        Text(mergedPlaylist.name)
                             .font(.headline)
 
-                        Text("\(merged.memberSourceIds.count) sorgenti unite")
+                        Text("\(mergedPlaylist.memberSourceIds.count) sorgenti unite")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
-                .onDelete { indices in
-                    indices.forEach { index in
-                        contentManagement.removeMergedPlaylist(
-                            contentManagement.mergedPlaylists[index]
-                        )
+                .onDelete { offsets in
+                    let playlistsToDelete = offsets.map {
+                        contentManagement.mergedPlaylists[$0]
                     }
+
+                    playlistsToDelete.forEach(contentManagement.removeMergedPlaylist)
                 }
-                .onMove { from, to in
+                .onMove { offsets, destination in
                     contentManagement.reorderMergedPlaylists(
-                        fromOffsets: from,
-                        toOffset: to
+                        fromOffsets: offsets,
+                        toOffset: destination
                     )
                 }
             }
@@ -292,11 +312,13 @@ struct SourcesView: View {
             .disabled(sourceManager.sources.count < 2)
         } header: {
             Text("Playlist unite")
+        } footer: {
+            Text("Sono necessarie almeno due sorgenti per creare una playlist unita.")
         }
     }
 
     private var favoritesSection: some View {
-        Section("Preferiti") {
+        Section {
             if contentManagement.favorites.isEmpty {
                 Text("I tuoi contenuti preferiti appariranno qui.")
                     .foregroundStyle(.secondary)
@@ -306,11 +328,13 @@ struct SourcesView: View {
                         .foregroundStyle(.yellow)
                 }
             }
+        } header: {
+            Text("Preferiti")
         }
     }
 
     private var backupSection: some View {
-        Section("Backup") {
+        Section {
             if let payload = try? SourceBackupCodec.encodeAsString(
                 sourceManager.sources
             ) {
@@ -324,10 +348,10 @@ struct SourcesView: View {
                     )
                 }
             }
+        } header: {
+            Text("Backup")
         } footer: {
-            Text(
-                "Il backup JSON può includere password e token. Condividilo solo tramite servizi affidabili."
-            )
+            Text("Il file JSON può contenere credenziali e token. Condividilo solo tramite servizi affidabili.")
         }
     }
 
@@ -335,6 +359,7 @@ struct SourcesView: View {
     private func sourceRow(_ source: MediaSourceConfig) -> some View {
         HStack(spacing: 12) {
             Image(systemName: source.type.systemImage)
+                .font(.body.weight(.semibold))
                 .foregroundStyle(.tint)
                 .frame(width: 28)
 
@@ -354,7 +379,7 @@ struct SourcesView: View {
 
             Spacer(minLength: 8)
 
-            if checkingSourceId == source.id {
+            if checkingSourceID == source.id {
                 ProgressView()
                     .controlSize(.small)
             }
@@ -376,7 +401,7 @@ struct SourcesView: View {
         .onTapGesture {
             sourceManager.setActive(source)
         }
-        .swipeActions(edge: .trailing) {
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button {
                 newName = source.name
                 renamingSource = source
@@ -392,7 +417,7 @@ struct SourcesView: View {
             }
             .tint(.indigo)
         }
-        .swipeActions(edge: .leading) {
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
             if source.type == .xtream {
                 Button {
                     Task {
@@ -416,9 +441,19 @@ struct SourcesView: View {
     }
 
     private func moveSources(from offsets: IndexSet, to destination: Int) {
-        guard canReorder else { return }
+        guard isManualOrderingAvailable else { return }
 
         sourceManager.move(fromOffsets: offsets, toOffset: destination)
+    }
+
+    private func renameSelectedSource() {
+        guard let source = renamingSource else { return }
+
+        let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
+        sourceManager.rename(source, to: trimmedName)
+        renamingSource = nil
     }
 
     private func duplicate(_ source: MediaSourceConfig) {
@@ -433,19 +468,22 @@ struct SourcesView: View {
         )
     }
 
+    @MainActor
     private func testConnection(_ source: MediaSourceConfig) async {
         guard let username = source.username,
-              let password = source.password else {
+              !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let password = source.password,
+              !password.isEmpty else {
             connectionCheckResult = ConnectionCheckResult(
                 sourceName: source.name,
                 succeeded: false,
-                message: "Questa sorgente non contiene credenziali Xtream configurate."
+                message: "Questa sorgente non contiene credenziali Xtream valide."
             )
             return
         }
 
-        checkingSourceId = source.id
-        defer { checkingSourceId = nil }
+        checkingSourceID = source.id
+        defer { checkingSourceID = nil }
 
         let credentials = XtreamCredentials(
             host: source.host,
@@ -498,14 +536,34 @@ struct AddSourceView: View {
         host.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var requiresCredentials: Bool {
+        type != .m3u8
+    }
+
     private var canSave: Bool {
-        !trimmedName.isEmpty && !trimmedHost.isEmpty
+        guard !trimmedName.isEmpty, !trimmedHost.isEmpty else {
+            return false
+        }
+
+        guard requiresCredentials else {
+            return true
+        }
+
+        return !trimmedUsername.isEmpty && !trimmedPassword.isEmpty
+    }
+
+    private var trimmedUsername: String {
+        username.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedPassword: String {
+        password.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Informazioni") {
+                Section {
                     TextField("Nome sorgente", text: $name)
 
                     Picker("Tipo", selection: $type) {
@@ -513,20 +571,30 @@ struct AddSourceView: View {
                             Text(sourceType.rawValue).tag(sourceType)
                         }
                     }
+                } header: {
+                    Text("Informazioni")
                 }
 
-                Section("Connessione") {
+                Section {
                     TextField("Host / URL", text: $host)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
 
-                    if type != .m3u8 {
+                    if requiresCredentials {
                         TextField("Username", text: $username)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
 
                         SecureField("Password / Token", text: $password)
+                    }
+                } header: {
+                    Text("Connessione")
+                } footer: {
+                    if type == .m3u8 {
+                        Text("Inserisci un URL completo http:// o https:// della playlist M3U/M3U8.")
+                    } else {
+                        Text("Inserisci l’host completo, username e password o token del servizio.")
                     }
                 }
             }
@@ -546,8 +614,8 @@ struct AddSourceView: View {
                                 name: trimmedName,
                                 type: type,
                                 host: trimmedHost,
-                                username: normalizedOptional(username),
-                                password: normalizedOptional(password)
+                                username: requiresCredentials ? trimmedUsername : nil,
+                                password: requiresCredentials ? trimmedPassword : nil
                             )
                         )
                         dismiss()
@@ -556,11 +624,6 @@ struct AddSourceView: View {
                 }
             }
         }
-    }
-
-    private func normalizedOptional(_ value: String) -> String? {
-        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedValue.isEmpty ? nil : trimmedValue
     }
 }
 
@@ -589,10 +652,6 @@ struct MergePlaylistView: View {
                     Text("Playlist")
                 }
 
-                // Do not use `Section("Sorgenti da unire") { ... }` here.
-                // The explicit header form is unambiguous for Swift’s result
-                // builder and avoids the compiler diagnostic:
-                // “missing argument label 'content:' in call”.
                 Section {
                     ForEach(sources) { source in
                         Toggle(
