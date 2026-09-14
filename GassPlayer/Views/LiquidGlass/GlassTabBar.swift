@@ -1,20 +1,40 @@
 import SwiftUI
 
-/// GlassTabBar custom rimossa: l'animazione "blob liquido" reale (vista in
-/// Files tra Sfoglia/Condivisi/Recenti) usa un framework privato esclusivo
-/// dei componenti di sistema come UITabBar, non riproducibile con le API
-/// pubbliche GlassEffectContainer/glassEffectID. ContentView ora usa il
-/// TabView nativo di SwiftUI, che adotta Liquid Glass automaticamente su
-/// iOS 26 senza alcun codice custom. Questo file resta solo per
-/// GlassOrMaterial, riutilizzato altrove (es. i chip categoria in
-/// ChannelGridView).
+/// Il TabView nativo adotta automaticamente la barra Liquid Glass sulle
+/// versioni iOS che la supportano. Questo modificatore resta disponibile per
+/// chip, filtri e controlli selezionabili nelle altre viste dell’app.
 struct GlassOrMaterial: ViewModifier {
     let isSelected: Bool
+    var tint: Color = .accentColor
+
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.glassEffect(isSelected ? .regular.tint(.accentColor).interactive() : .regular, in: .capsule)
+            content
+                .glassEffect(
+                    isSelected
+                        ? .regular.tint(tint).interactive()
+                        : .regular,
+                    in: .capsule
+                )
         } else {
-            content.background(.ultraThinMaterial, in: Capsule())
+            content
+                .background(
+                    isSelected ? tint.opacity(0.20) : .ultraThinMaterial,
+                    in: Capsule()
+                )
+                .overlay {
+                    Capsule()
+                        .strokeBorder(
+                            Color.white.opacity(isSelected ? 0.22 : 0.14),
+                            lineWidth: 0.5
+                        )
+                }
         }
+    }
+}
+
+extension View {
+    func glassChip(isSelected: Bool, tint: Color = .accentColor) -> some View {
+        modifier(GlassOrMaterial(isSelected: isSelected, tint: tint))
     }
 }
