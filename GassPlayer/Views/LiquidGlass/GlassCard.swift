@@ -30,29 +30,17 @@ struct GlassCardBackground: ViewModifier {
             content
                 .glassEffect(
                     .regular,
-                    in: .rect(
-                        cornerRadius: cornerRadius,
-                        style: .continuous
-                    )
+                    in: .rect(cornerRadius: cornerRadius, style: .continuous)
                 )
         } else {
             content
                 .background(
                     .ultraThinMaterial,
-                    in: RoundedRectangle(
-                        cornerRadius: cornerRadius,
-                        style: .continuous
-                    )
+                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 )
                 .overlay {
-                    RoundedRectangle(
-                        cornerRadius: cornerRadius,
-                        style: .continuous
-                    )
-                    .strokeBorder(
-                        Color.white.opacity(0.15),
-                        lineWidth: 0.5
-                    )
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
                 }
         }
     }
