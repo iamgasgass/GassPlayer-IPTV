@@ -60,98 +60,139 @@ struct SourcesView: View {
     }
 
     var body: some View {
-        List {
-            allSourcesSection
-            sourcesSection
-            mergedPlaylistsSection
-            favoritesSection
-            backupSection
-        }
-        .navigationTitle("Sorgenti")
-        .searchable(text: $searchQuery, prompt: "Cerca sorgenti")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Picker("Ordina per", selection: $sortMode) {
-                        ForEach(SourceSortMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
+        NavigationStack {
+            List {
+                allSourcesSection
+                sourcesSection
+                mergedPlaylistsSection
+                favoritesSection
+                backupSection
+            }
+            .navigationTitle("Sorgenti")
+            .searchable(text: $searchQuery, prompt: "Cerca sorgenti")
+            .toolbar {
+                toolbarContent
+            }
+            .sheet(isPresented: $showAddSheet) {
+                AddSourceView { config in
+                    sourceManager.add(config)
+                }
+            }
+            .sheet(isPresented: $showMergeSheet) {
+                MergePlaylistView(sources: sourceManager.sources) { name, ids in
+                    contentManagement.createMergedPlaylist(name: name, sourceIds: ids)
+                }
+            }
+            .sheet(isPresented: $showAllSourcesLive) {
+                AllSourcesLiveView(sources: sourceManager.sources, kind: .live)
+            }
+            .alert(
+                "Rinomina sorgente",
+                isPresented: Binding(
+                    get: { renamingSource != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            renamingSource = nil
                         }
                     }
-                } label: {
-                    Image(systemName: "arrow.up.arrow.down.circle")
-                }
-                .accessibilityLabel("Ordina sorgenti")
-            }
+                )
+            ) {
+                TextField("Nome", text: $newName)
 
-            ToolbarItem(placement: .topBarTrailing) {
+                Button("Salva") {
+                    guard let source = renamingSource else { return }
+
+                    let trimmedName = newName.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+
+                    if !trimmedName.isEmpty {
+                        sourceManager.rename(source, to: trimmedName)
+                    }
+
+                    renamingSource = nil
+                }
+
+                Button("Annulla", role: .cancel) {
+                    renamingSource = nil
+                }
+            }
+            .alert(item: $connectionCheckResult) { result in
+                Alert(
+                    title: Text(
+                        result.succeeded
+                            ? "Connessione riuscita"
+                            : "Connessione non riuscita"
+                    ),
+                    message: Text("\(result.sourceName): \(result.message)"),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .navigationBarLeading) {
+                GlassSearchButton()
+            }
+            ToolbarSpacer(.fixed, placement: .navigationBarLeading)
+            ToolbarItem(placement: .navigationBarLeading) {
+                GlassSettingsButton()
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                sortMenu
+            }
+            ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+            ToolbarItem(placement: .navigationBarTrailing) {
                 EditButton()
                     .disabled(!canReorder)
             }
+            ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+            ToolbarItem(placement: .navigationBarTrailing) {
+                addSourceButton
+            }
+        } else {
+            ToolbarItem(placement: .navigationBarLeading) {
+                GlassSearchButton()
+            }
+            ToolbarItem(placement: .navigationBarLeading) {
+                GlassSettingsButton()
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                sortMenu
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                EditButton()
+                    .disabled(!canReorder)
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                addSourceButton
+            }
+        }
+    }
 
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showAddSheet = true
-                } label: {
-                    Image(systemName: "plus")
+    private var sortMenu: some View {
+        Menu {
+            Picker("Ordina per", selection: $sortMode) {
+                ForEach(SourceSortMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
                 }
-                .accessibilityLabel("Aggiungi sorgente")
             }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down.circle")
         }
-        .sheet(isPresented: $showAddSheet) {
-            AddSourceView { config in
-                sourceManager.add(config)
-            }
-        }
-        .sheet(isPresented: $showMergeSheet) {
-            MergePlaylistView(sources: sourceManager.sources) { name, ids in
-                contentManagement.createMergedPlaylist(name: name, sourceIds: ids)
-            }
-        }
-        .sheet(isPresented: $showAllSourcesLive) {
-            AllSourcesLiveView(sources: sourceManager.sources, kind: .live)
-        }
-        .alert(
-            "Rinomina sorgente",
-            isPresented: Binding(
-                get: { renamingSource != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        renamingSource = nil
-                    }
-                }
-            )
-        ) {
-            TextField("Nome", text: $newName)
+        .accessibilityLabel("Ordina sorgenti")
+    }
 
-            Button("Salva") {
-                guard let source = renamingSource else { return }
-
-                let trimmedName = newName.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                )
-
-                if !trimmedName.isEmpty {
-                    sourceManager.rename(source, to: trimmedName)
-                }
-
-                renamingSource = nil
-            }
-
-            Button("Annulla", role: .cancel) {
-                renamingSource = nil
-            }
+    private var addSourceButton: some View {
+        Button {
+            showAddSheet = true
+        } label: {
+            Image(systemName: "plus")
         }
-        .alert(item: $connectionCheckResult) { result in
-            Alert(
-                title: Text(
-                    result.succeeded
-                        ? "Connessione riuscita"
-                        : "Connessione non riuscita"
-                ),
-                message: Text("\(result.sourceName): \(result.message)"),
-                dismissButton: .default(Text("OK"))
-            )
-        }
+        .accessibilityLabel("Aggiungi sorgente")
     }
 
     private var allSourcesSection: some View {
@@ -193,7 +234,7 @@ struct SourcesView: View {
                 ForEach(displayedSources) { source in
                     sourceRow(source)
                 }
-                .onDelete(deleteSources)
+                .onDelete(perform: deleteSources)
                 .onMove(perform: moveSources)
             }
         } header: {
@@ -205,13 +246,17 @@ struct SourcesView: View {
             }
         } footer: {
             if !canReorder && !displayedSources.isEmpty {
-                Text("Per modificare l’ordine, usa l’ordinamento Personalizzato e svuota la ricerca.")
+                Text("Per modificare l’ordine, seleziona Personalizzato e svuota la ricerca.")
             }
         }
     }
 
     private var mergedPlaylistsSection: some View {
-        Section("Playlist unite") {
+        // Explicit `content:` is required because `MergePlaylistView` below
+        // declares an initializer parameter named `content`. Using
+        // `Section("...") { ... }` would otherwise resolve to that custom
+        // type in this scope and produce “missing argument label content:”.
+        Section {
             if contentManagement.mergedPlaylists.isEmpty {
                 Text("Unisci più sorgenti in una sola playlist.")
                     .foregroundStyle(.secondary)
@@ -245,6 +290,8 @@ struct SourcesView: View {
                 showMergeSheet = true
             }
             .disabled(sourceManager.sources.count < 2)
+        } header: {
+            Text("Playlist unite")
         }
     }
 
@@ -536,11 +583,17 @@ struct MergePlaylistView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Playlist") {
+                Section {
                     TextField("Nome playlist unita", text: $name)
+                } header: {
+                    Text("Playlist")
                 }
 
-                Section("Sorgenti da unire") {
+                // Do not use `Section("Sorgenti da unire") { ... }` here.
+                // The explicit header form is unambiguous for Swift’s result
+                // builder and avoids the compiler diagnostic:
+                // “missing argument label 'content:' in call”.
+                Section {
                     ForEach(sources) { source in
                         Toggle(
                             source.name,
@@ -556,6 +609,8 @@ struct MergePlaylistView: View {
                             )
                         )
                     }
+                } header: {
+                    Text("Sorgenti da unire")
                 } footer: {
                     Text("Seleziona almeno due sorgenti.")
                 }
