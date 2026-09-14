@@ -43,10 +43,6 @@ struct HomeView: View {
 
     // MARK: - Toolbar
 
-    /// Ricerca e Impostazioni restano azioni diverse.
-    /// Su iOS 26 lo spacer separa i gruppi di controlli nella toolbar
-    /// Liquid Glass; sulle versioni precedenti viene usata la toolbar
-    /// standard senza API iOS 26.
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if #available(iOS 26.0, *) {
@@ -214,7 +210,7 @@ struct HomeView: View {
         }
     }
 
-    // MARK: - Navigazione libreria
+    // MARK: - Destinazioni
 
     private var liveDestination: some View {
         destinationCard(
