@@ -1,10 +1,17 @@
 import SwiftUI
 
+private enum MainTab: Hashable {
+    case home
+    case liveTV
+    case vod
+    case series
+}
+
 struct ContentView: View {
     @State private var showSplash = true
     @State private var credentials: XtreamCredentials?
     @State private var m3uPlaylistURL: URL?
-    @State private var selectedTab = 0
+    @State private var selectedTab: MainTab = .home
 
     @StateObject private var sourceManager = SourceManager()
     @StateObject private var lockManager = ParentalLockManager()
@@ -19,13 +26,11 @@ struct ContentView: View {
         Group {
             if showSplash {
                 SplashScreenView {
-                    showSplash = false
                     loadActiveSource()
+                    showSplash = false
                 }
-            } else if credentials != nil || m3uPlaylistURL != nil {
-                mainTabs
             } else {
-                login
+                mainTabs
             }
         }
         .preferredColorScheme(themeManager.theme.colorScheme)
@@ -41,25 +46,32 @@ struct ContentView: View {
 
     private var mainTabs: some View {
         TabView(selection: $selectedTab) {
-            liveTab
-                .tabItem { Label("Live", systemImage: "tv") }
-                .tag(0)
+            HomeView(
+                selectedTab: $selectedTab,
+                hasActiveSource: hasActivePlayableSource
+            )
+            .tabItem {
+                Label("Home", systemImage: "house.fill")
+            }
+            .tag(MainTab.home)
 
-            filmTab
-                .tabItem { Label("Film", systemImage: "film") }
-                .tag(1)
+            liveTVTab
+                .tabItem {
+                    Label("Live TV", systemImage: "tv.fill")
+                }
+                .tag(MainTab.liveTV)
+
+            vodTab
+                .tabItem {
+                    Label("VOD", systemImage: "film.fill")
+                }
+                .tag(MainTab.vod)
 
             seriesTab
-                .tabItem { Label("Serie", systemImage: "rectangle.stack.fill") }
-                .tag(2)
-
-            SourcesView()
-                .tabItem { Label("Sorgenti", systemImage: "square.stack.3d.up") }
-                .tag(3)
-
-            PersonalVPNView()
-                .tabItem { Label("VPN", systemImage: "lock.shield") }
-                .tag(4)
+                .tabItem {
+                    Label("Serie TV", systemImage: "rectangle.stack.fill")
+                }
+                .tag(MainTab.series)
         }
         .background(Color.black.ignoresSafeArea())
         .sheet(isPresented: $overlayState.showSearch) {
@@ -72,73 +84,42 @@ struct ContentView: View {
             loadActiveSource()
         }
         .task(id: xtreamSourceTaskID) {
-            guard let credentials else { return }
+            guard let credentials else {
+                return
+            }
+
             await xtreamCatalog.loadIfNeeded(credentials: credentials)
             vpnManager.handleAppBecameActive()
         }
     }
 
-    private var login: some View {
-        LoginView(
-            onLogin: { newCredentials in
-                credentials = newCredentials
-                m3uPlaylistURL = nil
-                selectedTab = 0
-                xtreamCatalog.reset()
-
-                sourceManager.add(
-                    MediaSourceConfig(
-                        name: "Sorgente principale",
-                        type: .xtream,
-                        host: newCredentials.host,
-                        username: newCredentials.username,
-                        password: newCredentials.password
-                    )
-                )
-            },
-            onM3ULoaded: { url in
-                credentials = nil
-                m3uPlaylistURL = url
-                selectedTab = 0
-                xtreamCatalog.reset()
-
-                sourceManager.add(
-                    MediaSourceConfig(
-                        name: "Playlist M3U",
-                        type: .m3u8,
-                        host: url.absoluteString
-                    )
-                )
-            }
-        )
-    }
-
-    private var xtreamSourceTaskID: String {
-        guard let credentials else { return "no-xtream-source" }
-
-        let host = credentials.host
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            .lowercased()
-
-        return "\(sourceManager.activeSourceId?.uuidString ?? "none")|\(host)|\(credentials.username)"
-    }
-
     @ViewBuilder
-    private var liveTab: some View {
+    private var liveTVTab: some View {
         if let credentials {
             ChannelGridView(credentials: credentials, kind: .live)
         } else if let m3uPlaylistURL {
             M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .live)
+        } else {
+            EmptyLibraryView(
+                kind: .live,
+                title: "Nessun canale Live TV",
+                message: "Aggiungi una sorgente dalle Impostazioni per visualizzare i canali in diretta."
+            )
         }
     }
 
     @ViewBuilder
-    private var filmTab: some View {
+    private var vodTab: some View {
         if let credentials {
             ChannelGridView(credentials: credentials, kind: .movie)
         } else if let m3uPlaylistURL {
             M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .movie)
+        } else {
+            EmptyLibraryView(
+                kind: .movie,
+                title: "Nessun film disponibile",
+                message: "Aggiungi una sorgente dalle Impostazioni per visualizzare qui il catalogo VOD."
+            )
         }
     }
 
@@ -148,24 +129,55 @@ struct ContentView: View {
             ChannelGridView(credentials: credentials, kind: .series)
         } else if let m3uPlaylistURL {
             M3UChannelsView(playlistURL: m3uPlaylistURL, kind: .series)
+        } else {
+            EmptyLibraryView(
+                kind: .series,
+                title: "Nessuna serie disponibile",
+                message: "Aggiungi una sorgente dalle Impostazioni per visualizzare qui le serie TV."
+            )
         }
     }
 
+    private var hasActivePlayableSource: Bool {
+        credentials != nil || m3uPlaylistURL != nil
+    }
+
+    private var xtreamSourceTaskID: String {
+        guard let credentials else {
+            return "no-xtream-source"
+        }
+
+        let normalizedHost = credentials.host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
+
+        return [
+            sourceManager.activeSourceId?.uuidString ?? "none",
+            normalizedHost,
+            credentials.username
+        ]
+        .joined(separator: "|")
+    }
+
     private func loadActiveSource() {
-        guard let active = sourceManager.activeSource else {
+        guard let activeSource = sourceManager.activeSource else {
             credentials = nil
             m3uPlaylistURL = nil
-            selectedTab = 0
+            selectedTab = .home
             xtreamCatalog.reset()
             return
         }
 
-        switch active.type {
+        switch activeSource.type {
         case .xtream:
-            guard let username = active.username?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !username.isEmpty,
-                  let password = active.password,
-                  !password.isEmpty else {
+            guard
+                let username = activeSource.username?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                !username.isEmpty,
+                let password = activeSource.password,
+                !password.isEmpty
+            else {
                 credentials = nil
                 m3uPlaylistURL = nil
                 xtreamCatalog.reset()
@@ -173,7 +185,7 @@ struct ContentView: View {
             }
 
             let newCredentials = XtreamCredentials(
-                host: active.host,
+                host: activeSource.host,
                 username: username,
                 password: password
             )
@@ -187,7 +199,7 @@ struct ContentView: View {
 
         case .m3u8:
             credentials = nil
-            m3uPlaylistURL = URL(string: active.host)
+            m3uPlaylistURL = URL(string: activeSource.host)
             xtreamCatalog.reset()
 
         case .plex, .jellyfin, .emby:
@@ -201,12 +213,15 @@ struct ContentView: View {
         current: XtreamCredentials?,
         next: XtreamCredentials
     ) -> Bool {
-        guard let current else { return true }
+        guard let current else {
+            return true
+        }
 
         let currentHost = current.host
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             .lowercased()
+
         let nextHost = next.host
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
