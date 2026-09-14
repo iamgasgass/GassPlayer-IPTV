@@ -2,8 +2,16 @@ import Foundation
 import Combine
 
 /// Catalogo Xtream condiviso per l'intera sessione applicativa.
-/// Live, VOD e Serie leggono gli stessi dati in memoria: cambiare tab o
-/// categoria non avvia ulteriori download della playlist.
+///
+/// Strategia:
+/// - ad ogni avvio il catalogo viene ripristinato istantaneamente dalla
+///   cache su disco (nessuna attesa di rete, nessun caricamento a vuoto);
+/// - una nuova richiesta di rete parte solo se l'utente la richiede
+///   esplicitamente (pulsante "Aggiorna" o pull-to-refresh), oppure se
+///   l'intervallo di aggiornamento configurato in Impostazioni e' scaduto,
+///   oppure se non esiste ancora nessuna cache per questa sorgente;
+/// - live, VOD e serie leggono gli stessi dati in memoria: cambiare tab o
+///   categoria non causa ulteriori richieste di playlist.
 @MainActor
 final class XtreamCatalogStore: ObservableObject {
     enum LoadState: Equatable {
@@ -21,6 +29,10 @@ final class XtreamCatalogStore: ObservableObject {
     @Published private(set) var vodStreams: [XtreamStream] = []
     @Published private(set) var seriesItems: [XtreamSeriesItem] = []
     @Published private(set) var state: LoadState = .idle
+    @Published private(set) var lastRefreshDate: Date?
+
+    private let settings = CatalogSettings.shared
+    private let persistentStore = PersistentCatalogStore.shared
 
     private var loadedSourceFingerprint: String?
     private var loadingTask: Task<Void, Never>?
@@ -29,10 +41,16 @@ final class XtreamCatalogStore: ObservableObject {
         loadingTask?.cancel()
     }
 
+    /// Ripristina la cache su disco e valuta, in base alle impostazioni
+    /// dell'utente, se serve anche un aggiornamento di rete. Chiamate
+    /// simultanee attendono lo stesso task.
     func loadIfNeeded(credentials: XtreamCredentials) async {
         let fingerprint = Self.sourceFingerprint(credentials)
 
         if loadedSourceFingerprint == fingerprint, state == .loaded {
+            if settings.needsScheduledRefresh() {
+                await refresh(credentials: credentials)
+            }
             return
         }
 
@@ -43,11 +61,7 @@ final class XtreamCatalogStore: ObservableObject {
 
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.loadAll(
-                credentials: credentials,
-                fingerprint: fingerprint,
-                forceRefresh: false
-            )
+            await self.restoreThenLoad(credentials: credentials, fingerprint: fingerprint)
         }
 
         loadingTask = task
@@ -55,6 +69,7 @@ final class XtreamCatalogStore: ObservableObject {
         loadingTask = nil
     }
 
+    /// Refresh esplicito dell'intero catalogo o della sola sezione indicata.
     func refresh(
         credentials: XtreamCredentials,
         kind: XtreamStreamKind? = nil
@@ -78,8 +93,12 @@ final class XtreamCatalogStore: ObservableObject {
                     credentials: credentials,
                     forceRefresh: true
                 )
+
                 if case .loaded = self.state {
                     self.loadedSourceFingerprint = fingerprint
+                    self.settings.markRefreshed()
+                    self.lastRefreshDate = self.settings.lastRefreshDate
+                    await self.persistSnapshot(fingerprint: fingerprint)
                 }
             } else {
                 await self.loadAll(
@@ -95,33 +114,87 @@ final class XtreamCatalogStore: ObservableObject {
         loadingTask = nil
     }
 
+    /// Elimina lo snapshot su disco. Usare per "Cancella cache catalogo" in
+    /// Impostazioni oppure per rimuovere completamente la sorgente.
+    func clearPersistedCache(credentials: XtreamCredentials? = nil) async {
+        if let credentials {
+            await persistentStore.remove(sourceFingerprint: Self.sourceFingerprint(credentials))
+        } else {
+            await persistentStore.removeAll()
+        }
+    }
+
+    /// Svuota soltanto lo stato in memoria (logout, rimozione sorgente o
+    /// cambio di host/username). Lo snapshot su disco resta disponibile.
     func reset() {
         loadingTask?.cancel()
         loadingTask = nil
+
         loadedSourceFingerprint = nil
+
         liveCategories = []
         vodCategories = []
         seriesCategories = []
+
         liveStreams = []
         vodStreams = []
         seriesItems = []
+
+        lastRefreshDate = nil
         state = .idle
     }
 
     func categories(for kind: XtreamStreamKind) -> [XtreamCategory] {
         switch kind {
-        case .live: return liveCategories
-        case .movie: return vodCategories
-        case .series: return seriesCategories
+        case .live:
+            return liveCategories
+        case .movie:
+            return vodCategories
+        case .series:
+            return seriesCategories
         }
     }
 
     func streams(for kind: XtreamStreamKind) -> [XtreamStream] {
         switch kind {
-        case .live: return liveStreams
-        case .movie: return vodStreams
-        case .series: return []
+        case .live:
+            return liveStreams
+        case .movie:
+            return vodStreams
+        case .series:
+            return []
         }
+    }
+
+    private func restoreThenLoad(
+        credentials: XtreamCredentials,
+        fingerprint: String
+    ) async {
+        if let snapshot = await persistentStore.load(sourceFingerprint: fingerprint) {
+            liveCategories = snapshot.liveCategories
+            vodCategories = snapshot.vodCategories
+            seriesCategories = snapshot.seriesCategories
+
+            liveStreams = snapshot.liveStreams
+            vodStreams = snapshot.vodStreams
+            seriesItems = snapshot.seriesItems
+
+            lastRefreshDate = snapshot.savedAt
+            loadedSourceFingerprint = fingerprint
+            state = .loaded
+        }
+
+        let shouldRefreshNow = settings.refreshOnLaunch
+            || settings.needsScheduledRefresh()
+            || lastRefreshDate == nil
+
+        guard shouldRefreshNow else { return }
+
+        await loadAll(
+            credentials: credentials,
+            fingerprint: fingerprint,
+            forceRefresh: true
+        )
     }
 
     private func loadAll(
@@ -131,7 +204,11 @@ final class XtreamCatalogStore: ObservableObject {
     ) async {
         guard !Task.isCancelled else { return }
 
-        state = .loading
+        let hadContent = !liveStreams.isEmpty || !vodStreams.isEmpty || !seriesItems.isEmpty
+        if !hadContent {
+            state = .loading
+        }
+
         let repository = CachedXtreamRepository(credentials: credentials)
         let api = XtreamAPIService(credentials: credentials)
 
@@ -156,13 +233,17 @@ final class XtreamCatalogStore: ObservableObject {
 
             guard !Task.isCancelled else { return }
             loadedSourceFingerprint = fingerprint
+            settings.markRefreshed()
+            lastRefreshDate = settings.lastRefreshDate
             state = .loaded
+
+            await persistSnapshot(fingerprint: fingerprint)
         } catch let error as XtreamError {
-            state = .failed(error.errorDescription ?? "Errore Xtream non specificato.")
+            state = hadContent ? .loaded : .failed(error.errorDescription ?? "Errore Xtream non specificato.")
         } catch is CancellationError {
-            state = .idle
+            if !hadContent { state = .idle }
         } catch {
-            state = .failed("Errore imprevisto: \(error.localizedDescription)")
+            state = hadContent ? .loaded : .failed("Errore imprevisto: \(error.localizedDescription)")
         }
     }
 
@@ -256,6 +337,22 @@ final class XtreamCatalogStore: ObservableObject {
         return items.filter { item in
             item.seriesId > 0 && seen.insert(item.seriesId).inserted
         }
+    }
+
+    private func persistSnapshot(fingerprint: String) async {
+        let snapshot = PersistentCatalogStore.Snapshot(
+            schemaVersion: 1,
+            sourceFingerprint: fingerprint,
+            savedAt: Date(),
+            liveCategories: liveCategories,
+            vodCategories: vodCategories,
+            seriesCategories: seriesCategories,
+            liveStreams: liveStreams,
+            vodStreams: vodStreams,
+            seriesItems: seriesItems
+        )
+
+        await persistentStore.save(snapshot)
     }
 
     private static func sourceFingerprint(_ credentials: XtreamCredentials) -> String {
