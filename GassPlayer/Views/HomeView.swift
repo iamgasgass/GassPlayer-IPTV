@@ -39,17 +39,33 @@ struct HomeView: View {
             }
             .background(background)
             .navigationTitle("Home")
-            .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    GlassIconButton(
-                        systemImage: "gearshape.fill",
-                        isInSystemToolbar: true
-                    ) {
-                        overlayState.showSettings = true
-                    }
-                    .accessibilityLabel("Apri Impostazioni")
-                }
+                toolbarContent
+            }
+        }
+    }
+
+    // MARK: - Toolbar (stessa struttura usata in ChannelGridView / SourcesView:
+    // pulsanti Ricerca e Impostazioni SEMPRE separati, non raggruppati in un
+    // unico menu. Su iOS 26 viene inserito un ToolbarSpacer fisso tra i due
+    // pulsanti così il sistema li disegna come due "pillole" di vetro
+    // distinte invece di un'unica pillola condivisa.)
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSearchButton()
+            }
+            ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSettingsButton()
+            }
+        } else {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSearchButton()
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                GlassSettingsButton()
             }
         }
     }
@@ -377,16 +393,22 @@ struct EmptyLibraryView: View {
             }
             .padding()
             .navigationTitle(kind.displayName)
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    GlassIconButton(
-                        systemImage: "gearshape.fill",
-                        isInSystemToolbar: true
-                    ) {
-                        overlayState.showSettings = true
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        GlassSearchButton()
                     }
-                    .accessibilityLabel("Apri Impostazioni")
+                    ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        GlassSettingsButton()
+                    }
+                } else {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        GlassSearchButton()
+                    }
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        GlassSettingsButton()
+                    }
                 }
             }
         }
