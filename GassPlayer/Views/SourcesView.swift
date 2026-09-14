@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 private enum SourceSortMode: String, CaseIterable, Identifiable {
     case manual = "Personalizzato"
@@ -28,6 +29,16 @@ struct SourcesView: View {
     @State private var sortMode: SourceSortMode = .manual
     @State private var checkingSourceID: UUID?
     @State private var connectionCheckResult: ConnectionCheckResult?
+    @State private var isCheckingAll = false
+    @State private var showImportSheet = false
+    @State private var importText = ""
+    @State private var importFeedback: ImportFeedback?
+
+    private struct ImportFeedback: Identifiable {
+        let id = UUID()
+        let message: String
+        let succeeded: Bool
+    }
 
     private var displayedSources: [MediaSourceConfig] {
         let filtered = sourceManager.sources.filter { source in
@@ -38,15 +49,16 @@ struct SourcesView: View {
                 || source.type.rawValue.localizedCaseInsensitiveContains(searchQuery)
         }
 
+        let sorted: [MediaSourceConfig]
         switch sortMode {
         case .manual:
-            return filtered
+            sorted = filtered
         case .name:
-            return filtered.sorted {
+            sorted = filtered.sorted {
                 $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
         case .type:
-            return filtered.sorted {
+            sorted = filtered.sorted {
                 let typeOrder = $0.type.rawValue.localizedCaseInsensitiveCompare($1.type.rawValue)
 
                 if typeOrder == .orderedSame {
@@ -56,6 +68,18 @@ struct SourcesView: View {
                 return typeOrder == .orderedAscending
             }
         }
+
+        // Le sorgenti fissate restano sempre in cima, indipendentemente dall'ordinamento scelto.
+        return sorted.sorted { lhs, rhs in
+            if lhs.isPinned != rhs.isPinned {
+                return lhs.isPinned && !rhs.isPinned
+            }
+            return false
+        }
+    }
+
+    private var verifiableSourceCount: Int {
+        sourceManager.sources.filter { $0.type == .xtream }.count
     }
 
     private var isManualOrderingAvailable: Bool {
@@ -137,6 +161,16 @@ struct SourcesView: View {
                     message: Text("\(result.sourceName): \(result.message)"),
                     dismissButton: .default(Text("OK"))
                 )
+            }
+            .alert(item: $importFeedback) { feedback in
+                Alert(
+                    title: Text(feedback.succeeded ? "Importazione completata" : "Importazione non riuscita"),
+                    message: Text(feedback.message),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
+            .sheet(isPresented: $showImportSheet) {
+                ImportSourcesSheet(text: $importText, onImport: importSources)
             }
         }
     }
@@ -348,6 +382,26 @@ struct SourcesView: View {
                     )
                 }
             }
+
+            Button {
+                importText = ""
+                showImportSheet = true
+            } label: {
+                Label("Importa sorgenti (JSON)", systemImage: "square.and.arrow.down")
+            }
+
+            Button {
+                Task { await verifyAllSources() }
+            } label: {
+                HStack {
+                    Label("Verifica tutte le sorgenti Xtream", systemImage: "checkmark.shield")
+                    if isCheckingAll {
+                        Spacer()
+                        ProgressView().controlSize(.small)
+                    }
+                }
+            }
+            .disabled(isCheckingAll || verifiableSourceCount == 0)
         } header: {
             Text("Backup")
         } footer: {
@@ -364,17 +418,38 @@ struct SourcesView: View {
                 .frame(width: 28)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(source.name)
-                    .font(.headline)
+                HStack(spacing: 4) {
+                    if source.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                    Text(source.name)
+                        .font(.headline)
+                }
 
                 Text(source.host)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
-                Text(source.type.rawValue)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                HStack(spacing: 6) {
+                    Text(source.type.rawValue)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+
+                    if let succeeded = source.lastVerificationSucceeded, let verifiedAt = source.lastVerifiedAt {
+                        Text("•")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        Label(
+                            verifiedAt.formatted(date: .abbreviated, time: .shortened),
+                            systemImage: succeeded ? "checkmark.circle" : "xmark.circle"
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(succeeded ? .green : .red)
+                    }
+                }
             }
 
             Spacer(minLength: 8)
@@ -416,6 +491,16 @@ struct SourcesView: View {
                 Label("Duplica", systemImage: "plus.square.on.square")
             }
             .tint(.indigo)
+
+            Button {
+                sourceManager.setEnabled(source, isEnabled: !source.isEnabled)
+            } label: {
+                Label(
+                    source.isEnabled ? "Disabilita" : "Abilita",
+                    systemImage: source.isEnabled ? "pause.circle" : "play.circle"
+                )
+            }
+            .tint(.gray)
         }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
             if source.type == .xtream {
@@ -427,6 +512,49 @@ struct SourcesView: View {
                     Label("Verifica", systemImage: "checkmark.shield")
                 }
                 .tint(.green)
+            }
+
+            Button {
+                sourceManager.togglePinned(source)
+            } label: {
+                Label(
+                    source.isPinned ? "Rimuovi pin" : "Fissa in alto",
+                    systemImage: source.isPinned ? "pin.slash" : "pin"
+                )
+            }
+            .tint(.orange)
+        }
+        .contextMenu {
+            Button {
+                sourceManager.togglePinned(source)
+            } label: {
+                Label(source.isPinned ? "Rimuovi pin" : "Fissa in alto", systemImage: "pin")
+            }
+
+            Button {
+                sourceManager.setEnabled(source, isEnabled: !source.isEnabled)
+            } label: {
+                Label(source.isEnabled ? "Disabilita" : "Abilita", systemImage: "power")
+            }
+
+            if source.type == .xtream {
+                Button {
+                    Task { await testConnection(source) }
+                } label: {
+                    Label("Verifica connessione", systemImage: "checkmark.shield")
+                }
+            }
+
+            Button {
+                duplicate(source)
+            } label: {
+                Label("Duplica", systemImage: "plus.square.on.square")
+            }
+
+            Button(role: .destructive) {
+                sourceManager.remove(source)
+            } label: {
+                Label("Elimina", systemImage: "trash")
             }
         }
         .accessibilityHint("Tocca per impostare questa sorgente come attiva")
@@ -496,22 +624,79 @@ struct SourcesView: View {
         do {
             _ = try await service.authenticate()
 
+            sourceManager.recordVerification(for: source, succeeded: true)
             connectionCheckResult = ConnectionCheckResult(
                 sourceName: source.name,
                 succeeded: true,
                 message: "Le credenziali sono valide e il server risponde correttamente."
             )
         } catch let error as XtreamError {
+            sourceManager.recordVerification(for: source, succeeded: false)
             connectionCheckResult = ConnectionCheckResult(
                 sourceName: source.name,
                 succeeded: false,
                 message: error.errorDescription ?? "Errore Xtream sconosciuto."
             )
         } catch {
+            sourceManager.recordVerification(for: source, succeeded: false)
             connectionCheckResult = ConnectionCheckResult(
                 sourceName: source.name,
                 succeeded: false,
                 message: error.localizedDescription
+            )
+        }
+    }
+
+    @MainActor
+    private func verifyAllSources() async {
+        let xtreamSources = sourceManager.sources.filter { $0.type == .xtream }
+        guard !xtreamSources.isEmpty else { return }
+
+        isCheckingAll = true
+        defer { isCheckingAll = false }
+
+        var successCount = 0
+
+        for source in xtreamSources {
+            guard let username = source.username, !username.isEmpty,
+                  let password = source.password, !password.isEmpty else { continue }
+
+            checkingSourceID = source.id
+            let credentials = XtreamCredentials(host: source.host, username: username, password: password)
+            let service = XtreamAPIService(credentials: credentials)
+
+            do {
+                _ = try await service.authenticate()
+                sourceManager.recordVerification(for: source, succeeded: true)
+                successCount += 1
+            } catch {
+                sourceManager.recordVerification(for: source, succeeded: false)
+            }
+        }
+
+        checkingSourceID = nil
+        connectionCheckResult = ConnectionCheckResult(
+            sourceName: "Verifica multipla",
+            succeeded: successCount == xtreamSources.count,
+            message: "\(successCount) su \(xtreamSources.count) sorgenti Xtream hanno risposto correttamente."
+        )
+    }
+
+    private func importSources() {
+        do {
+            let imported = try SourceBackupCodec.decode(fromString: importText)
+            let addedCount = sourceManager.importSources(imported)
+            importFeedback = ImportFeedback(
+                message: addedCount == 0
+                    ? "Nessuna nuova sorgente da importare (erano già presenti)."
+                    : "\(addedCount) sorgent\(addedCount == 1 ? "e" : "i") importata\(addedCount == 1 ? "" : "e") con successo.",
+                succeeded: true
+            )
+            showImportSheet = false
+        } catch {
+            importFeedback = ImportFeedback(
+                message: "Il testo incollato non è un backup GassPlayer valido.",
+                succeeded: false
             )
         }
     }
@@ -621,6 +806,54 @@ struct AddSourceView: View {
                         dismiss()
                     }
                     .disabled(!canSave)
+                }
+            }
+        }
+    }
+}
+
+struct ImportSourcesSheet: View {
+    @Binding var text: String
+    let onImport: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var canImport: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $text)
+                        .font(.caption.monospaced())
+                        .frame(minHeight: 220)
+                } header: {
+                    Text("Backup JSON")
+                } footer: {
+                    Text("Incolla qui il contenuto JSON esportato in precedenza da GassPlayer. Le sorgenti già presenti (stesso host e username) verranno saltate.")
+                }
+
+                Section {
+                    Button {
+                        if let clipboardText = UIPasteboard.general.string {
+                            text = clipboardText
+                        }
+                    } label: {
+                        Label("Incolla dagli appunti", systemImage: "doc.on.clipboard")
+                    }
+                }
+            }
+            .navigationTitle("Importa sorgenti")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annulla") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Importa", action: onImport)
+                        .disabled(!canImport)
                 }
             }
         }

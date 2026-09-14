@@ -86,6 +86,7 @@ struct ChannelGridView: View {
     @State private var epgByStream: [Int: EPGProgram] = [:]
     @State private var catalogIndex = CatalogIndex(streams: [], categories: [])
     @State private var indexedSourceIdentity = ""
+    @State private var showEPGGuide = false
 
     private var service: XtreamAPIService {
         XtreamAPIService(credentials: credentials)
@@ -330,6 +331,12 @@ struct ChannelGridView: View {
                     seriesName: series.name
                 )
             }
+            .fullScreenCover(isPresented: $showEPGGuide) {
+                EPGGridView(credentials: credentials, streams: allStreams) { stream in
+                    showEPGGuide = false
+                    selectedStream = stream
+                }
+            }
         }
         .onChange(of: kind) { _, _ in
             selectedCategory = .all
@@ -350,6 +357,14 @@ struct ChannelGridView: View {
                 GlassSettingsButton()
             }
 
+            if kind == .live {
+                ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    epgGuideButton
+                }
+            }
+
             ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
 
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -364,9 +379,26 @@ struct ChannelGridView: View {
                 GlassSettingsButton()
             }
 
+            if kind == .live {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    epgGuideButton
+                }
+            }
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 refreshButton
             }
+        }
+    }
+
+    private var epgGuideButton: some View {
+        GlassIconButton(
+            systemImage: "tv.badge.wifi",
+            size: 34,
+            isInSystemToolbar: true,
+            accessibilityLabel: "Apri guida TV"
+        ) {
+            showEPGGuide = true
         }
     }
 

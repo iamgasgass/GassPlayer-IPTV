@@ -38,6 +38,52 @@ final class SourceManager: ObservableObject {
         persist()
     }
 
+    func togglePinned(_ source: MediaSourceConfig) {
+        guard let idx = sources.firstIndex(where: { $0.id == source.id }) else { return }
+        sources[idx].isPinned.toggle()
+        persist()
+    }
+
+    func setEnabled(_ source: MediaSourceConfig, isEnabled: Bool) {
+        guard let idx = sources.firstIndex(where: { $0.id == source.id }) else { return }
+        sources[idx].isEnabled = isEnabled
+        persist()
+    }
+
+    func recordVerification(for source: MediaSourceConfig, succeeded: Bool, channelCount: Int? = nil) {
+        guard let idx = sources.firstIndex(where: { $0.id == source.id }) else { return }
+        sources[idx].lastVerifiedAt = Date()
+        sources[idx].lastVerificationSucceeded = succeeded
+        if let channelCount {
+            sources[idx].lastKnownChannelCount = channelCount
+        }
+        persist()
+    }
+
+    /// Importa sorgenti da un backup JSON, saltando quelle già presenti (stesso host+username).
+    /// Ritorna il numero di sorgenti effettivamente aggiunte.
+    @discardableResult
+    func importSources(_ imported: [MediaSourceConfig]) -> Int {
+        var addedCount = 0
+        for var source in imported {
+            let isDuplicate = sources.contains {
+                $0.host.caseInsensitiveCompare(source.host) == .orderedSame
+                    && $0.username == source.username
+            }
+            guard !isDuplicate else { continue }
+
+            source.id = UUID()
+            source.sortOrder = sources.count
+            source.isPinned = false
+            sources.append(source)
+            addedCount += 1
+        }
+        if addedCount > 0 {
+            persist()
+        }
+        return addedCount
+    }
+
     var activeSource: MediaSourceConfig? {
         sources.first { $0.id == activeSourceId } ?? sources.last
     }
