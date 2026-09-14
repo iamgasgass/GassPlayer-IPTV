@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// Identificatori delle destinazioni principali della tab bar.
+/// Non usare `private`: HomeView è in un file differente dello stesso target
+/// e deve poter ricevere il binding selezionato da ContentView.
 enum MainTab: Hashable {
     case home
     case liveTV
@@ -83,7 +86,9 @@ struct ContentView: View {
             loadActiveSource()
         }
         .task(id: xtreamSourceTaskID) {
-            guard let credentials else { return }
+            guard let credentials else {
+                return
+            }
 
             await xtreamCatalog.loadIfNeeded(credentials: credentials)
             vpnManager.handleAppBecameActive()
@@ -144,21 +149,20 @@ struct ContentView: View {
             return "no-xtream-source"
         }
 
-        let normalizedHost = credentials.host
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            .lowercased()
-
         return [
             sourceManager.activeSourceId?.uuidString ?? "none",
-            normalizedHost,
+            normalizedHost(credentials.host),
             credentials.username
         ]
         .joined(separator: "|")
     }
 
+    /// Carica nella UI esclusivamente la sorgente attiva e abilitata.
+    /// Non effettua chiamate di rete: il catalogo Xtream viene caricato dal
+    /// task identificato dal fingerprint della sorgente.
     private func loadActiveSource() {
-        guard let activeSource = sourceManager.activeSource else {
+        guard let activeSource = sourceManager.activeSource,
+              activeSource.isEnabled else {
             credentials = nil
             m3uPlaylistURL = nil
             selectedTab = .home
@@ -177,6 +181,7 @@ struct ContentView: View {
             else {
                 credentials = nil
                 m3uPlaylistURL = nil
+                selectedTab = .home
                 xtreamCatalog.reset()
                 return
             }
@@ -196,23 +201,38 @@ struct ContentView: View {
 
         case .m3u8:
             credentials = nil
-            m3uPlaylistURL = validURL(from: activeSource.host)
+            m3uPlaylistURL = validHTTPURL(from: activeSource.host)
             xtreamCatalog.reset()
 
+            if m3uPlaylistURL == nil {
+                selectedTab = .home
+            }
+
         case .plex, .jellyfin, .emby:
+            // Questi tipi restano memorizzabili in SourcesView, ma finché
+            // non viene implementato il relativo adapter non vengono trattati
+            // come sorgenti riproducibili dalla tab bar.
             credentials = nil
             m3uPlaylistURL = nil
+            selectedTab = .home
             xtreamCatalog.reset()
         }
     }
 
-    private func validURL(from string: String) -> URL? {
-        let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: normalized),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else {
+    private func validHTTPURL(from rawValue: String) -> URL? {
+        let normalizedValue = rawValue.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
+        guard
+            let url = URL(string: normalizedValue),
+            let scheme = url.scheme?.lowercased(),
+            scheme == "http" || scheme == "https",
+            url.host != nil
+        else {
             return nil
         }
+
         return url
     }
 
@@ -220,12 +240,12 @@ struct ContentView: View {
         current: XtreamCredentials?,
         next: XtreamCredentials
     ) -> Bool {
-        guard let current else { return true }
+        guard let current else {
+            return true
+        }
 
-        let currentHost = normalizedHost(current.host)
-        let nextHost = normalizedHost(next.host)
-
-        return currentHost != nextHost || current.username != next.username
+        return normalizedHost(current.host) != normalizedHost(next.host)
+            || current.username != next.username
     }
 
     private func normalizedHost(_ host: String) -> String {
