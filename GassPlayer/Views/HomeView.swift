@@ -1,10 +1,16 @@
 import SwiftUI
 
+/// Home principale.
+///
+/// - Dopo la splash è sempre accessibile, anche senza sorgenti.
+/// - I pulsanti contestuali Sorgenti aprono direttamente `SourcesView`.
+/// - Ricerca e Impostazioni rimangono azioni toolbar distinte.
+/// - Non avvia richieste di rete: SourceManager e ContentView coordinano lo
+///   stato della sorgente attiva, mentre le tab del catalogo caricano i dati.
 struct HomeView: View {
     @Binding var selectedTab: MainTab
     let hasActiveSource: Bool
 
-    @EnvironmentObject private var overlayState: NavigationOverlayState
     @EnvironmentObject private var sourceManager: SourceManager
 
     @State private var showSources = false
@@ -16,14 +22,14 @@ struct HomeView: View {
                     heading
 
                     if hasActiveSource {
-                        connectedSourceCard
+                        activeSourceCard
                     } else {
                         emptySourceCard
                     }
 
                     liveDestination
                     onDemandSection
-                    sourceSummary
+                    sourcesSummaryCard
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -36,6 +42,8 @@ struct HomeView: View {
                 toolbarContent
             }
         }
+        // SourcesView possiede già una NavigationStack. Non aggiungere una
+        // seconda NavigationStack nel contenuto della sheet.
         .sheet(isPresented: $showSources) {
             SourcesView()
         }
@@ -43,6 +51,10 @@ struct HomeView: View {
 
     // MARK: - Toolbar
 
+    /// Mantiene Ricerca e Impostazioni come controlli distinti.
+    /// ToolbarSpacer è disponibile solo su iOS 26+, quindi resta protetto
+    /// dall'availability check; su iOS 17–25 gli item restano separati come
+    /// normali ToolbarItem.
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if #available(iOS 26.0, *) {
@@ -110,11 +122,11 @@ struct HomeView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
 
                 Text(
-                    "Aggiungi una playlist M3U o un account supportato. Live TV, VOD e Serie TV saranno disponibili quando una sorgente sarà attiva."
+                    "Aggiungi una playlist M3U o un account Xtream. Live TV, VOD e Serie TV saranno disponibili appena attivi una sorgente."
                 )
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -126,13 +138,13 @@ struct HomeView: View {
                     showSources = true
                 }
                 .accessibilityHint(
-                    "Apre l'elenco delle sorgenti. Tocca più per aggiungerne una."
+                    "Apre l'elenco delle sorgenti. Usa il pulsante più per aggiungerne una."
                 )
             }
         }
     }
 
-    private var connectedSourceCard: some View {
+    private var activeSourceCard: some View {
         GlassCard {
             HStack(spacing: 14) {
                 Image(systemName: "checkmark.circle.fill")
@@ -143,7 +155,7 @@ struct HomeView: View {
                     Text("Sorgente pronta")
                         .font(.headline)
 
-                    Text(sourceManager.activeSource?.name ?? "Sorgente attiva")
+                    Text(activeSourceDescription)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -162,7 +174,7 @@ struct HomeView: View {
         }
     }
 
-    private var sourceSummary: some View {
+    private var sourcesSummaryCard: some View {
         GlassCard {
             HStack(spacing: 12) {
                 Image(systemName: "square.stack.3d.up.fill")
@@ -181,7 +193,7 @@ struct HomeView: View {
                     Text("Sorgenti")
                         .font(.subheadline.weight(.medium))
 
-                    Text(sourceSummaryText)
+                    Text(sourcesSummaryText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -199,14 +211,31 @@ struct HomeView: View {
         }
     }
 
-    private var sourceSummaryText: String {
-        switch sourceManager.sources.count {
-        case 0:
+    private var activeSourceDescription: String {
+        guard let source = sourceManager.activeSource else {
+            return "Sorgente attiva"
+        }
+
+        return source.isEnabled
+            ? source.name
+            : "Sorgente disabilitata"
+    }
+
+    private var sourcesSummaryText: String {
+        let allSources = sourceManager.sources.count
+        let enabledSources = sourceManager.sources.filter(\.isEnabled).count
+
+        switch (allSources, enabledSources) {
+        case (0, _):
             return "Nessuna sorgente configurata"
-        case 1:
-            return "1 sorgente configurata"
+        case (1, 1):
+            return "1 sorgente attiva"
+        case (1, 0):
+            return "1 sorgente disabilitata"
+        case (_, 0):
+            return "\(allSources) sorgenti, tutte disabilitate"
         default:
-            return "\(sourceManager.sources.count) sorgenti configurate"
+            return "\(enabledSources) attive su \(allSources) sorgenti"
         }
     }
 
@@ -220,7 +249,7 @@ struct HomeView: View {
                 : "I canali appariranno qui",
             systemImage: "tv.fill",
             tint: .red,
-            destination: .liveTV
+            destination: MainTab.liveTV
         )
     }
 
@@ -237,7 +266,7 @@ struct HomeView: View {
                         : "Disponibile con una sorgente",
                     systemImage: "film.fill",
                     tint: .purple,
-                    destination: .vod
+                    destination: MainTab.vod
                 )
 
                 compactDestinationCard(
@@ -247,7 +276,7 @@ struct HomeView: View {
                         : "Disponibile con una sorgente",
                     systemImage: "rectangle.stack.fill",
                     tint: .blue,
-                    destination: .series
+                    destination: MainTab.series
                 )
             }
         }
@@ -362,7 +391,7 @@ struct HomeView: View {
         .accessibilityHint(subtitle)
     }
 
-    // MARK: - Background
+    // MARK: - Styling
 
     private var background: some View {
         LinearGradient(
