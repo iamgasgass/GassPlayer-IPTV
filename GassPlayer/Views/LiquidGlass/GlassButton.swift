@@ -1,7 +1,5 @@
 import SwiftUI
 
-/// Pulsante circolare adattivo: sfrutta Liquid Glass nativo su iOS 26 e
-/// materiale di sistema sulle versioni precedenti.
 struct GlassIconButton: View {
     let systemImage: String
     var tint: Color? = nil
@@ -48,10 +46,7 @@ private struct NativeOrLegacyGlassCircle: ViewModifier {
                 .background(.ultraThinMaterial, in: Circle())
                 .overlay {
                     Circle()
-                        .strokeBorder(
-                            Color.white.opacity(0.16),
-                            lineWidth: 0.5
-                        )
+                        .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
                 }
         }
     }
@@ -68,7 +63,6 @@ struct GlassPrimaryButton: View {
                 if let systemImage {
                     Image(systemName: systemImage)
                 }
-
                 Text(title)
             }
             .font(.headline)
@@ -77,7 +71,6 @@ struct GlassPrimaryButton: View {
             .frame(maxWidth: .infinity)
         }
         .modifier(NativeOrLegacyGlassCapsule())
-        .accessibilityLabel(title)
     }
 }
 
@@ -95,10 +88,7 @@ private struct NativeOrLegacyGlassCapsule: ViewModifier {
                 .background(Color.accentColor, in: Capsule())
                 .overlay {
                     Capsule()
-                        .strokeBorder(
-                            Color.white.opacity(0.18),
-                            lineWidth: 0.5
-                        )
+                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
                 }
         }
     }
