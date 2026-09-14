@@ -1,18 +1,28 @@
 import SwiftUI
 
 struct GlassSearchButton: View {
-    @EnvironmentObject var overlayState: NavigationOverlayState
+    @EnvironmentObject private var overlayState: NavigationOverlayState
+
     var body: some View {
-        GlassIconButton(systemImage: "magnifyingglass", isInSystemToolbar: true) {
+        GlassIconButton(
+            systemImage: "magnifyingglass",
+            isInSystemToolbar: true,
+            accessibilityLabel: "Cerca"
+        ) {
             overlayState.showSearch = true
         }
     }
 }
 
 struct GlassSettingsButton: View {
-    @EnvironmentObject var overlayState: NavigationOverlayState
+    @EnvironmentObject private var overlayState: NavigationOverlayState
+
     var body: some View {
-        GlassIconButton(systemImage: "gearshape", isInSystemToolbar: true) {
+        GlassIconButton(
+            systemImage: "gearshape",
+            isInSystemToolbar: true,
+            accessibilityLabel: "Impostazioni"
+        ) {
             overlayState.showSettings = true
         }
     }
