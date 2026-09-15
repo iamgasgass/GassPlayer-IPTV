@@ -8,15 +8,10 @@ import SwiftUI
 /// viene creato una sola volta nell'istante in cui il booleano diventa
 /// `true`, catturando uno snapshot dei valori disponibili in quel momento.
 /// Se in quell'istante il catalogo Xtream non aveva ancora finito di
-/// caricare i canali live (es. refresh in corso, catalogo appena aperto),
-/// la guida restava con un array vuoto per sempre, perche' un parametro
-/// `let` non si aggiorna quando il dato a monte cambia in seguito.
+/// caricare i canali live, la guida restava con un array vuoto per sempre.
 ///
 /// La correzione legge i canali live direttamente da `XtreamCatalogStore`
-/// tramite `@EnvironmentObject`, in modo reattivo: se il catalogo si
-/// popola anche DOPO l'apertura della guida, la vista si ridisegna con i
-/// dati corretti automaticamente, perche' osserva l'`ObservableObject`
-/// invece di un valore congelato.
+/// tramite `@EnvironmentObject`, in modo reattivo.
 ///
 /// NOTA su Lazy stack: `LazyVStack`/`LazyHStack` sono lazy SOLO quando
 /// hanno un `ScrollView` come antenato diretto. La colonna canali non vive
@@ -259,6 +254,19 @@ struct EPGGridView: View {
         .ignoresSafeArea()
     }
 
+    /// Toast temporaneo per feedback rapidi (es. promemoria impostato,
+    /// errore generazione link catch-up). Richiamato dall'overlay in
+    /// `body` quando `reminderToast` non e' `nil`.
+    private func toast(_ message: String) -> some View {
+        Text(message)
+            .font(.footnote.weight(.semibold))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .modifier(GlassCardBackground(cornerRadius: 20))
+            .padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .navigationBarLeading) {
@@ -337,9 +345,11 @@ struct EPGGridView: View {
 
     /// Banner diagnostico sempre visibile: mostra lo stato reale dei dati
     /// (quanti canali totali, quanti dopo i filtri, quanti renderizzati,
-    /// e lo stato del catalogo). Permette di distinguere immediatamente
-    /// "il catalogo non ha ancora canali" da "i canali ci sono ma non si
-    /// vedono", senza dover indovinare alla cieca.
+    /// e lo stato del catalogo). NOTA: `.secondary` e' un
+    /// `HierarchicalShapeStyle`, mentre `Color.orange` e' un `Color`; per
+    /// poterli scegliere in un ternario servono entrambi tipizzati come
+    /// `AnyShapeStyle`, altrimenti il compilatore non riesce a unificare
+    /// il tipo di ritorno del modifier `foregroundStyle`.
     @ViewBuilder
     private var diagnosticBanner: some View {
         if streams.isEmpty {
@@ -350,7 +360,11 @@ struct EPGGridView: View {
                 systemImage: isCatalogStillLoading ? "hourglass" : "exclamationmark.triangle"
             )
             .font(.caption2)
-            .foregroundStyle(isCatalogStillLoading ? .secondary : .orange)
+            .foregroundStyle(
+                isCatalogStillLoading
+                    ? AnyShapeStyle(.secondary)
+                    : AnyShapeStyle(Color.orange)
+            )
             .padding(.horizontal, 4)
         } else {
             Text(
