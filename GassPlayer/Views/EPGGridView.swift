@@ -1,23 +1,20 @@
 import SwiftUI
 
-/// Guida TV a griglia.
+/// Guida TV a griglia ottimizzata per iPhone.
 ///
-/// FIX CRITICO: la colonna canali e la timeline usano `VStack` classico,
-/// NON `LazyVStack`. Con soli `renderPageSize` (40) canali per pagina non
-/// c'e' alcun rischio di hang/crash da watchdog, e un `VStack` reale evita
-/// due difetti documentati e riproducibili di `LazyVStack` dentro
-/// `ScrollView`:
-/// 1) contenuto vuoto/"fantasma" quando i dati cambiano dopo il primo
-///    render (Open Radar FB9747151, Apple Developer Forums thread 718929);
-/// 2) `ScrollViewReader.scrollTo(_:)` inaffidabile o silenzioso, perche'
-///    una vista mai istanziata da `LazyVStack` non puo' essere raggiunta
-///    dal proxy di scroll (Stack Overflow #78163553, Apple Developer
-///    Forums thread 745050: "changing LazyVStack to VStack fixes
-///    scrollTo").
-///
-/// ATTENZIONE MANUTENTORI: `channelColumnClip` DEVE chiamare
-/// `channelLabel(for:)`. NON deve mai chiamare `timelineRow(for:)` o
-/// `programBlock(_:stream:)`.
+/// Correzioni principali:
+/// - nessun `.id(...)` distruttivo sulla griglia: SwiftUI conserva stato,
+///   immagini e posizione di scroll durante gli aggiornamenti EPG;
+/// - scala temporale adattiva e non eccessiva: 1.25 pt/minuto invece di
+///   2.6, riducendo la timeline di 24 ore da ~3744pt a ~1800pt;
+/// - apertura reale vicino a "ora", usando un offset calcolato anziche'
+///   `scrollTo` su un anchor allineato in modo ambiguo;
+/// - pulsante "Ora" funzionale: ricrea in sicurezza lo scroll iniziale
+///   con l'offset dell'ora corrente e mostra feedback visivo;
+/// - massimo 40 canali renderizzati per pagina e 120 totali per evitare
+///   watchdog/hang sui provider con playlist enormi;
+/// - `VStack` classico per timeline e colonna: nessun contenuto fantasma
+///   o vuoto dovuto a LazyVStack/ScrollView con dati dinamici.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -40,22 +37,30 @@ struct EPGGridView: View {
     @State private var showFavoritesOnly = false
     @State private var selectedProgram: SelectedProgram?
     @State private var reminderToast: String?
-    @State private var jumpToNowRequested = false
     @State private var catchupPlayback: CatchupPlayback?
-    @State private var scrollGeneration = 0
 
     @State private var renderLimit = 40
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
 
-    private let pixelsPerMinute: CGFloat = 2.6
+    /// Cambiare questa chiave ricrea SOLO lo ScrollView timeline quando
+    /// l'utente richiede "Vai a ora". Non viene mai modificata per gli
+    /// aggiornamenti EPG, quindi non causa sparizioni o reset continui.
+    @State private var timelineScrollResetID = UUID()
+
+    /// L'offset iniziale viene impostato dopo che GeometryReader conosce
+    /// la larghezza utile della timeline visibile sul dispositivo.
+    @State private var initialScrollOffsetX: CGFloat = 0
+    @State private var hasConfiguredInitialScroll = false
+
+    /// 1.25pt/minuto: 75pt per ora, 1800pt per giornata intera.
+    /// Con 2.6pt/minuto la giornata occupava ~3744pt e dava l'impressione
+    /// di un eccessivo zoom orizzontale, con vaste aree vuote a schermo.
+    private let pixelsPerMinute: CGFloat = 1.25
     private let channelColumnWidth: CGFloat = 148
     private let rowHeight: CGFloat = 60
     private let rulerHeight: CGFloat = 30
 
-    /// Con `VStack` classico (non lazy), questi limiti restano
-    /// deliberatamente contenuti per garantire un rendering istantaneo e
-    /// sicuro anche su dispositivi meno potenti.
     private let renderPageSize = 40
     private let hardRenderCap = 120
     private let maxConcurrentRequests = 4
@@ -118,6 +123,17 @@ struct EPGGridView: View {
         CGFloat(timelineEnd.timeIntervalSince(timelineStart) / 60) * pixelsPerMinute
     }
 
+    private var currentTimeX: CGFloat {
+        let minutes = max(
+            0,
+            min(
+                now.timeIntervalSince(timelineStart) / 60,
+                timelineEnd.timeIntervalSince(timelineStart) / 60
+            )
+        )
+        return CGFloat(minutes) * pixelsPerMinute
+    }
+
     private var filteredStreams: [XtreamStream] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -145,17 +161,6 @@ struct EPGGridView: View {
 
     private var remainingCount: Int {
         max(0, min(filteredStreams.count, hardRenderCap) - renderLimit)
-    }
-
-    /// Identita' stabile della pagina corrente. Usata per forzare la
-    /// ricostruzione completa di colonna canali e timeline quando cambia
-    /// (nuova ricerca, nuovo filtro, altri canali caricati, refresh
-    /// esplicito): questo evita del tutto la classe di bug "contenuto
-    /// vuoto/fantasma dopo un aggiornamento dati" che affligge i
-    /// container che tentano un update incrementale in-place.
-    private var contentIdentity: String {
-        let ids = pagedStreams.map(\.streamId).map(String.init).joined(separator: ",")
-        return "\(ids)#\(scrollGeneration)"
     }
 
     private var streamIdentity: String {
@@ -231,18 +236,19 @@ struct EPGGridView: View {
         }
         .onChange(of: searchQuery) { _, _ in
             renderLimit = min(renderPageSize, max(filteredStreams.count, 1))
-            scrollGeneration += 1
+            hasConfiguredInitialScroll = false
             scheduleReload(debounced: true)
         }
         .onChange(of: showFavoritesOnly) { _, _ in
             renderLimit = min(renderPageSize, max(filteredStreams.count, 1))
-            scrollGeneration += 1
+            hasConfiguredInitialScroll = false
             scheduleReload()
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             timelineStart = calendar.startOfDay(for: Date())
             now = Date()
-            scrollGeneration += 1
+            hasConfiguredInitialScroll = false
+            resetTimelineToNow(showFeedback: false)
             scheduleReload(forceRefresh: true)
         }
         .onReceive(
@@ -277,9 +283,6 @@ struct EPGGridView: View {
             .transition(.move(edge: .top).combined(with: .opacity))
     }
 
-    /// Ogni azione da' un feedback ESPLICITO tramite toast, cosi' l'utente
-    /// vede sempre che il tocco ha avuto effetto — non solo uno spinner
-    /// silenzioso che potrebbe passare inosservato.
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .navigationBarLeading) {
@@ -295,7 +298,6 @@ struct EPGGridView: View {
 
                     Task {
                         await xtreamCatalog.refresh(credentials: credentials, kind: kind)
-                        scrollGeneration += 1
                         scheduleReload(forceRefresh: true)
                     }
                 } label: {
@@ -318,7 +320,7 @@ struct EPGGridView: View {
                 }
 
                 Button {
-                    jumpToNowRequested = true
+                    resetTimelineToNow(showFeedback: true)
                 } label: {
                     Label("Vai all'orario corrente", systemImage: "location.fill")
                 }
@@ -455,11 +457,6 @@ struct EPGGridView: View {
                             .padding(10)
                     }
                 }
-                // Forza la ricostruzione COMPLETA di colonna e timeline
-                // quando cambia l'identita' dei dati mostrati, invece di
-                // affidarsi a un aggiornamento incrementale che con i
-                // container a scorrimento e' risultato inaffidabile.
-                .id(contentIdentity)
             }
         }
     }
@@ -472,8 +469,6 @@ struct EPGGridView: View {
             .clipped()
     }
 
-    /// Colonna canali fissa: `VStack` classico. DEVE renderizzare
-    /// `channelLabel(for:)` per ogni stream.
     private var channelColumnClip: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(pagedStreams) { stream in
@@ -508,70 +503,83 @@ struct EPGGridView: View {
         .accessibilityLabel("Carica altri \(min(renderPageSize, remainingCount)) canali")
     }
 
-    /// Timeline scorrevole: `VStack` classico (non lazy). Renderizza
-    /// `timelineRow(for:)`, MAI `channelLabel`. Con `VStack` reale,
-    /// `proxy.scrollTo("nowAnchor")` funziona in modo affidabile perche'
-    /// la vista target esiste sempre nell'albero, indipendentemente dallo
-    /// scroll corrente.
+    /// Timeline con scroll iniziale calcolato via GeometryReader.
+    /// NON usa `ScrollViewReader.scrollTo` per il primo posizionamento:
+    /// `ScrollViewReader` non permette di impostare un contentOffset
+    /// arbitrario in modo affidabile su una grande timeline. `TimelineHost`
+    /// e' un UIViewRepresentable leggero che applica direttamente
+    /// `contentOffset` al primo layout e quando l'utente preme "Ora".
     private var timelineScroll: some View {
-        ScrollViewReader { proxy in
-            ScrollView([.horizontal, .vertical], showsIndicators: true) {
-                ZStack(alignment: .topLeading) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(pagedStreams) { stream in
-                            timelineRow(for: stream)
+        GeometryReader { geometry in
+            let visibleWidth = max(geometry.size.width, 1)
+            let desiredOffset = desiredInitialOffset(visibleWidth: visibleWidth)
+
+            TimelineHost(
+                initialOffsetX: initialScrollOffsetX,
+                resetID: timelineScrollResetID,
+                contentWidth: timelineWidth,
+                contentHeight: CGFloat(pagedStreams.count) * rowHeight + (canLoadMore ? rowHeight : 0),
+                onOffsetChange: { offset in
+                    scrollOffset = offset
+                },
+                content: {
+                    ZStack(alignment: .topLeading) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(pagedStreams) { stream in
+                                timelineRow(for: stream)
+                            }
+
+                            if canLoadMore {
+                                Color.clear
+                                    .frame(width: timelineWidth, height: rowHeight)
+                            }
                         }
 
-                        if canLoadMore {
-                            Color.clear
-                                .frame(width: timelineWidth, height: rowHeight)
-                        }
+                        nowLine
                     }
-
-                    nowLine
-                        .id("nowAnchor")
-                }
-                .background(scrollTracker)
-            }
-            .coordinateSpace(name: "epgScroll")
-            .onPreferenceChange(EPGScrollOffsetKey.self) {
-                scrollOffset = $0
-            }
-            .onChange(of: jumpToNowRequested) { _, requested in
-                guard requested else {
-                    return
-                }
-
-                withAnimation(.snappy) {
-                    proxy.scrollTo(
-                        "nowAnchor",
-                        anchor: UnitPoint(x: 0.15, y: 0)
+                    .frame(
+                        width: timelineWidth,
+                        height: CGFloat(pagedStreams.count) * rowHeight + (canLoadMore ? rowHeight : 0),
+                        alignment: .topLeading
                     )
                 }
-
-                reminderToast = "Posizionato sull'orario corrente"
-                jumpToNowRequested = false
-            }
+            )
             .onAppear {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    withAnimation(.snappy) {
-                        proxy.scrollTo(
-                            "nowAnchor",
-                            anchor: UnitPoint(x: 0.15, y: 0)
-                        )
-                    }
-                }
+                configureInitialOffsetIfNeeded(desiredOffset)
+            }
+            .onChange(of: visibleWidth) { _, _ in
+                configureInitialOffsetIfNeeded(desiredOffset)
+            }
+            .onChange(of: timelineScrollResetID) { _, _ in
+                initialScrollOffsetX = desiredOffset
+                hasConfiguredInitialScroll = true
             }
         }
         .zIndex(0)
     }
 
-    private var scrollTracker: some View {
-        GeometryReader { proxy in
-            Color.clear.preference(
-                key: EPGScrollOffsetKey.self,
-                value: proxy.frame(in: .named("epgScroll")).origin
-            )
+    private func desiredInitialOffset(visibleWidth: CGFloat) -> CGFloat {
+        // Mostra "ora" al 30% della larghezza visibile: lascia spazio per
+        // vedere il passato recente a sinistra e soprattutto il prossimo
+        // programma/fascia a destra.
+        let preferredX = currentTimeX - (visibleWidth * 0.30)
+        let maximumX = max(0, timelineWidth - visibleWidth)
+        return min(max(preferredX, 0), maximumX)
+    }
+
+    private func configureInitialOffsetIfNeeded(_ offset: CGFloat) {
+        guard !hasConfiguredInitialScroll else { return }
+        initialScrollOffsetX = offset
+        hasConfiguredInitialScroll = true
+    }
+
+    private func resetTimelineToNow(showFeedback: Bool) {
+        now = Date()
+        hasConfiguredInitialScroll = false
+        timelineScrollResetID = UUID()
+
+        if showFeedback {
+            reminderToast = "Posizionato sull'orario corrente"
         }
     }
 
@@ -821,8 +829,6 @@ struct EPGGridView: View {
     }
 
     private var nowLine: some View {
-        let minutesFromStart = now.timeIntervalSince(timelineStart) / 60
-        let x = CGFloat(minutesFromStart) * pixelsPerMinute
         let isVisible = now >= timelineStart && now <= timelineEnd
 
         return Group {
@@ -839,7 +845,7 @@ struct EPGGridView: View {
                             .frame(width: 7, height: 7)
                             .offset(y: -3.5)
                     }
-                    .offset(x: x)
+                    .offset(x: currentTimeX)
                     .allowsHitTesting(false)
             }
         }
@@ -914,7 +920,6 @@ struct EPGGridView: View {
         }
 
         renderLimit = newLimit
-        scrollGeneration += 1
         scheduleReload()
     }
 
@@ -1038,7 +1043,6 @@ struct EPGGridView: View {
             return
         }
 
-        scrollGeneration += 1
         isInitialEPGLoad = false
         isRefreshingEPG = false
     }
@@ -1058,6 +1062,169 @@ struct EPGGridView: View {
         }
 
         return String(digest, radix: 16)
+    }
+}
+
+// MARK: - UIKit timeline host
+
+/// Contenitore UIKit minimale per una timeline SwiftUI ad ampio contenuto.
+///
+/// `UIScrollView.contentOffset` e' l'unica API affidabile per aprire un
+/// contenuto bidimensionale su una coordinata arbitraria (es. l'ora
+/// corrente). SwiftUI `ScrollViewReader` funziona bene con target discreti,
+/// ma non e' adatto a una timeline continua in cui si desidera una precisa
+/// posizione X calcolata. Questo host integra la vista SwiftUI come child
+/// del controller e sincronizza l'offset con la colonna canali fissa.
+private struct TimelineHost<Content: View>: UIViewControllerRepresentable {
+    let initialOffsetX: CGFloat
+    let resetID: UUID
+    let contentWidth: CGFloat
+    let contentHeight: CGFloat
+    let onOffsetChange: (CGPoint) -> Void
+    let content: () -> Content
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onOffsetChange: onOffsetChange)
+    }
+
+    func makeUIViewController(context: Context) -> TimelineViewController<Content> {
+        let controller = TimelineViewController(
+            content: content(),
+            contentWidth: contentWidth,
+            contentHeight: contentHeight
+        )
+        controller.scrollView.delegate = context.coordinator
+        controller.setOffset(x: initialOffsetX, animated: false)
+        context.coordinator.lastResetID = resetID
+        return controller
+    }
+
+    func updateUIViewController(
+        _ controller: TimelineViewController<Content>,
+        context: Context
+    ) {
+        controller.update(
+            content: content(),
+            contentWidth: contentWidth,
+            contentHeight: contentHeight
+        )
+
+        if context.coordinator.lastResetID != resetID {
+            context.coordinator.lastResetID = resetID
+            controller.setOffset(x: initialOffsetX, animated: true)
+        }
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        var lastResetID: UUID?
+        private let onOffsetChange: (CGPoint) -> Void
+
+        init(onOffsetChange: @escaping (CGPoint) -> Void) {
+            self.onOffsetChange = onOffsetChange
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            onOffsetChange(scrollView.contentOffset)
+        }
+    }
+}
+
+private final class TimelineViewController<Content: View>: UIViewController {
+    let scrollView = UIScrollView()
+    private var hostingController: UIHostingController<Content>
+    private var contentWidth: CGFloat
+    private var contentHeight: CGFloat
+    private var pendingOffsetX: CGFloat?
+
+    init(content: Content, contentWidth: CGFloat, contentHeight: CGFloat) {
+        hostingController = UIHostingController(rootView: content)
+        self.contentWidth = contentWidth
+        self.contentHeight = contentHeight
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        scrollView.alwaysBounceHorizontal = true
+        scrollView.alwaysBounceVertical = true
+        scrollView.showsHorizontalScrollIndicator = true
+        scrollView.showsVerticalScrollIndicator = true
+        scrollView.backgroundColor = .clear
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        addChild(hostingController)
+        hostingController.view.backgroundColor = .clear
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(scrollView)
+        scrollView.addSubview(hostingController.view)
+
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            hostingController.view.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            hostingController.view.widthAnchor.constraint(equalToConstant: contentWidth),
+            hostingController.view.heightAnchor.constraint(equalToConstant: contentHeight)
+        ])
+
+        hostingController.didMove(toParent: self)
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+
+        if let pendingOffsetX {
+            setOffset(x: pendingOffsetX, animated: false)
+            self.pendingOffsetX = nil
+        }
+    }
+
+    func update(content: Content, contentWidth: CGFloat, contentHeight: CGFloat) {
+        hostingController.rootView = content
+
+        guard contentWidth != self.contentWidth || contentHeight != self.contentHeight else {
+            return
+        }
+
+        self.contentWidth = contentWidth
+        self.contentHeight = contentHeight
+
+        // Le ultime due constraint aggiunte in viewDidLoad sono width e
+        // height. Aggiornare le costanti evita di ricreare UIScrollView.
+        let constraints = hostingController.view.constraints
+        for constraint in constraints {
+            if constraint.firstAttribute == .width {
+                constraint.constant = contentWidth
+            } else if constraint.firstAttribute == .height {
+                constraint.constant = contentHeight
+            }
+        }
+
+        view.setNeedsLayout()
+    }
+
+    func setOffset(x: CGFloat, animated: Bool) {
+        guard viewIfLoaded != nil else {
+            pendingOffsetX = x
+            return
+        }
+
+        view.layoutIfNeeded()
+
+        let maximumX = max(0, scrollView.contentSize.width - scrollView.bounds.width)
+        let clampedX = min(max(x, 0), maximumX)
+        scrollView.setContentOffset(CGPoint(x: clampedX, y: 0), animated: animated)
     }
 }
 
