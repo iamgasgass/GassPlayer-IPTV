@@ -1,15 +1,8 @@
 import SwiftUI
 
-/// EPG touch-first, ispirato al linguaggio visivo della guida UHF ma
-/// implementato integralmente con componenti e logica originali.
-///
-/// Obiettivi del layout:
-/// - menu gruppi Liquid Glass nativo nella toolbar centrale;
-/// - header nero minimale, ricerca ampia e selettore data/orario;
-/// - loghi canale grandi a sinistra, timeline a blocchi colorati a destra;
-/// - blocchi EPG con orario e titolo in righe separate, senza sovrapposizioni;
-/// - pagina limitata a 12 canali per mantenere rendering e scroll fluidi;
-/// - cache memoria condivisa: nessun reload bloccante ad ogni apertura.
+/// EPG touch-first, replica fedele del linguaggio visivo di riferimento:
+/// header nero, pill gruppo centrale in stile Liquid Glass, loghi canale
+/// compatti, blocchi programma con nome completo sempre visibile.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -22,8 +15,13 @@ struct EPGGridView: View {
     @State private var programsByStream: [Int: [EPGProgram]] = [:]
     @State private var failedStreamIDs = Set<Int>()
     @State private var loadingStreamIDs = Set<Int>()
-    @State private var isInitialEPGLoad = true
-    @State private var isRefreshingEPG = false
+
+    /// Lo spinner NON appare subito: viene mostrato solo se, dopo un
+    /// breve ritardo, il caricamento e' ancora in corso. Questo evita il
+    /// lampeggio percepito come "si ricarica sempre" quando la cache
+    /// soddisfa la richiesta in pochi millisecondi.
+    @State private var showLoadingIndicator = false
+    @State private var loadingIndicatorTask: Task<Void, Never>?
 
     @State private var now = Date()
     @State private var selectedDayOffset = 0
@@ -43,16 +41,17 @@ struct EPGGridView: View {
     private let maxConcurrentRequests = 4
     private let shortEPGLimit = 48
     private let searchDebounceNanoseconds: UInt64 = 300_000_000
+    private let loadingIndicatorDelayNanoseconds: UInt64 = 400_000_000
 
-    // Metriche basate sullo screenshot: logo sinistro grande e timeline
-    // compatta, leggibile su iPhone senza l'effetto zoom della griglia 24h.
-    private let channelLogoWidth: CGFloat = 116
-    private let channelLogoHeight: CGFloat = 102
-    private let rowHeight: CGFloat = 118
-    private let blockHeight: CGFloat = 102
-    private let pixelsPerMinute: CGFloat = 1.90
+    // Metriche ridotte per aderire alle proporzioni reali dello screenshot:
+    // logo piu' piccolo, riga piu' compatta, blocco programma con altezza
+    // sufficiente per due righe di testo senza mai troncare il titolo.
+    private let channelLogoWidth: CGFloat = 86
+    private let channelLogoHeight: CGFloat = 76
+    private let rowHeight: CGFloat = 96
+    private let blockHeight: CGFloat = 82
+    private let pixelsPerMinute: CGFloat = 1.85
 
-    // Finestra orizzontale di circa 3 ore, con presente vicino al centro.
     private let pastWindow: TimeInterval = 50 * 60
     private let futureWindow: TimeInterval = 130 * 60
 
@@ -158,9 +157,8 @@ struct EPGGridView: View {
         scheduleReload()
     }
 
-    /// L'ordine della sezione "Tutti" resta ESATTAMENTE quello di `streams`,
-    /// ovvero l'ordine pubblicato dalla playlist/provider. Qui non esiste
-    /// alcun `.sorted` sui canali: i filtri mantengono l'ordine relativo.
+    /// L'ordine di "Tutti" resta ESATTAMENTE quello della playlist: nessun
+    /// `.sorted` viene mai applicato all'array dei canali.
     private var filteredStreams: [XtreamStream] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let groupID = normalizedSelectedGroupID
@@ -243,7 +241,6 @@ struct EPGGridView: View {
         if isToday {
             return now.formatted(date: .omitted, time: .shortened)
         }
-
         return "12:00"
     }
 
@@ -325,6 +322,7 @@ struct EPGGridView: View {
         }
         .onDisappear {
             reloadTaskBox.task?.cancel()
+            loadingIndicatorTask?.cancel()
         }
     }
 
@@ -369,16 +367,17 @@ struct EPGGridView: View {
             }
             .scrollIndicators(.hidden)
             .overlay(alignment: .topTrailing) {
-                if isInitialEPGLoad || isRefreshingEPG {
+                if showLoadingIndicator {
                     ProgressView()
                         .tint(.white)
                         .padding(12)
+                        .transition(.opacity)
                 }
             }
         }
     }
 
-    // MARK: - Toolbar: native Liquid Glass group menu
+    // MARK: - Toolbar
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
@@ -387,10 +386,14 @@ struct EPGGridView: View {
                 dismiss()
             } label: {
                 Image(systemName: "chevron.left")
-                    .font(.title3.weight(.medium))
-                    .frame(width: 44, height: 44)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(Color.white.opacity(0.12), in: Circle())
+                    .overlay {
+                        Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                    }
             }
-            .modifier(UHFGlassCircleButton())
             .accessibilityLabel("Indietro")
         }
 
@@ -413,20 +416,20 @@ struct EPGGridView: View {
                 }
                 .pickerStyle(.inline)
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: selectedGroupSystemImage)
-                        .font(.headline.weight(.semibold))
+                        .font(.subheadline.weight(.semibold))
 
                     Text(selectedGroupName)
-                        .font(.headline.weight(.semibold))
+                        .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
 
                     Image(systemName: "chevron.down")
-                        .font(.caption.weight(.bold))
+                        .font(.caption2.weight(.bold))
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 18)
-                .frame(height: 48)
+                .padding(.horizontal, 14)
+                .frame(height: 38)
             }
             .modifier(UHFGlassCapsule())
             .accessibilityLabel("Gruppo playlist: \(selectedGroupName)")
@@ -476,10 +479,14 @@ struct EPGGridView: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.title3.weight(.bold))
-                    .frame(width: 44, height: 44)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(Color.white.opacity(0.12), in: Circle())
+                    .overlay {
+                        Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                    }
             }
-            .modifier(UHFGlassCircleButton())
             .accessibilityLabel("Opzioni guida")
         }
     }
@@ -487,13 +494,13 @@ struct EPGGridView: View {
     // MARK: - Header
 
     private var searchHeader: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .font(.title3)
+                .font(.body)
                 .foregroundStyle(.secondary)
 
             TextField("Cerca per nome del programma", text: $searchQuery)
-                .font(.title3)
+                .font(.body)
                 .foregroundStyle(.white)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -507,16 +514,15 @@ struct EPGGridView: View {
                 }
             }
         }
-        .padding(.horizontal, 18)
-        .frame(height: 62)
+        .padding(.horizontal, 16)
+        .frame(height: 50)
         .background(Color.white.opacity(0.09), in: Capsule())
         .overlay {
-            Capsule()
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+            Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 12)
-        .padding(.bottom, 26)
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 18)
     }
 
     private var dayTimeHeader: some View {
@@ -526,7 +532,7 @@ struct EPGGridView: View {
                 scheduleReload()
             } label: {
                 Text(dayTitle)
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
@@ -538,7 +544,7 @@ struct EPGGridView: View {
                 now = Date()
             } label: {
                 Text(displayedTimeLabel)
-                    .font(.system(size: 28, weight: .medium, design: .rounded))
+                    .font(.system(size: 22, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.42))
             }
             .buttonStyle(.plain)
@@ -546,7 +552,7 @@ struct EPGGridView: View {
             Image(systemName: "chevron.down.fill")
                 .font(.caption)
                 .foregroundStyle(.white)
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 12)
 
             Button {
                 selectedDayOffset = min(selectedDayOffset + 1, 7)
@@ -555,16 +561,16 @@ struct EPGGridView: View {
                 Text(
                     selectedDate.addingTimeInterval(60 * 60).formatted(date: .omitted, time: .shortened)
                 )
-                .font(.system(size: 28, weight: .medium, design: .rounded))
+                .font(.system(size: 22, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.65))
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 38)
-        .padding(.bottom, 20)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 16)
     }
 
-    // MARK: - UHF-like row
+    // MARK: - Row
 
     private func epgRow(for stream: XtreamStream) -> some View {
         HStack(spacing: 0) {
@@ -582,7 +588,7 @@ struct EPGGridView: View {
 
     private func channelLogoPanel(_ stream: XtreamStream) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 21, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(logoBackgroundColor(for: stream))
 
             AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
@@ -590,27 +596,27 @@ struct EPGGridView: View {
                     image
                         .resizable()
                         .scaledToFit()
-                        .padding(16)
+                        .padding(12)
                 } else {
                     Image(systemName: "tv")
-                        .font(.title2)
+                        .font(.title3)
                         .foregroundStyle(.white.opacity(0.75))
                 }
             }
 
             if favorites.isFavorite(stream.streamId) {
                 Image(systemName: "star.fill")
-                    .font(.caption.weight(.bold))
+                    .font(.caption2.weight(.bold))
                     .foregroundStyle(.yellow)
-                    .padding(8)
+                    .padding(6)
                     .background(.ultraThinMaterial, in: Circle())
-                    .padding(8)
+                    .padding(6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
         }
         .frame(width: channelLogoWidth, height: channelLogoHeight)
-        .padding(.leading, 18)
-        .padding(.trailing, 10)
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
         .contentShape(Rectangle())
         .onTapGesture {
             onPlayLive(stream)
@@ -620,7 +626,7 @@ struct EPGGridView: View {
 
     private func timelinePanel(_ stream: XtreamStream) -> some View {
         let programs = visiblePrograms(for: stream)
-        let timelineTotalWidth = max(timelineWidth, 420)
+        let timelineTotalWidth = max(timelineWidth, 380)
 
         return ScrollView(.horizontal, showsIndicators: false) {
             ZStack(alignment: .leading) {
@@ -645,28 +651,24 @@ struct EPGGridView: View {
     }
 
     private func timelineGrid(width: CGFloat) -> some View {
-        ZStack(alignment: .leading) {
-            Color.clear
+        HStack(spacing: 0) {
+            ForEach(0...3, id: \.self) { index in
+                let marker = windowStart.addingTimeInterval(TimeInterval(index) * 60 * 60)
 
-            HStack(spacing: 0) {
-                ForEach(0...3, id: \.self) { index in
-                    let marker = windowStart.addingTimeInterval(TimeInterval(index) * 60 * 60)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(marker.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.35))
+                        .padding(.leading, 8)
+                        .padding(.top, 6)
 
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(marker.formatted(date: .omitted, time: .shortened))
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.35))
-                            .padding(.leading, 10)
-                            .padding(.top, 8)
-
-                        Spacer()
-                    }
-                    .frame(width: 60 * pixelsPerMinute, height: rowHeight, alignment: .leading)
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(Color.white.opacity(0.05))
-                            .frame(width: 1)
-                    }
+                    Spacer()
+                }
+                .frame(width: 60 * pixelsPerMinute, height: rowHeight, alignment: .leading)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.05))
+                        .frame(width: 1)
                 }
             }
         }
@@ -677,7 +679,7 @@ struct EPGGridView: View {
         let isLoading = loadingStreamIDs.contains(stream.streamId)
         let failed = failedStreamIDs.contains(stream.streamId)
 
-        return HStack(spacing: 8) {
+        return HStack(spacing: 7) {
             if isLoading {
                 ProgressView()
                     .tint(.white)
@@ -691,58 +693,59 @@ struct EPGGridView: View {
                 Text("Dati non disponibili")
             }
         }
-        .font(.system(size: 18, weight: .medium))
-        .foregroundStyle(.white.opacity(0.88))
-        .padding(.horizontal, 24)
+        .font(.system(size: 15, weight: .medium))
+        .foregroundStyle(.white.opacity(0.85))
+        .padding(.horizontal, 18)
         .frame(width: width, height: rowHeight, alignment: .leading)
     }
 
+    /// Blocco programma: il titolo NON viene mai troncato con ellissi ne'
+    /// ridotto di dimensione (`lineLimit` alto, nessun
+    /// `minimumScaleFactor`). Se il nome e' lungo, va semplicemente a capo
+    /// su piu' righe entro l'altezza del blocco.
     private func programBlock(_ program: EPGProgram, stream: XtreamStream) -> some View {
         let clippedStart = max(program.start, windowStart)
         let clippedEnd = min(program.end, windowEnd)
         let startMinutes = max(0, clippedStart.timeIntervalSince(windowStart) / 60)
         let durationMinutes = max(1, clippedEnd.timeIntervalSince(clippedStart) / 60)
-        let width = max(CGFloat(durationMinutes) * pixelsPerMinute, 58)
+        let width = max(CGFloat(durationMinutes) * pixelsPerMinute, 100)
         let isLive = program.isCurrent(at: now)
 
         return Button {
             selectedProgram = SelectedProgram(program: program, stream: stream)
         } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(program.start.formatted(date: .omitted, time: .shortened))
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.48))
-
-                    Spacer(minLength: 0)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(program.start.formatted(date: .omitted, time: .shortened))
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
 
                 Text(program.title)
-                    .font(.system(size: 22, weight: .regular, design: .rounded))
+                    .font(.system(size: 15, weight: .regular, design: .rounded))
                     .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.70)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
 
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 14)
-            .padding(.bottom, 12)
-            .frame(width: width, height: blockHeight, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+            .frame(width: width, height: blockHeight, alignment: .topLeading)
         }
         .buttonStyle(.plain)
         .background(
-            RoundedRectangle(cornerRadius: 21, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(programColor(for: stream, program: program, isLive: isLive))
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 21, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(
                     isLive ? Color.accentColor.opacity(0.95) : Color.white.opacity(0.045),
                     lineWidth: isLive ? 2 : 1
                 )
         }
-        .offset(x: CGFloat(startMinutes) * pixelsPerMinute, y: 8)
+        .offset(x: CGFloat(startMinutes) * pixelsPerMinute, y: (rowHeight - blockHeight) / 2)
         .accessibilityLabel(
             "\(program.title), dalle \(program.start.formatted(date: .omitted, time: .shortened)) alle \(program.end.formatted(date: .omitted, time: .shortened))"
         )
@@ -758,8 +761,8 @@ struct EPGGridView: View {
             .overlay(alignment: .top) {
                 Circle()
                     .fill(Color.accentColor)
-                    .frame(width: 8, height: 8)
-                    .offset(y: -4)
+                    .frame(width: 7, height: 7)
+                    .offset(y: -3.5)
             }
             .offset(x: x)
             .allowsHitTesting(false)
@@ -781,11 +784,11 @@ struct EPGGridView: View {
             )
             .font(.headline)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 18)
+            .padding(.vertical, 16)
         }
         .foregroundStyle(.white)
-        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .padding(18)
+        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(16)
     }
 
     // MARK: - Colors
@@ -798,18 +801,13 @@ struct EPGGridView: View {
         if isLive {
             return Color.accentColor.opacity(0.54)
         }
-
         let seed = stream.streamId ^ Int(program.start.timeIntervalSince1970)
         return paletteColor(seed: seed, saturation: 0.56, brightness: 0.34)
     }
 
     private func paletteColor(seed: Int, saturation: Double, brightness: Double) -> Color {
         let normalized = abs(seed % 360)
-        return Color(
-            hue: Double(normalized) / 360.0,
-            saturation: saturation,
-            brightness: brightness
-        )
+        return Color(hue: Double(normalized) / 360.0, saturation: saturation, brightness: brightness)
     }
 
     // MARK: - Data and actions
@@ -855,10 +853,7 @@ struct EPGGridView: View {
         }
 
         selectedProgram = nil
-        catchupPlayback = CatchupPlayback(
-            url: url,
-            title: "\(stream.name) · \(program.title)"
-        )
+        catchupPlayback = CatchupPlayback(url: url, title: "\(stream.name) · \(program.title)")
     }
 
     @MainActor
@@ -891,18 +886,24 @@ struct EPGGridView: View {
         }
     }
 
+    /// Idrata istantaneamente dalla cache condivisa (nessuna rete). Lo
+    /// spinner viene armato con un ritardo: se la cache soddisfa gia'
+    /// tutto (caso tipico di riapertura entro pochi minuti), il task del
+    /// ritardo viene cancellato prima di scattare e l'utente non vede
+    /// mai alcun indicatore di caricamento — questo elimina la sensazione
+    /// di "ricarica ad ogni apertura".
     @MainActor
     private func reloadEPG(forceRefresh: Bool = false) async {
+        loadingIndicatorTask?.cancel()
+
         guard !streams.isEmpty else {
-            isInitialEPGLoad = false
-            isRefreshingEPG = false
+            showLoadingIndicator = false
             return
         }
 
         let targets = pagedStreams
         guard !targets.isEmpty else {
-            isInitialEPGLoad = false
-            isRefreshingEPG = false
+            showLoadingIndicator = false
             return
         }
 
@@ -920,14 +921,17 @@ struct EPGGridView: View {
         }
 
         guard !pending.isEmpty else {
-            isInitialEPGLoad = false
-            isRefreshingEPG = false
+            showLoadingIndicator = false
             return
         }
 
-        let hasCachedData = targets.contains { programsByStream[$0.streamId]?.isEmpty == false }
-        isInitialEPGLoad = !hasCachedData
-        isRefreshingEPG = hasCachedData
+        loadingIndicatorTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: loadingIndicatorDelayNanoseconds)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeIn(duration: 0.15)) {
+                showLoadingIndicator = true
+            }
+        }
 
         failedStreamIDs.subtract(Set(pending.map(\.streamId)))
         let service = EPGService(credentials: credentials)
@@ -979,9 +983,11 @@ struct EPGGridView: View {
             }
         }
 
+        loadingIndicatorTask?.cancel()
         guard !Task.isCancelled else { return }
-        isInitialEPGLoad = false
-        isRefreshingEPG = false
+        withAnimation(.easeOut(duration: 0.15)) {
+            showLoadingIndicator = false
+        }
     }
 
     private func toast(_ message: String) -> some View {
@@ -1043,24 +1049,7 @@ private final class EPGMemoryCache {
     }
 }
 
-// MARK: - Glass modifiers
-
-private struct UHFGlassCircleButton: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-        } else {
-            content
-                .buttonStyle(.plain)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay {
-                    Circle().strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
-                }
-        }
-    }
-}
+// MARK: - Glass modifier (solo per il pill gruppo, come richiesto)
 
 private struct UHFGlassCapsule: ViewModifier {
     func body(content: Content) -> some View {
