@@ -1,8 +1,11 @@
 import SwiftUI
 
-/// EPG touch-first: asse live unico, freccia bianca nella riga orario e tile
-/// allineate temporalmente allo stesso asse. La parte piena termina esattamente
-/// sotto la freccia; da quel punto ogni tile diventa sfumata/blurred.
+/// EPG touch-first: l'orario live con la freccia in giu' vive esclusivamente
+/// nell'header, di fianco a "Oggi" — non piu' sovrapposto alla timeline. Le
+/// tile hanno larghezza derivata dalla sola durata reale del programma e un
+/// taglio cromatico (acceso -> blurred) allineato all'istante corrente.
+/// I banner canale sono strisce piene, senza margini interni: iniziano e
+/// finiscono esattamente ai bordi della colonna fissa.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -36,14 +39,12 @@ struct EPGGridView: View {
     private let searchDebounceNanoseconds: UInt64 = 250_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 300_000_000
 
-    /// Ripristino misure lista originali: logo 86x76, riga 96.
-    private let channelLogoWidth: CGFloat = 86
-    private let channelLogoHeight: CGFloat = 76
+    /// Colonna canale: banner pieno, senza inset. Larghezza fissa colonna.
+    private let channelColumnWidth: CGFloat = 96
     private let rowHeight: CGFloat = 96
     private let blockHeight: CGFloat = 82
-    private let timeAxisHeight: CGFloat = 30
     private let pixelsPerMinute: CGFloat = 1.85
-    private let minimumProgramBlockWidth: CGFloat = 88
+    private let minimumProgramBlockWidth: CGFloat = 46
 
     /// Finestra visuale: 30 minuti passati, 2 ore future.
     private let pastWindow: TimeInterval = 30 * 60
@@ -229,8 +230,9 @@ struct EPGGridView: View {
         CGFloat(windowDuration / 60) * pixelsPerMinute
     }
 
-    /// Questo e' l'unico asse live dell'intera UI. Freccia, fine colore pieno
-    /// e inizio sfocatura delle tile usano tutti questo valore esatto.
+    /// Asse temporale live, usato solo per il taglio cromatico delle tile.
+    /// Non esiste piu' alcun elemento grafico sovrapposto alla timeline: la
+    /// freccia vive esclusivamente nell'header accanto a "Oggi".
     private var liveAxisX: CGFloat {
         CGFloat(now.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
@@ -373,16 +375,15 @@ struct EPGGridView: View {
         }
     }
 
-    /// Una sola area orizzontale per asse tempo, freccia e tutte le tile.
-    /// La colonna loghi ripristina esattamente il layout 86x76/96 della lista.
+    /// Colonna canale a banner pieno + area timeline scrollabile. Nessuna
+    /// riga orario separata: l'unico riferimento all'ora corrente resta
+    /// nell'header, accanto a "Oggi".
     private var epgGrid: some View {
         HStack(alignment: .top, spacing: 0) {
             LazyVStack(spacing: 0) {
-                Color.clear.frame(width: channelLogoWidth + 22, height: timeAxisHeight)
-
                 ForEach(pagedStreams) { stream in
-                    channelLogoPanel(stream)
-                        .frame(height: rowHeight)
+                    channelBanner(stream)
+                        .frame(width: channelColumnWidth, height: rowHeight)
                 }
             }
 
@@ -390,8 +391,6 @@ struct EPGGridView: View {
                 let totalWidth = max(timelineWidth, 380)
 
                 LazyVStack(spacing: 0) {
-                    timeAxisRow(width: totalWidth)
-
                     ForEach(pagedStreams) { stream in
                         timelineRow(for: stream, width: totalWidth)
                             .task(id: stream.streamId) {
@@ -564,8 +563,11 @@ struct EPGGridView: View {
         .padding(.bottom, 18)
     }
 
+    /// Header con "Oggi" a sinistra e, di fianco a destra, l'ora corrente
+    /// con la freccia bianca verso il basso: e' l'unica posizione richiesta
+    /// per l'indicatore live, fissa e non legata allo scroll orizzontale.
     private var dayTimeHeader: some View {
-        HStack(alignment: .center) {
+        HStack(alignment: .center, spacing: 14) {
             Button {
                 selectedDayOffset = max(selectedDayOffset - 1, -7)
                 scheduleReload()
@@ -576,30 +578,20 @@ struct EPGGridView: View {
             }
             .buttonStyle(.plain)
 
-            Spacer()
-
-            Button {
-                selectedDayOffset = 0
-                now = Date()
-            } label: {
-                Text(displayedTimeLabel)
-                    .font(.system(size: 22, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.42))
+            if isToday {
+                liveTimeBadge
             }
-            .buttonStyle(.plain)
 
-            Image(systemName: "chevron.down.fill")
-                .font(.caption)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
+            Spacer()
 
             Button {
                 selectedDayOffset = min(selectedDayOffset + 1, 7)
                 scheduleReload()
             } label: {
-                Text(selectedDate.addingTimeInterval(60 * 60).formatted(date: .omitted, time: .shortened))
-                    .font(.system(size: 22, weight: .medium, design: .rounded))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.65))
+                    .frame(width: 34, height: 34)
             }
             .buttonStyle(.plain)
         }
@@ -607,30 +599,20 @@ struct EPGGridView: View {
         .padding(.bottom, 16)
     }
 
-    /// Freccia in giu' nella riga dell'orario. Il suo centro e' liveAxisX;
-    /// lo stesso liveAxisX definisce, per ogni tile, il taglio netto fra
-    /// zona accesa a sinistra e zona blurred a destra.
-    private func timeAxisRow(width: CGFloat) -> some View {
-        ZStack(alignment: .topLeading) {
-            if isToday {
-                VStack(spacing: 1) {
-                    Text(now.formatted(date: .omitted, time: .shortened))
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+    /// Badge orario live: ora corrente + freccia rivolta in giu', posizionati
+    /// esattamente di fianco a "Oggi" come da riferimento.
+    private var liveTimeBadge: some View {
+        HStack(spacing: 4) {
+            Text(displayedTimeLabel)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
 
-                    Image(systemName: "arrowtriangle.down.fill")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
-                        .shadow(color: .white.opacity(0.8), radius: 3)
-                }
-                .fixedSize()
-                .frame(width: 30, alignment: .center)
-                .offset(x: liveAxisX - 15, y: 0)
-                .accessibilityLabel("Ora: \(now.formatted(date: .omitted, time: .shortened))")
-            }
+            Image(systemName: "arrowtriangle.down.fill")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
         }
-        .frame(width: width, height: timeAxisHeight, alignment: .topLeading)
-        .clipped()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Ora corrente \(displayedTimeLabel)")
     }
 
     private func timelineRow(for stream: XtreamStream, width: CGFloat) -> some View {
@@ -649,20 +631,22 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    private func channelLogoPanel(_ stream: XtreamStream) -> some View {
+    /// Banner canale pieno: nessun margine interno, nessun angolo
+    /// arrotondato. Inizia al bordo sinistro della colonna e termina al
+    /// bordo destro, occupando l'intera altezza della riga.
+    private func channelBanner(_ stream: XtreamStream) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(logoBackgroundColor(for: stream))
+            logoBackgroundColor(for: stream)
 
             AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
                 if case .success(let image) = phase {
                     image
                         .resizable()
                         .scaledToFit()
-                        .padding(12)
+                        .padding(16)
                 } else {
                     Image(systemName: "tv")
-                        .font(.title3)
+                        .font(.title2)
                         .foregroundStyle(.white.opacity(0.75))
                 }
             }
@@ -671,15 +655,12 @@ struct EPGGridView: View {
                 Image(systemName: "star.fill")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.yellow)
-                    .padding(6)
+                    .padding(5)
                     .background(.ultraThinMaterial, in: Circle())
                     .padding(6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
         }
-        .frame(width: channelLogoWidth, height: channelLogoHeight)
-        .padding(.leading, 14)
-        .padding(.trailing, 8)
         .contentShape(Rectangle())
         .onTapGesture {
             onPlayLive(stream)
@@ -711,18 +692,14 @@ struct EPGGridView: View {
         .frame(width: width, height: rowHeight, alignment: .leading)
     }
 
-    /// Tile a larghezza temporale, ma mai piu' stretta del titolo + padding:
-    /// il testo mantiene esattamente font, lineLimit e troncamento esistenti,
-    /// mentre la tile acquisisce spazio quando possibile senza alterarne la
-    /// gestione visiva richiesta.
+    /// La larghezza deriva esclusivamente dalla durata reale del programma
+    /// nella finestra visibile: nessuna espansione basata sul testo.
     private func programBlock(_ program: EPGProgram, stream: XtreamStream) -> some View {
         let clippedStart = max(program.start, windowStart)
         let clippedEnd = min(program.end, windowEnd)
         let startMinutes = max(0, clippedStart.timeIntervalSince(windowStart) / 60)
         let durationMinutes = max(1, clippedEnd.timeIntervalSince(clippedStart) / 60)
-        let timelineBasedWidth = CGFloat(durationMinutes) * pixelsPerMinute
-        let textBasedWidth = estimatedTitleWidth(for: program.title) + 26
-        let width = max(minimumProgramBlockWidth, timelineBasedWidth, textBasedWidth)
+        let width = max(minimumProgramBlockWidth, CGFloat(durationMinutes) * pixelsPerMinute)
         let startX = CGFloat(startMinutes) * pixelsPerMinute
 
         return Button {
@@ -762,10 +739,10 @@ struct EPGGridView: View {
         )
     }
 
-    /// Il confine e' globale, non una percentuale locale della singola tile:
-    /// `playedWidth = liveAxisX - tileStartX`. Di conseguenza la fine della
-    /// parte accesa e l'inizio della parte blurred cadono precisamente sotto
-    /// la freccia live in tutte le righe, al minuto esatto.
+    /// Taglio cromatico globale: la parte accesa termina esattamente al
+    /// minuto corrente (liveAxisX), la parte blurred inizia nello stesso
+    /// punto. Il blur e' piu' marcato e desaturato per una resa fedele a un
+    /// vetro smerigliato, non solo una leggera sfumatura di colore.
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
@@ -775,53 +752,45 @@ struct EPGGridView: View {
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
         let base = programColor(for: stream, program: program)
-        let brightWidth = isToday ? min(max(liveAxisX - tileStartX, 0), tileWidth) : 0
+        let brightWidth = isToday ? min(max(liveAxisX - tileStartX, 0), tileWidth) : tileWidth
 
         ZStack(alignment: .leading) {
-            // Stato future/blurred: presente su tutte le tile a destra asse.
+            // Base blurred/desaturata su tutta la tile.
+            shape.fill(base.opacity(0.30))
+
+            shape
+                .fill(base)
+                .blur(radius: 14)
+                .opacity(0.55)
+
             shape.fill(
                 LinearGradient(
-                    colors: [base.opacity(0.72), base.opacity(0.46), Color.black.opacity(0.28)],
+                    colors: [Color.black.opacity(0.0), Color.black.opacity(0.42)],
                     startPoint: .leading,
                     endPoint: .trailing
                 )
             )
 
-            shape
-                .fill(base.opacity(0.92))
-                .blur(radius: 7)
-                .mask(
-                    LinearGradient(
-                        colors: [.clear, .white.opacity(0.50), .white],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-
-            // Stato passato/acceso: termina esattamente al liveAxisX.
+            // Parte accesa: nitida, satura, termina esattamente al live axis.
             if brightWidth > 0 {
                 Rectangle()
-                    .fill(
+                    .fill(base)
+                    .frame(width: brightWidth)
+                    .overlay(alignment: .trailing) {
+                        // Transizione morbida di 18pt fra nitido e sfocato,
+                        // ancorata esattamente al bordo destro della parte
+                        // accesa (cioe' all'istante live).
                         LinearGradient(
-                            colors: [base.opacity(1.0), base.opacity(0.94)],
+                            colors: [base, base.opacity(0)],
                             startPoint: .leading,
                             endPoint: .trailing
                         )
-                    )
-                    .frame(width: brightWidth)
+                        .frame(width: 18)
+                        .offset(x: 18)
+                    }
             }
         }
         .clipShape(shape)
-    }
-
-    /// Stima rapida e deterministica della larghezza senza introdurre UIKit o
-    /// cambiare la renderizzazione del Text. E' solo un minimo di layout;
-    /// la tile resta legata alla durata EPG quando la durata richiede piu'
-    /// spazio. Il cap evita tile enormi per titoli anomali.
-    private func estimatedTitleWidth(for title: String) -> CGFloat {
-        let averageGlyphWidth: CGFloat = 8.2
-        let raw = CGFloat(title.count) * averageGlyphWidth
-        return min(max(raw, 62), 260)
     }
 
     private var loadMoreButton: some View {
@@ -986,6 +955,9 @@ struct EPGGridView: View {
         }
     }
 
+    /// Apertura rapida: idrata subito dalla cache in memoria, poi effettua
+    /// richieste di rete concorrenti solo per i canali senza dati (o tutti
+    /// in caso di refresh esplicito).
     @MainActor
     private func reloadEPG(forceRefresh: Bool = false) async {
         loadingIndicatorTask?.cancel()
