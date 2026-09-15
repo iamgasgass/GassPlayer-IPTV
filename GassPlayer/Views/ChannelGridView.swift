@@ -322,10 +322,19 @@ struct ChannelGridView: View {
                 )
             }
             .fullScreenCover(isPresented: $showEPGGuide) {
-                EPGGridView(credentials: credentials, streams: allStreams) { stream in
+                // EPGGridView legge i canali live direttamente da
+                // `XtreamCatalogStore` tramite `@EnvironmentObject`, non da
+                // un array congelato al momento dell'apertura: se il
+                // catalogo si aggiorna anche DOPO l'apertura della guida,
+                // la vista si ridisegna da sola con i dati corretti. Per
+                // questo e' fondamentale propagare esplicitamente
+                // `xtreamCatalog` anche qui, perche' il fullScreenCover
+                // crea un nuovo ramo di gerarchia di presentazione.
+                EPGGridView(credentials: credentials, kind: .live) { stream in
                     showEPGGuide = false
                     selectedStream = stream
                 }
+                .environmentObject(xtreamCatalog)
             }
         }
         .onChange(of: kind) { _, _ in

@@ -1,26 +1,34 @@
 import SwiftUI
 
-/// Guida TV a griglia. Per evitare hang/crash da watchdog (0x8badf00d) su
-/// playlist con centinaia o migliaia di canali, la vista NON renderizza mai
-/// l'intera lista `streams` in una sola volta: mostra un sottoinsieme
-/// paginato (`renderLimit`) e offre un pulsante "Carica altri canali".
+/// Guida TV a griglia.
 ///
-/// IMPORTANTE su Lazy stack: `LazyVStack`/`LazyHStack` funzionano in modo
-/// lazy SOLO quando hanno un `ScrollView` come antenato diretto, perche' e'
-/// quel `ScrollView` a comunicare loro quale porzione di contenuto e'
-/// visibile. La colonna canali (`channelColumnClip`) NON vive dentro un
-/// proprio `ScrollView`: e' sincronizzata manualmente con la timeline
-/// tramite un offset verticale condiviso. Usare `LazyVStack` li' produce
-/// una vista vuota o intermittente, perche' SwiftUI non ha modo di sapere
-/// quale range renderizzare. Per questo la colonna canali usa `VStack`
-/// (non lazy), reso sicuro dalla paginazione: al massimo `renderLimit`
-/// righe vengono create, mai l'intera playlist. La timeline invece vive
-/// dentro un vero `ScrollView` e li' `LazyVStack` e' corretto e sicuro.
+/// FIX CRITICO (root cause della schermata vuota persistente): la guida NON
+/// riceve piu' un array `streams` congelato al momento dell'apertura del
+/// `fullScreenCover`. Con `.fullScreenCover(isPresented:)`, il contenuto
+/// viene creato una sola volta nell'istante in cui il booleano diventa
+/// `true`, catturando uno snapshot dei valori disponibili in quel momento.
+/// Se in quell'istante il catalogo Xtream non aveva ancora finito di
+/// caricare i canali live (es. refresh in corso, catalogo appena aperto),
+/// la guida restava con un array vuoto per sempre, perche' un parametro
+/// `let` non si aggiorna quando il dato a monte cambia in seguito.
+///
+/// La correzione legge i canali live direttamente da `XtreamCatalogStore`
+/// tramite `@EnvironmentObject`, in modo reattivo: se il catalogo si
+/// popola anche DOPO l'apertura della guida, la vista si ridisegna con i
+/// dati corretti automaticamente, perche' osserva l'`ObservableObject`
+/// invece di un valore congelato.
+///
+/// NOTA su Lazy stack: `LazyVStack`/`LazyHStack` sono lazy SOLO quando
+/// hanno un `ScrollView` come antenato diretto. La colonna canali non vive
+/// in un proprio `ScrollView` (e' sincronizzata via offset manuale con la
+/// timeline), quindi usa `VStack` classico, reso sicuro dalla paginazione
+/// (`pagedStreams`, mai piu' di `renderPageSize` righe per volta).
 struct EPGGridView: View {
     let credentials: XtreamCredentials
-    let streams: [XtreamStream]
+    let kind: XtreamStreamKind
     var onPlayLive: (XtreamStream) -> Void = { _ in }
 
+    @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var favorites: EPGFavoritesStore
 
@@ -41,10 +49,8 @@ struct EPGGridView: View {
     @State private var catchupPlayback: CatchupPlayback?
 
     /// Numero di canali effettivamente renderizzati in questo momento.
-    /// Parte da `renderPageSize` e cresce solo su richiesta esplicita
-    /// dell'utente ("Carica altri canali"), mai automaticamente per
-    /// l'intera lista.
-    @State private var renderLimit: Int
+    /// Cresce solo su richiesta esplicita dell'utente ("Carica altri").
+    @State private var renderLimit = 40
 
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
@@ -64,25 +70,19 @@ struct EPGGridView: View {
 
     init(
         credentials: XtreamCredentials,
-        streams: [XtreamStream],
+        kind: XtreamStreamKind = .live,
         onPlayLive: @escaping (XtreamStream) -> Void = { _ in }
     ) {
         self.credentials = credentials
-        self.streams = streams
+        self.kind = kind
         self.onPlayLive = onPlayLive
         _favorites = StateObject(
             wrappedValue: EPGFavoritesStore(
                 scopeKey: Self.scopeKey(for: credentials)
             )
         )
-        _renderLimit = State(
-            initialValue: min(40, max(streams.count, 0))
-        )
     }
 
-    /// Contenitore di riferimento per il task di reload corrente, cosi' da
-    /// poterlo cancellare quando parte una nuova richiesta (ricerca,
-    /// cambio filtro, "carica altri") prima che quella precedente finisca.
     private final class TaskBox {
         var task: Task<Void, Never>?
     }
@@ -105,6 +105,16 @@ struct EPGGridView: View {
         }
     }
 
+    /// Fonte di verita' SEMPRE aggiornata: letta live dal catalogo condiviso,
+    /// mai congelata al momento dell'apertura della guida.
+    private var streams: [XtreamStream] {
+        xtreamCatalog.streams(for: kind)
+    }
+
+    private var isCatalogStillLoading: Bool {
+        streams.isEmpty && (xtreamCatalog.state == .loading || xtreamCatalog.state == .idle)
+    }
+
     private var timelineEnd: Date {
         calendar.date(byAdding: .day, value: 1, to: timelineStart)
             ?? timelineStart.addingTimeInterval(86_400)
@@ -114,10 +124,6 @@ struct EPGGridView: View {
         CGFloat(timelineEnd.timeIntervalSince(timelineStart) / 60) * pixelsPerMinute
     }
 
-    /// Canali che rispettano ricerca/preferiti, PRIMA della paginazione.
-    /// Puo' essere grande quanto l'intera playlist: non va mai renderizzato
-    /// direttamente in una vista, solo usato per contare e per estrarre la
-    /// pagina visibile tramite `pagedStreams`.
     private var filteredStreams: [XtreamStream] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -134,9 +140,6 @@ struct EPGGridView: View {
         }
     }
 
-    /// Sottoinsieme EFFETTIVAMENTE renderizzato dalla UI. E' questo, e non
-    /// `filteredStreams`, che deve essere usato in ogni `ForEach` della
-    /// griglia e nel caricamento EPG.
     private var pagedStreams: [XtreamStream] {
         let safeLimit = max(renderLimit, 0)
         return Array(filteredStreams.prefix(min(safeLimit, hardRenderCap)))
@@ -212,6 +215,12 @@ struct EPGGridView: View {
             didAppear = true
             scheduleReload()
         }
+        .onChange(of: streams.map(\.streamId)) { _, _ in
+            if pagedStreams.isEmpty, renderLimit < renderPageSize {
+                renderLimit = min(renderPageSize, max(streams.count, 1))
+            }
+            scheduleReload()
+        }
         .onChange(of: streamIdentity) { _, _ in
             scheduleReload()
         }
@@ -264,7 +273,10 @@ struct EPGGridView: View {
                 size: 36,
                 accessibilityLabel: "Aggiorna guida TV"
             ) {
-                scheduleReload(forceRefresh: true)
+                Task {
+                    await xtreamCatalog.refresh(credentials: credentials, kind: kind)
+                    scheduleReload(forceRefresh: true)
+                }
             }
         }
 
@@ -316,33 +328,38 @@ struct EPGGridView: View {
             .padding(.vertical, 8)
             .modifier(GlassCardBackground(cornerRadius: 14))
 
-            if streams.count > renderPageSize {
-                Text(
-                    "Canali mostrati: \(pagedStreams.count) di \(filteredStreams.count)"
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 4)
-            } else if streams.isEmpty {
-                Text("Nessun canale disponibile da questa sorgente.")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 4)
-            }
+            diagnosticBanner
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 6)
     }
 
-    private func toast(_ message: String) -> some View {
-        Text(message)
-            .font(.footnote.weight(.semibold))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .modifier(GlassCardBackground(cornerRadius: 20))
-            .padding(.top, 8)
-            .transition(.move(edge: .top).combined(with: .opacity))
+    /// Banner diagnostico sempre visibile: mostra lo stato reale dei dati
+    /// (quanti canali totali, quanti dopo i filtri, quanti renderizzati,
+    /// e lo stato del catalogo). Permette di distinguere immediatamente
+    /// "il catalogo non ha ancora canali" da "i canali ci sono ma non si
+    /// vedono", senza dover indovinare alla cieca.
+    @ViewBuilder
+    private var diagnosticBanner: some View {
+        if streams.isEmpty {
+            Label(
+                isCatalogStillLoading
+                    ? "Catalogo in caricamento…"
+                    : "Il catalogo Live TV è vuoto per questa sorgente.",
+                systemImage: isCatalogStillLoading ? "hourglass" : "exclamationmark.triangle"
+            )
+            .font(.caption2)
+            .foregroundStyle(isCatalogStillLoading ? .secondary : .orange)
+            .padding(.horizontal, 4)
+        } else {
+            Text(
+                "Canali totali: \(streams.count) · Filtrati: \(filteredStreams.count) · Mostrati: \(pagedStreams.count)"
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 4)
+        }
     }
 
     private var gridBody: some View {
@@ -355,13 +372,21 @@ struct EPGGridView: View {
 
             if streams.isEmpty {
                 ContentUnavailableView(
-                    "Nessun canale live",
-                    systemImage: "tv.slash",
+                    isCatalogStillLoading ? "Caricamento canali…" : "Nessun canale live",
+                    systemImage: isCatalogStillLoading ? "hourglass" : "tv.slash",
                     description: Text(
-                        "Questa sorgente non ha ancora canali live caricati. Torna indietro e aggiorna il catalogo."
+                        isCatalogStillLoading
+                            ? "Il catalogo si sta ancora caricando. La guida si aggiornerà automaticamente."
+                            : "Questa sorgente non ha canali live. Torna indietro e aggiorna il catalogo dal pulsante di refresh."
                     )
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .bottom) {
+                    if isCatalogStillLoading {
+                        ProgressView()
+                            .padding(.bottom, 24)
+                    }
+                }
             } else if pagedStreams.isEmpty {
                 ContentUnavailableView(
                     showFavoritesOnly ? "Nessun canale preferito" : "Nessun canale trovato",
@@ -410,12 +435,6 @@ struct EPGGridView: View {
             .clipped()
     }
 
-    /// Colonna canali: `VStack` NON lazy, deliberatamente. Vedi il commento
-    /// in testa al file: essendo fuori da un proprio `ScrollView` e
-    /// sincronizzata via offset manuale, `LazyVStack` qui produce una vista
-    /// vuota o intermittente. La sicurezza contro gli hang e' garantita
-    /// dalla paginazione (`pagedStreams`, al massimo `renderPageSize` righe
-    /// per volta), non dalla laziness dello stack.
     private var channelColumnClip: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(pagedStreams) { stream in
@@ -448,9 +467,6 @@ struct EPGGridView: View {
         .accessibilityLabel("Carica altri \(min(renderPageSize, remainingCount)) canali")
     }
 
-    /// Timeline: vive dentro un vero `ScrollView`, quindi `LazyVStack` qui
-    /// e' corretto e sicuro (l'antenato ScrollView fornisce il viewport
-    /// necessario alla laziness).
     private var timelineScroll: some View {
         ScrollViewReader { proxy in
             ScrollView([.horizontal, .vertical], showsIndicators: true) {
@@ -839,10 +855,6 @@ struct EPGGridView: View {
         selectedProgram = nil
     }
 
-    /// Estende la pagina renderizzata di `renderPageSize` canali, su
-    /// richiesta esplicita dell'utente. Non e' mai automatico: e' l'unico
-    /// modo in cui `renderLimit` puo' crescere, per mantenere sotto
-    /// controllo il numero di viste create dal main thread.
     private func loadMoreChannels() {
         let newLimit = min(
             renderLimit + renderPageSize,
@@ -857,10 +869,6 @@ struct EPGGridView: View {
         scheduleReload()
     }
 
-    /// Pianifica un reload EPG cancellando qualunque reload precedente
-    /// ancora in corso. Evita l'accumulo di richieste di rete parallele
-    /// quando l'utente digita rapidamente nella ricerca o cambia filtro
-    /// piu' volte in sequenza.
     private func scheduleReload(
         forceRefresh: Bool = false,
         debounced: Bool = false
@@ -883,9 +891,6 @@ struct EPGGridView: View {
     @MainActor
     private func reloadEPG(forceRefresh: Bool = false) async {
         guard !streams.isEmpty else {
-            programsByStream = [:]
-            failedStreamIDs = []
-            loadingStreamIDs = []
             isInitialEPGLoad = false
             isRefreshingEPG = false
             return
