@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// EPG touch-first con toolbar Liquid Glass nativa e timeline ottimizzata.
-/// Il selettore gruppo mantiene la forma capsule orizzontale; i titoli dei
-/// programmi sono sempre su una sola riga, troncati in coda se necessario.
+/// EPG touch-first con toolbar Liquid Glass nativa (via `.glassEffect`) e
+/// finestra temporale estesa a 2 ore di programmazione futura per canale.
+/// Il selettore gruppo e' una capsule con lo stesso materiale vetro dei
+/// controlli di sistema; i titoli dei programmi restano su una sola riga.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -40,8 +41,10 @@ struct EPGGridView: View {
     private let rowHeight: CGFloat = 96
     private let blockHeight: CGFloat = 82
     private let pixelsPerMinute: CGFloat = 1.85
-    private let pastWindow: TimeInterval = 50 * 60
-    private let futureWindow: TimeInterval = 130 * 60
+
+    /// Finestra temporale: 30 minuti indietro, 2 ore piene in avanti.
+    private let pastWindow: TimeInterval = 30 * 60
+    private let futureWindow: TimeInterval = 120 * 60
 
     init(
         credentials: XtreamCredentials,
@@ -139,6 +142,10 @@ struct EPGGridView: View {
     private var filteredStreams: [XtreamStream] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let groupID = normalizedSelectedGroupID
+
+        guard !query.isEmpty || groupID != nil || showFavoritesOnly else {
+            return streams
+        }
 
         return streams.filter { stream in
             let categoryID = stream.categoryId?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -247,12 +254,12 @@ struct EPGGridView: View {
                     AdaptivePlayerView(url: playback.url, title: playback.title)
                 }
                 .overlay(alignment: .top) {
-                    if let toastMessage = reminderToast {
-                        toast(toastMessage)
-                            .task(id: toastMessage) {
+                    if let reminderToast {
+                        toast(reminderToast)
+                            .task(id: reminderToast) {
                                 try? await Task.sleep(nanoseconds: 2_200_000_000)
                                 guard !Task.isCancelled else { return }
-                                reminderToast = nil
+                                self.reminderToast = nil
                             }
                     }
                 }
@@ -375,27 +382,10 @@ struct EPGGridView: View {
                 }
                 .pickerStyle(.inline)
             } label: {
-                // La capsule e' volutamente larga come il design di riferimento.
-                // Nessun background, materiale o overlay manuale: la toolbar
-                // applica il Liquid Glass di sistema in modo uniforme.
-                HStack(spacing: 8) {
-                    Image(systemName: selectedGroupSystemImage)
-                        .font(.system(size: 16, weight: .semibold))
-
-                    Text(selectedGroupName)
-                        .font(.system(size: 17, weight: .semibold, design: .rounded))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 16)
-                .frame(minWidth: 116, maxWidth: 238, minHeight: 44)
-                .contentShape(Capsule())
+                groupPillLabel
             }
             .menuStyle(.button)
+            .buttonStyle(.plain)
             .accessibilityLabel("Gruppo playlist: \(selectedGroupName)")
             .accessibilityHint("Tocca per scegliere il gruppo da visualizzare")
         }
@@ -450,6 +440,44 @@ struct EPGGridView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Opzioni guida")
+        }
+    }
+
+    /// Contenuto della pill centrale con Liquid Glass nativo esplicito.
+    /// Su iOS 26 `.glassEffect` applica lo stesso materiale, la stessa
+    /// rifrazione e la stessa risposta al tocco dei controlli di sistema
+    /// (identica a quella usata automaticamente da Indietro e "..." nella
+    /// toolbar), ma su una capsule di larghezza libera invece che su un
+    /// cerchio fisso. Se il target di build e' inferiore a iOS 26, il
+    /// fallback usa `.ultraThinMaterial` con la stessa forma e medesimo
+    /// bordo, cosi' l'aspetto resta coerente su tutte le versioni supportate.
+    @ViewBuilder
+    private var groupPillLabel: some View {
+        let pill = HStack(spacing: 8) {
+            Image(systemName: selectedGroupSystemImage)
+                .font(.system(size: 16, weight: .semibold))
+
+            Text(selectedGroupName)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+
+            Image(systemName: "chevron.down")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .frame(minWidth: 116, maxWidth: 238, minHeight: 44)
+        .contentShape(Capsule())
+
+        if #available(iOS 26.0, *) {
+            pill.glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            pill
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.6)
+                }
         }
     }
 
@@ -607,9 +635,11 @@ struct EPGGridView: View {
     }
 
     private func timelineGrid(width: CGFloat) -> some View {
-        HStack(spacing: 0) {
-            ForEach(0...3, id: \.self) { index in
-                let marker = windowStart.addingTimeInterval(TimeInterval(index) * 60 * 60)
+        let hourCount = max(1, Int((windowDuration / 3600).rounded(.up)))
+
+        return HStack(spacing: 0) {
+            ForEach(0..<hourCount, id: \.self) { index in
+                let marker = windowStart.addingTimeInterval(TimeInterval(index) * 3600)
 
                 VStack(alignment: .leading, spacing: 0) {
                     Text(marker.formatted(date: .omitted, time: .shortened))
@@ -671,15 +701,13 @@ struct EPGGridView: View {
                     .foregroundStyle(.white.opacity(0.48))
                     .lineLimit(1)
 
-                // Titolo tassativamente su una sola riga: non modifica
-                // l'altezza della tile e viene troncato solo in coda.
+                // Titolo tassativamente su una sola riga, troncato in coda.
                 Text(program.title)
                     .font(.system(size: 16, weight: .regular, design: .rounded))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .minimumScaleFactor(1.0)
-                    .multilineTextAlignment(.leading)
 
                 Spacer(minLength: 0)
             }
@@ -829,6 +857,8 @@ struct EPGGridView: View {
         }
     }
 
+    /// Idrata da cache in memoria e scarica via rete solo i canali privi di
+    /// dati (o tutti in caso di refresh esplicito), con concorrenza limitata.
     @MainActor
     private func reloadEPG(forceRefresh: Bool = false) async {
         loadingIndicatorTask?.cancel()
