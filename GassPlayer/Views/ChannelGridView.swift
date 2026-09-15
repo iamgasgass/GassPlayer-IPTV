@@ -37,9 +37,7 @@ struct ChannelGridView: View {
         static func normalizedCategoryID(_ categoryID: String?) -> String? {
             guard let categoryID else { return nil }
 
-            let normalized = categoryID.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
+            let normalized = categoryID.trimmingCharacters(in: .whitespacesAndNewlines)
 
             return normalized.isEmpty ? nil : normalized
         }
@@ -83,10 +81,19 @@ struct ChannelGridView: View {
     @State private var selectedCategory: CategorySelection = .all
     @State private var selectedStream: XtreamStream?
     @State private var selectedSeries: XtreamSeriesItem?
-    @State private var epgByStream: [Int: EPGProgram] = [:]
+
+    /// `nil` = mai interrogato; `.some(nil)` = interrogato ma nessun
+    /// programma disponibile (evita retry continui); `.some(program)` =
+    /// programma corrente o prossimo disponibile per il tile.
+    @State private var epgByStream: [Int: EPGProgram?] = [:]
+
     @State private var catalogIndex = CatalogIndex(streams: [], categories: [])
     @State private var indexedSourceIdentity = ""
     @State private var showEPGGuide = false
+
+    private let epgTileBatchLimit = 24
+    private let epgTileConcurrency = 4
+    private let epgTileLookahead = 8
 
     private var service: XtreamAPIService {
         XtreamAPIService(credentials: credentials)
@@ -121,33 +128,23 @@ struct ChannelGridView: View {
     }
 
     private var gridRowSpacing: CGFloat {
-        isCompactGrid
-            ? GridMetrics.compactRowSpacing
-            : GridMetrics.comfortableRowSpacing
+        isCompactGrid ? GridMetrics.compactRowSpacing : GridMetrics.comfortableRowSpacing
     }
 
     private var gridHorizontalPadding: CGFloat {
-        isCompactGrid
-            ? GridMetrics.compactHorizontalPadding
-            : GridMetrics.comfortableHorizontalPadding
+        isCompactGrid ? GridMetrics.compactHorizontalPadding : GridMetrics.comfortableHorizontalPadding
     }
 
     private var artworkSize: CGFloat {
-        isCompactGrid
-            ? GridMetrics.compactArtworkSize
-            : GridMetrics.comfortableArtworkSize
+        isCompactGrid ? GridMetrics.compactArtworkSize : GridMetrics.comfortableArtworkSize
     }
 
     private var moviePosterHeight: CGFloat {
-        isCompactGrid
-            ? GridMetrics.compactMoviePosterHeight
-            : GridMetrics.comfortableMoviePosterHeight
+        isCompactGrid ? GridMetrics.compactMoviePosterHeight : GridMetrics.comfortableMoviePosterHeight
     }
 
     private var seriesPosterHeight: CGFloat {
-        isCompactGrid
-            ? GridMetrics.compactSeriesPosterHeight
-            : GridMetrics.comfortableSeriesPosterHeight
+        isCompactGrid ? GridMetrics.compactSeriesPosterHeight : GridMetrics.comfortableSeriesPosterHeight
     }
 
     private var categories: [XtreamCategory] {
@@ -189,9 +186,7 @@ struct ChannelGridView: View {
             let categoryIDs = Set(categories.map(\.categoryId))
 
             return allSeries.filter {
-                guard let categoryID = CatalogIndex.normalizedCategoryID(
-                    $0.categoryId
-                ) else {
+                guard let categoryID = CatalogIndex.normalizedCategoryID($0.categoryId) else {
                     return true
                 }
 
@@ -213,18 +208,14 @@ struct ChannelGridView: View {
     }
 
     private var uncategorizedCount: Int {
-        kind == .series
-            ? seriesUncategorizedCount
-            : catalogIndex.uncategorizedStreams.count
+        kind == .series ? seriesUncategorizedCount : catalogIndex.uncategorizedStreams.count
     }
 
     private var seriesUncategorizedCount: Int {
         let categoryIDs = Set(categories.map(\.categoryId))
 
         return allSeries.lazy.filter {
-            guard let categoryID = CatalogIndex.normalizedCategoryID(
-                $0.categoryId
-            ) else {
+            guard let categoryID = CatalogIndex.normalizedCategoryID($0.categoryId) else {
                 return true
             }
 
@@ -284,8 +275,7 @@ struct ChannelGridView: View {
 
                 if isInitialLoadPending {
                     loadingView
-                } else if case .failed(let message) = xtreamCatalog.state,
-                          itemCount == 0 {
+                } else if case .failed(let message) = xtreamCatalog.state, itemCount == 0 {
                     ContentUnavailableView(
                         "Impossibile caricare il catalogo",
                         systemImage: "exclamationmark.triangle",
@@ -405,10 +395,12 @@ struct ChannelGridView: View {
     private var refreshButton: some View {
         Button {
             Task {
-                await xtreamCatalog.refresh(
-                    credentials: credentials,
-                    kind: kind
-                )
+                await xtreamCatalog.refresh(credentials: credentials, kind: kind)
+
+                if kind == .live {
+                    epgByStream = [:]
+                    await loadEPGForVisibleStreams()
+                }
             }
         } label: {
             Image(systemName: "arrow.clockwise")
@@ -471,10 +463,7 @@ struct ChannelGridView: View {
 
     private var streamsGrid: some View {
         LazyVGrid(columns: columns, spacing: gridRowSpacing) {
-            ForEach(
-                Array(displayedStreams.enumerated()),
-                id: \.element.id
-            ) { index, stream in
+            ForEach(Array(displayedStreams.enumerated()), id: \.element.id) { index, stream in
                 ChannelTile(
                     stream: stream,
                     kind: kind,
@@ -482,11 +471,9 @@ struct ChannelGridView: View {
                     isCompact: isCompactGrid,
                     artworkSize: artworkSize,
                     moviePosterHeight: moviePosterHeight,
-                    isFavorite: contentManagement.isFavorite(
-                        id: favoriteID(for: stream)
-                    ),
+                    isFavorite: contentManagement.isFavorite(id: favoriteID(for: stream)),
                     currentProgram: kind == .live
-                        ? epgByStream[stream.streamId]
+                        ? (epgByStream[stream.streamId] ?? nil)
                         : nil,
                     onTap: {
                         selectedStream = stream
@@ -541,12 +528,8 @@ struct ChannelGridView: View {
                 ForEach(visibleCategories) { category in
                     categoryButton(
                         title: category.categoryName,
-                        icon: Self.categoryIcon(
-                            for: category.categoryName
-                        ),
-                        count: categoryCount(
-                            for: category.categoryId
-                        ),
+                        icon: Self.categoryIcon(for: category.categoryName),
+                        count: categoryCount(for: category.categoryId),
                         selection: .category(category.categoryId)
                     )
                 }
@@ -567,12 +550,7 @@ struct ChannelGridView: View {
         return Button {
             guard selectedCategory != selection else { return }
 
-            withAnimation(
-                .snappy(
-                    duration: 0.16,
-                    extraBounce: 0.04
-                )
-            ) {
+            withAnimation(.snappy(duration: 0.16, extraBounce: 0.04)) {
                 selectedCategory = selection
             }
         } label: {
@@ -585,47 +563,32 @@ struct ChannelGridView: View {
 
                 Text("\(count)")
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(
-                        isSelected
-                            ? Color.white.opacity(0.78)
-                            : Color.secondary
-                    )
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.78) : Color.secondary)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
         }
         .buttonStyle(.plain)
         .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .background(
-            isSelected ? Color.accentColor : Color.clear,
-            in: Capsule()
-        )
+        .background(isSelected ? Color.accentColor : Color.clear, in: Capsule())
         .background(.ultraThinMaterial, in: Capsule())
         .overlay {
             Capsule()
                 .strokeBorder(
-                    Color.white.opacity(
-                        isSelected ? 0.22 : 0.12
-                    ),
+                    Color.white.opacity(isSelected ? 0.22 : 0.12),
                     lineWidth: 0.5
                 )
         }
         .accessibilityLabel("\(title), \(count) contenuti")
-        .accessibilityAddTraits(
-            isSelected ? .isSelected : []
-        )
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func rebuildIndexIfNeeded() {
-        guard kind != .series,
-              indexedSourceIdentity != sourceIdentity else {
+        guard kind != .series, indexedSourceIdentity != sourceIdentity else {
             return
         }
 
-        catalogIndex = CatalogIndex(
-            streams: allStreams,
-            categories: categories
-        )
+        catalogIndex = CatalogIndex(streams: allStreams, categories: categories)
 
         epgByStream = [:]
         indexedSourceIdentity = sourceIdentity
@@ -634,8 +597,7 @@ struct ChannelGridView: View {
     private func categoryCount(for categoryID: String) -> Int {
         if kind == .series {
             return allSeries.lazy.filter {
-                CatalogIndex.normalizedCategoryID($0.categoryId)
-                    == categoryID
+                CatalogIndex.normalizedCategoryID($0.categoryId) == categoryID
             }
             .count
         }
@@ -648,17 +610,19 @@ struct ChannelGridView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
 
-        return [
-            host,
-            credentials.username,
-            kind.rawValue,
-            String(stream.streamId)
-        ]
-        .joined(separator: "|")
+        return [host, credentials.username, kind.rawValue, String(stream.streamId)]
+            .joined(separator: "|")
     }
 
+    /// Carica il programma "in onda ora" (o il prossimo, in assenza di uno
+    /// corrente) per i canali attualmente visibili. I canali per cui il
+    /// provider non ha restituito alcun programma vengono comunque
+    /// registrati con valore `nil` esplicito, per evitare di rieseguire la
+    /// stessa richiesta EPG ad ogni cambio di categoria o ricostruzione
+    /// della view.
     private func loadEPGForVisibleStreams() async {
-        let streams = Array(displayedStreams.prefix(24))
+        let streams = Array(displayedStreams.prefix(epgTileBatchLimit))
+
         guard !streams.isEmpty else { return }
 
         let missingStreams = streams.filter {
@@ -669,45 +633,42 @@ struct ChannelGridView: View {
 
         let epg = EPGService(credentials: credentials)
 
-        let batches = stride(
+        for batchStart in stride(
             from: 0,
             to: missingStreams.count,
-            by: 4
-        )
-        .map {
-            Array(
-                missingStreams[
-                    $0..<min($0 + 4, missingStreams.count)
-                ]
-            )
-        }
-
-        for batch in batches {
+            by: epgTileConcurrency
+        ) {
             guard !Task.isCancelled else { return }
 
-            await withTaskGroup(
-                of: (Int, EPGProgram?).self
-            ) { group in
+            let batchEnd = min(batchStart + epgTileConcurrency, missingStreams.count)
+            let batch = Array(missingStreams[batchStart..<batchEnd])
+
+            await withTaskGroup(of: (Int, EPGProgram?).self) { group in
                 for stream in batch {
-                    group.addTask {
-                        let result = try? await epg.shortEPG(
+                    group.addTask { [epgTileLookahead] in
+                        let programs = try? await epg.shortEPG(
                             streamId: stream.streamId,
-                            limit: 2
+                            limit: epgTileLookahead
                         )
 
-                        return (
-                            stream.streamId,
-                            result?.first
-                        )
+                        let now = Date()
+
+                        let current = programs?.first {
+                            $0.start <= now && $0.end > now
+                        }
+
+                        let next = programs?.first {
+                            $0.start > now
+                        }
+
+                        return (stream.streamId, current ?? next)
                     }
                 }
 
                 for await (streamID, program) in group {
                     guard !Task.isCancelled else { return }
 
-                    if let program {
-                        epgByStream[streamID] = program
-                    }
+                    epgByStream[streamID] = program
                 }
             }
         }
@@ -720,25 +681,19 @@ struct ChannelGridView: View {
             return "sportscourt"
         }
 
-        if normalized.contains("kids")
-            || normalized.contains("cartoon")
-            || normalized.contains("bambini") {
+        if normalized.contains("kids") || normalized.contains("cartoon") || normalized.contains("bambini") {
             return "gamecontroller"
         }
 
-        if normalized.contains("news")
-            || normalized.contains("notizie") {
+        if normalized.contains("news") || normalized.contains("notizie") {
             return "newspaper"
         }
 
-        if normalized.contains("music")
-            || normalized.contains("musica") {
+        if normalized.contains("music") || normalized.contains("musica") {
             return "music.note"
         }
 
-        if normalized.contains("cinema")
-            || normalized.contains("film")
-            || normalized.contains("movie") {
+        if normalized.contains("cinema") || normalized.contains("film") || normalized.contains("movie") {
             return "film"
         }
 
@@ -750,9 +705,7 @@ struct ChannelGridView: View {
             return "building.columns"
         }
 
-        if normalized.contains("adult")
-            || normalized.contains("+18")
-            || normalized.contains("xxx") {
+        if normalized.contains("adult") || normalized.contains("+18") || normalized.contains("xxx") {
             return "eye.slash"
         }
 
@@ -829,9 +782,7 @@ private struct ChannelTile: View {
                     height: moviePosterHeight
                 )
             } else {
-                AsyncImage(
-                    url: URL(string: stream.streamIcon ?? "")
-                ) { phase in
+                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
                     switch phase {
                     case .success(let image):
                         image
@@ -839,27 +790,16 @@ private struct ChannelTile: View {
                             .scaledToFit()
 
                     default:
-                        RoundedRectangle(
-                            cornerRadius: cornerRadius,
-                            style: .continuous
-                        )
-                        .fill(.ultraThinMaterial)
-                        .overlay {
-                            Image(systemName: "tv")
-                                .foregroundStyle(.secondary)
-                        }
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                            .overlay {
+                                Image(systemName: "tv")
+                                    .foregroundStyle(.secondary)
+                            }
                     }
                 }
-                .frame(
-                    width: artworkSize,
-                    height: artworkSize
-                )
-                .clipShape(
-                    RoundedRectangle(
-                        cornerRadius: cornerRadius,
-                        style: .continuous
-                    )
-                )
+                .frame(width: artworkSize, height: artworkSize)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
 
             favoriteButton
@@ -870,42 +810,26 @@ private struct ChannelTile: View {
         }
         .frame(
             width: artworkSize,
-            height: kind == .movie
-                ? moviePosterHeight
-                : artworkSize
+            height: kind == .movie ? moviePosterHeight : artworkSize
         )
     }
 
     private var favoriteButton: some View {
         Button(action: onFavoriteToggle) {
-            Image(
-                systemName: isFavorite ? "star.fill" : "star"
-            )
-            .font(isCompact ? .caption2 : .caption)
-            .padding(favoriteIconPadding)
-            .foregroundStyle(.yellow)
+            Image(systemName: isFavorite ? "star.fill" : "star")
+                .font(isCompact ? .caption2 : .caption)
+                .padding(favoriteIconPadding)
+                .foregroundStyle(.yellow)
         }
         .buttonStyle(.plain)
         .background(.ultraThinMaterial, in: Circle())
         .padding(isCompact ? 3 : 4)
-        .accessibilityLabel(
-            isFavorite
-                ? "Rimuovi dai preferiti"
-                : "Aggiungi ai preferiti"
-        )
+        .accessibilityLabel(isFavorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti")
     }
 
-    private func channelNumberBadge(
-        _ channelNumber: Int
-    ) -> some View {
+    private func channelNumberBadge(_ channelNumber: Int) -> some View {
         Text("\(channelNumber)")
-            .font(
-                .system(
-                    size: isCompact ? 9 : 10,
-                    weight: .bold,
-                    design: .rounded
-                )
-            )
+            .font(.system(size: isCompact ? 9 : 10, weight: .bold, design: .rounded))
             .monospacedDigit()
             .foregroundStyle(.primary)
             .padding(.horizontal, isCompact ? 5 : 6)
@@ -913,17 +837,10 @@ private struct ChannelTile: View {
             .background(.ultraThinMaterial, in: Capsule())
             .overlay {
                 Capsule()
-                    .strokeBorder(
-                        Color.white.opacity(0.16),
-                        lineWidth: 0.5
-                    )
+                    .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
             }
             .padding(isCompact ? 3 : 4)
-            .frame(
-                maxWidth: .infinity,
-                maxHeight: .infinity,
-                alignment: .bottomLeading
-            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             .accessibilityLabel("Canale \(channelNumber)")
     }
 
