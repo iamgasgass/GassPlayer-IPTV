@@ -8,12 +8,7 @@ import SwiftUI
 /// - nessuna griglia bidimensionale globale, nessun offset manuale
 ///   condiviso, nessun bridge UIKit e nessuna vista larga 24 ore;
 /// - finestra EPG locale: 90 minuti prima di ora e 3 ore dopo ora;
-/// - programma corrente centrato visivamente nell'area iniziale;
 /// - 40 canali per pagina, massimo 120, per evitare blocchi/watchdog.
-///
-/// Questo design elimina i problemi di zoom, contenuto fuori schermo,
-/// canali invisibili, colonne disallineate e timeline fantasma causati da
-/// una griglia desktop larga 24 ore forzata dentro un iPhone.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -46,13 +41,11 @@ struct EPGGridView: View {
     private let searchDebounceNanoseconds: UInt64 = 300_000_000
 
     /// Finestra temporale leggibile su iPhone: 90 minuti prima e 3 ore dopo.
-    /// I programmi in corso risultano visibili immediatamente, mentre il
-    /// futuro prossimo resta raggiungibile con scroll orizzontale per riga.
     private let pastWindow: TimeInterval = 90 * 60
     private let futureWindow: TimeInterval = 3 * 60 * 60
 
-    /// Scala volutamente contenuta: 1 minuto = 1,05pt. La finestra di 4,5h
-    /// e' ~284pt e quindi si adatta quasi interamente allo schermo iPhone.
+    /// 1 minuto = 1,05pt. La finestra di 4,5h occupa ~284pt e quindi si
+    /// adatta quasi interamente allo schermo senza effetto zoom.
     private let pixelsPerMinute: CGFloat = 1.05
     private let channelRowHeight: CGFloat = 118
     private let logoSize: CGFloat = 34
@@ -300,6 +293,8 @@ struct EPGGridView: View {
         }
     }
 
+    // Unica dichiarazione di backgroundGradient: non duplicare questa
+    // proprieta' piu' sotto nel file.
     private var backgroundGradient: some View {
         LinearGradient(
             colors: [
@@ -352,10 +347,6 @@ struct EPGGridView: View {
         }
     }
 
-    /// Riga EPG autosufficiente e ottimizzata per iPhone.
-    /// Non dipende da alcun offset esterno: il canale e la sua timeline
-    /// restano sempre insieme, eliminando in modo definitivo il problema
-    /// di colonne invisibili o sfasate della vecchia griglia desktop.
     private func channelEPGRow(for stream: XtreamStream) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
@@ -436,21 +427,16 @@ struct EPGGridView: View {
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
-    /// Timeline orizzontale indipendente del singolo canale.
-    /// La larghezza della finestra e' piccola e leggibile, quindi non
-    /// esiste piu' l'effetto "zoomato" o una gigantesca area nera vuota.
     private func timeline(for stream: XtreamStream) -> some View {
         let programs = visiblePrograms(for: stream)
+        let width = max(timelineWidth, 280)
 
         return ScrollView(.horizontal, showsIndicators: false) {
             ZStack(alignment: .leading) {
                 timelineBackground
 
                 if programs.isEmpty {
-                    emptyTimelineState(
-                        streamID: stream.streamId,
-                        width: max(timelineWidth, 280)
-                    )
+                    emptyTimelineState(streamID: stream.streamId, width: width)
                 } else {
                     ForEach(programs) { program in
                         programBlock(program, stream: stream)
@@ -459,11 +445,7 @@ struct EPGGridView: View {
 
                 nowMarker
             }
-            .frame(
-                width: max(timelineWidth, 280),
-                height: 54,
-                alignment: .leading
-            )
+            .frame(width: width, height: 54, alignment: .leading)
         }
         .frame(height: 54)
         .accessibilityLabel("Timeline di \(stream.name)")
@@ -516,10 +498,7 @@ struct EPGGridView: View {
         .frame(width: width, height: 54, alignment: .leading)
     }
 
-    private func programBlock(
-        _ program: EPGProgram,
-        stream: XtreamStream
-    ) -> some View {
+    private func programBlock(_ program: EPGProgram, stream: XtreamStream) -> some View {
         let clippedStart = max(program.start, windowStart)
         let clippedEnd = min(program.end, windowEnd)
         let startMinutes = max(0, clippedStart.timeIntervalSince(windowStart) / 60)
@@ -608,18 +587,6 @@ struct EPGGridView: View {
             .padding(.vertical, 12)
         }
         .modifier(GlassCardBackground(cornerRadius: 14))
-    }
-
-    private var backgroundGradient: some View {
-        LinearGradient(
-            colors: [
-                Color.black.opacity(0.02),
-                Color.accentColor.opacity(0.05)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .ignoresSafeArea()
     }
 
     private func toast(_ message: String) -> some View {
