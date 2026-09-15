@@ -2,22 +2,12 @@ import SwiftUI
 
 /// Guida TV a griglia.
 ///
-/// FIX CRITICO (root cause della schermata vuota persistente): la guida NON
-/// riceve piu' un array `streams` congelato al momento dell'apertura del
-/// `fullScreenCover`. Con `.fullScreenCover(isPresented:)`, il contenuto
-/// viene creato una sola volta nell'istante in cui il booleano diventa
-/// `true`, catturando uno snapshot dei valori disponibili in quel momento.
-/// Se in quell'istante il catalogo Xtream non aveva ancora finito di
-/// caricare i canali live, la guida restava con un array vuoto per sempre.
-///
-/// La correzione legge i canali live direttamente da `XtreamCatalogStore`
-/// tramite `@EnvironmentObject`, in modo reattivo.
-///
-/// NOTA su Lazy stack: `LazyVStack`/`LazyHStack` sono lazy SOLO quando
-/// hanno un `ScrollView` come antenato diretto. La colonna canali non vive
-/// in un proprio `ScrollView` (e' sincronizzata via offset manuale con la
-/// timeline), quindi usa `VStack` classico, reso sicuro dalla paginazione
-/// (`pagedStreams`, mai piu' di `renderPageSize` righe per volta).
+/// ATTENZIONE MANUTENTORI: `channelColumnClip` DEVE chiamare
+/// `channelLabel(for:)`. NON deve mai chiamare `timelineRow(for:)` o
+/// `programBlock(_:stream:)`. Se la colonna canali (larga
+/// `channelColumnWidth` = 148pt) mostra riquadri blu con titolo/orario
+/// programma tagliati invece di icona+nome canale+stella, il bug e'
+/// esattamente questo scambio di funzioni.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -43,10 +33,7 @@ struct EPGGridView: View {
     @State private var jumpToNowRequested = false
     @State private var catchupPlayback: CatchupPlayback?
 
-    /// Numero di canali effettivamente renderizzati in questo momento.
-    /// Cresce solo su richiesta esplicita dell'utente ("Carica altri").
     @State private var renderLimit = 40
-
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
 
@@ -100,8 +87,6 @@ struct EPGGridView: View {
         }
     }
 
-    /// Fonte di verita' SEMPRE aggiornata: letta live dal catalogo condiviso,
-    /// mai congelata al momento dell'apertura della guida.
     private var streams: [XtreamStream] {
         xtreamCatalog.streams(for: kind)
     }
@@ -254,9 +239,6 @@ struct EPGGridView: View {
         .ignoresSafeArea()
     }
 
-    /// Toast temporaneo per feedback rapidi (es. promemoria impostato,
-    /// errore generazione link catch-up). Richiamato dall'overlay in
-    /// `body` quando `reminderToast` non e' `nil`.
     private func toast(_ message: String) -> some View {
         Text(message)
             .font(.footnote.weight(.semibold))
@@ -267,6 +249,10 @@ struct EPGGridView: View {
             .transition(.move(edge: .top).combined(with: .opacity))
     }
 
+    /// Toolbar ridotta a 3 azioni essenziali (refresh, preferiti, ora
+    /// corrente) per evitare che troppi pulsanti si accavallino con il
+    /// titolo inline su schermi stretti, come osservato nello screenshot
+    /// (titolo "Guida TV" troncato in "G..." accanto a "Chiudi").
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .navigationBarLeading) {
@@ -276,39 +262,36 @@ struct EPGGridView: View {
         }
 
         ToolbarItem(placement: .navigationBarTrailing) {
-            GlassIconButton(
-                systemImage: "arrow.clockwise",
-                size: 36,
-                accessibilityLabel: "Aggiorna guida TV"
-            ) {
-                Task {
-                    await xtreamCatalog.refresh(credentials: credentials, kind: kind)
-                    scheduleReload(forceRefresh: true)
+            Menu {
+                Button {
+                    Task {
+                        await xtreamCatalog.refresh(credentials: credentials, kind: kind)
+                        scheduleReload(forceRefresh: true)
+                    }
+                } label: {
+                    Label("Aggiorna guida", systemImage: "arrow.clockwise")
                 }
-            }
-        }
 
-        ToolbarItem(placement: .navigationBarTrailing) {
-            GlassIconButton(
-                systemImage: showFavoritesOnly ? "star.fill" : "star",
-                tint: showFavoritesOnly ? .yellow : nil,
-                size: 36,
-                accessibilityLabel: "Mostra solo i preferiti"
-            ) {
-                withAnimation(.snappy) {
-                    showFavoritesOnly.toggle()
+                Button {
+                    withAnimation(.snappy) {
+                        showFavoritesOnly.toggle()
+                    }
+                } label: {
+                    Label(
+                        showFavoritesOnly ? "Mostra tutti i canali" : "Solo preferiti",
+                        systemImage: showFavoritesOnly ? "star.fill" : "star"
+                    )
                 }
-            }
-        }
 
-        ToolbarItem(placement: .navigationBarTrailing) {
-            GlassIconButton(
-                systemImage: "location.fill",
-                size: 36,
-                accessibilityLabel: "Vai all'orario corrente"
-            ) {
-                jumpToNowRequested = true
+                Button {
+                    jumpToNowRequested = true
+                } label: {
+                    Label("Vai all'orario corrente", systemImage: "location.fill")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
             }
+            .accessibilityLabel("Altre azioni guida TV")
         }
     }
 
@@ -331,6 +314,13 @@ struct EPGGridView: View {
                     }
                     .accessibilityLabel("Cancella ricerca")
                 }
+
+                if showFavoritesOnly {
+                    Image(systemName: "star.fill")
+                        .foregroundStyle(.yellow)
+                        .font(.caption)
+                        .accessibilityLabel("Filtro preferiti attivo")
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -343,13 +333,6 @@ struct EPGGridView: View {
         .padding(.bottom, 6)
     }
 
-    /// Banner diagnostico sempre visibile: mostra lo stato reale dei dati
-    /// (quanti canali totali, quanti dopo i filtri, quanti renderizzati,
-    /// e lo stato del catalogo). NOTA: `.secondary` e' un
-    /// `HierarchicalShapeStyle`, mentre `Color.orange` e' un `Color`; per
-    /// poterli scegliere in un ternario servono entrambi tipizzati come
-    /// `AnyShapeStyle`, altrimenti il compilatore non riesce a unificare
-    /// il tipo di ritorno del modifier `foregroundStyle`.
     @ViewBuilder
     private var diagnosticBanner: some View {
         if streams.isEmpty {
@@ -413,6 +396,10 @@ struct EPGGridView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                // HStack: SwiftUI garantisce layout affiancato, MAI
+                // sovrapposto. La colonna canali (148pt) e la timeline
+                // (timelineWidth, scrollabile) occupano regioni orizzontali
+                // separate e non possono accavallarsi in un HStack.
                 ZStack(alignment: .topLeading) {
                     HStack(spacing: 0) {
                         channelColumnClip
@@ -449,6 +436,9 @@ struct EPGGridView: View {
             .clipped()
     }
 
+    /// Colonna canali fissa. DEVE renderizzare `channelLabel(for:)` per
+    /// ogni stream. Se qui compare `timelineRow` o `programBlock`, e' il
+    /// bug che produce i riquadri blu troncati al posto dei nomi canale.
     private var channelColumnClip: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(pagedStreams) { stream in
@@ -460,9 +450,11 @@ struct EPGGridView: View {
                     .frame(width: channelColumnWidth, height: rowHeight)
             }
         }
-        .offset(y: scrollOffset.y)
         .frame(width: channelColumnWidth, alignment: .topLeading)
+        .background(Color(.systemBackground).opacity(0.001))
+        .offset(y: scrollOffset.y)
         .clipped()
+        .zIndex(1)
     }
 
     private var loadMoreFooter: some View {
@@ -481,6 +473,9 @@ struct EPGGridView: View {
         .accessibilityLabel("Carica altri \(min(renderPageSize, remainingCount)) canali")
     }
 
+    /// Timeline scorrevole. Renderizza `timelineRow(for:)`, MAI
+    /// `channelLabel`. Vive dentro un vero `ScrollView`, quindi
+    /// `LazyVStack` qui e' corretto.
     private var timelineScroll: some View {
         ScrollViewReader { proxy in
             ScrollView([.horizontal, .vertical], showsIndicators: true) {
@@ -530,6 +525,7 @@ struct EPGGridView: View {
                 }
             }
         }
+        .zIndex(0)
     }
 
     private var scrollTracker: some View {
@@ -553,6 +549,9 @@ struct EPGGridView: View {
         .frame(width: timelineWidth, alignment: .leading)
     }
 
+    /// Etichetta canale: icona, nome, stato EPG breve, stella preferiti.
+    /// Sfondo `.ultraThinMaterial` rettangolare — NON un riquadro blu
+    /// arrotondato come i blocchi programma.
     private func channelLabel(for stream: XtreamStream) -> some View {
         HStack(spacing: 8) {
             AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
