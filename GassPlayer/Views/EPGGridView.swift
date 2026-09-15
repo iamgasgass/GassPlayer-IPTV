@@ -1,5 +1,14 @@
 import SwiftUI
 
+/// Guida TV a griglia. Per evitare hang/crash da watchdog (0x8badf00d) su
+/// playlist con centinaia o migliaia di canali, la vista NON renderizza mai
+/// l'intera lista `streams` in una sola volta: mostra un sottoinsieme
+/// paginato (`renderLimit`) e offre un pulsante "Carica altri canali".
+/// Questo e' il fix principale al blocco/crash osservato aprendo la guida:
+/// una `VStack` non lazy con migliaia di righe (AsyncImage + GeometryReader
+/// per riga) istanzia tutte le viste in un solo passaggio di layout
+/// sincrono sul main thread, superando il tempo massimo concesso dal
+/// sistema prima della terminazione forzata.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let streams: [XtreamStream]
@@ -13,6 +22,7 @@ struct EPGGridView: View {
     @State private var loadingStreamIDs = Set<Int>()
     @State private var isInitialEPGLoad = true
     @State private var isRefreshingEPG = false
+
     @State private var now = Date()
     @State private var timelineStart = Calendar.autoupdatingCurrent.startOfDay(for: Date())
     @State private var scrollOffset: CGPoint = .zero
@@ -23,13 +33,26 @@ struct EPGGridView: View {
     @State private var jumpToNowRequested = false
     @State private var catchupPlayback: CatchupPlayback?
 
+    /// Numero di canali effettivamente renderizzati in questo momento.
+    /// Parte da `renderPageSize` e cresce solo su richiesta esplicita
+    /// dell'utente ("Carica altri canali"), mai automaticamente per
+    /// l'intera lista.
+    @State private var renderLimit: Int
+
+    private var reloadTask: Task<Void, Never>?
+    @State private var reloadTaskBox = TaskBox()
+
     private let pixelsPerMinute: CGFloat = 2.6
     private let channelColumnWidth: CGFloat = 148
     private let rowHeight: CGFloat = 60
     private let rulerHeight: CGFloat = 30
-    private let initialChannelLimit = 32
+
+    private let renderPageSize = 40
+    private let hardRenderCap = 400
     private let maxConcurrentRequests = 4
     private let shortEPGLimit = 48
+    private let searchDebounceNanoseconds: UInt64 = 300_000_000
+
     private let calendar = Calendar.autoupdatingCurrent
 
     init(
@@ -45,6 +68,14 @@ struct EPGGridView: View {
                 scopeKey: Self.scopeKey(for: credentials)
             )
         )
+        _renderLimit = State(initialValue: min(40, streams.count))
+    }
+
+    /// Contenitore di riferimento per il task di reload corrente, cosi' da
+    /// poterlo cancellare quando parte una nuova richiesta (ricerca,
+    /// cambio filtro, "carica altri") prima che quella precedente finisca.
+    private final class TaskBox {
+        var task: Task<Void, Never>?
     }
 
     private struct SelectedProgram: Identifiable {
@@ -74,6 +105,10 @@ struct EPGGridView: View {
         CGFloat(timelineEnd.timeIntervalSince(timelineStart) / 60) * pixelsPerMinute
     }
 
+    /// Canali che rispettano ricerca/preferiti, PRIMA della paginazione.
+    /// Puo' essere grande quanto l'intera playlist: non va mai renderizzato
+    /// direttamente in una vista, solo usato per contare e per estrarre la
+    /// pagina visibile tramite `pagedStreams`.
     private var filteredStreams: [XtreamStream] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -90,15 +125,26 @@ struct EPGGridView: View {
         }
     }
 
-    private var streamsToLoad: [XtreamStream] {
-        Array(filteredStreams.prefix(initialChannelLimit))
+    /// Sottoinsieme EFFETTIVAMENTE renderizzato dalla UI. E' questo, e non
+    /// `filteredStreams`, che deve essere usato in ogni `ForEach` della
+    /// griglia e nel caricamento EPG.
+    private var pagedStreams: [XtreamStream] {
+        Array(filteredStreams.prefix(min(renderLimit, hardRenderCap)))
+    }
+
+    private var canLoadMore: Bool {
+        renderLimit < min(filteredStreams.count, hardRenderCap)
+    }
+
+    private var remainingCount: Int {
+        max(0, min(filteredStreams.count, hardRenderCap) - renderLimit)
     }
 
     private var streamIdentity: String {
         let host = credentials.host
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        let ids = streams.map(\.streamId).map(String.init).joined(separator: ",")
+        let ids = pagedStreams.map(\.streamId).map(String.init).joined(separator: ",")
         return "\(host)|\(credentials.username)|\(ids)"
     }
 
@@ -152,30 +198,28 @@ struct EPGGridView: View {
             }
         }
         .task(id: streamIdentity) {
-            await reloadEPG()
+            scheduleReload()
         }
         .onChange(of: searchQuery) { _, _ in
-            Task {
-                await reloadEPG()
-            }
+            renderLimit = min(renderPageSize, max(filteredStreams.count, 1))
+            scheduleReload(debounced: true)
         }
         .onChange(of: showFavoritesOnly) { _, _ in
-            Task {
-                await reloadEPG()
-            }
+            renderLimit = min(renderPageSize, max(filteredStreams.count, 1))
+            scheduleReload()
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             timelineStart = calendar.startOfDay(for: Date())
             now = Date()
-
-            Task {
-                await reloadEPG(forceRefresh: true)
-            }
+            scheduleReload(forceRefresh: true)
         }
         .onReceive(
             Timer.publish(every: 60, on: .main, in: .common).autoconnect()
         ) { date in
             now = date
+        }
+        .onDisappear {
+            reloadTaskBox.task?.cancel()
         }
     }
 
@@ -205,9 +249,7 @@ struct EPGGridView: View {
                 size: 36,
                 accessibilityLabel: "Aggiorna guida TV"
             ) {
-                Task {
-                    await refreshEPG()
-                }
+                scheduleReload(forceRefresh: true)
             }
         }
 
@@ -236,27 +278,38 @@ struct EPGGridView: View {
     }
 
     private var searchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
 
-            TextField("Cerca canale", text: $searchQuery)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+                TextField("Cerca canale", text: $searchQuery)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
 
-            if !searchQuery.isEmpty {
-                Button {
-                    searchQuery = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                if !searchQuery.isEmpty {
+                    Button {
+                        searchQuery = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityLabel("Cancella ricerca")
                 }
-                .accessibilityLabel("Cancella ricerca")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .modifier(GlassCardBackground(cornerRadius: 14))
+
+            if streams.count > renderPageSize {
+                Text(
+                    "Canali mostrati: \(pagedStreams.count) di \(filteredStreams.count)"
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .modifier(GlassCardBackground(cornerRadius: 14))
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 6)
@@ -280,7 +333,7 @@ struct EPGGridView: View {
                 rulerClip
             }
 
-            if filteredStreams.isEmpty {
+            if pagedStreams.isEmpty {
                 ContentUnavailableView(
                     showFavoritesOnly ? "Nessun canale preferito" : "Nessun canale trovato",
                     systemImage: showFavoritesOnly ? "star.slash" : "magnifyingglass",
@@ -328,10 +381,21 @@ struct EPGGridView: View {
             .clipped()
     }
 
+    /// Colonna canali: usa `LazyVStack` per ridurre il lavoro di layout
+    /// iniziale. La paginazione (`pagedStreams`) resta comunque la difesa
+    /// primaria contro gli hang, perche' questa colonna non vive dentro un
+    /// proprio `ScrollView` indipendente (e' sincronizzata via offset con
+    /// la timeline), quindi `LazyVStack` da sola non basterebbe su liste
+    /// molto grandi.
     private var channelColumnClip: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(filteredStreams) { stream in
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(pagedStreams) { stream in
                 channelLabel(for: stream)
+            }
+
+            if canLoadMore {
+                loadMoreFooter
+                    .frame(width: channelColumnWidth, height: rowHeight)
             }
         }
         .offset(y: scrollOffset.y)
@@ -339,13 +403,34 @@ struct EPGGridView: View {
         .clipped()
     }
 
+    private var loadMoreFooter: some View {
+        Button {
+            loadMoreChannels()
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: "arrow.down.circle")
+                Text("Altri \(min(renderPageSize, remainingCount))")
+                    .font(.caption2)
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .background(.ultraThinMaterial)
+        .accessibilityLabel("Carica altri \(min(renderPageSize, remainingCount)) canali")
+    }
+
     private var timelineScroll: some View {
         ScrollViewReader { proxy in
             ScrollView([.horizontal, .vertical], showsIndicators: true) {
                 ZStack(alignment: .topLeading) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(filteredStreams) { stream in
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(pagedStreams) { stream in
                             timelineRow(for: stream)
+                        }
+
+                        if canLoadMore {
+                            Color.clear
+                                .frame(width: timelineWidth, height: rowHeight)
                         }
                     }
 
@@ -654,7 +739,7 @@ struct EPGGridView: View {
                     .fill(Color.red)
                     .frame(
                         width: 1.5,
-                        height: CGFloat(filteredStreams.count) * rowHeight
+                        height: CGFloat(pagedStreams.count) * rowHeight
                     )
                     .overlay(alignment: .top) {
                         Circle()
@@ -726,16 +811,45 @@ struct EPGGridView: View {
         selectedProgram = nil
     }
 
-    @MainActor
-    private func refreshEPG() async {
-        let targets = streamsToLoad
-        let service = EPGService(credentials: credentials)
+    /// Estende la pagina renderizzata di `renderPageSize` canali, su
+    /// richiesta esplicita dell'utente. Non e' mai automatico: e' l'unico
+    /// modo in cui `renderLimit` puo' crescere, per mantenere sotto
+    /// controllo il numero di viste create dal main thread.
+    private func loadMoreChannels() {
+        let newLimit = min(
+            renderLimit + renderPageSize,
+            min(filteredStreams.count, hardRenderCap)
+        )
 
-        for stream in targets {
-            await service.invalidateEPG(streamId: stream.streamId)
+        guard newLimit != renderLimit else {
+            return
         }
 
-        await reloadEPG(forceRefresh: true)
+        renderLimit = newLimit
+        scheduleReload()
+    }
+
+    /// Pianifica un reload EPG cancellando qualunque reload precedente
+    /// ancora in corso. Evita l'accumulo di richieste di rete parallele
+    /// quando l'utente digita rapidamente nella ricerca o cambia filtro
+    /// piu' volte in sequenza.
+    private func scheduleReload(
+        forceRefresh: Bool = false,
+        debounced: Bool = false
+    ) {
+        reloadTaskBox.task?.cancel()
+
+        reloadTaskBox.task = Task { @MainActor in
+            if debounced {
+                try? await Task.sleep(nanoseconds: searchDebounceNanoseconds)
+
+                guard !Task.isCancelled else {
+                    return
+                }
+            }
+
+            await reloadEPG(forceRefresh: forceRefresh)
+        }
     }
 
     @MainActor
@@ -749,7 +863,7 @@ struct EPGGridView: View {
             return
         }
 
-        let targets = streamsToLoad
+        let targets = pagedStreams
 
         guard !targets.isEmpty else {
             isInitialEPGLoad = false
@@ -810,6 +924,10 @@ struct EPGGridView: View {
                 }
 
                 for await (streamID, result) in group {
+                    guard !Task.isCancelled else {
+                        continue
+                    }
+
                     loadingStreamIDs.remove(streamID)
 
                     switch result {
@@ -832,6 +950,10 @@ struct EPGGridView: View {
                     }
                 }
             }
+        }
+
+        guard !Task.isCancelled else {
+            return
         }
 
         isInitialEPGLoad = false
