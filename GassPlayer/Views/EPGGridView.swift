@@ -4,11 +4,18 @@ import SwiftUI
 /// playlist con centinaia o migliaia di canali, la vista NON renderizza mai
 /// l'intera lista `streams` in una sola volta: mostra un sottoinsieme
 /// paginato (`renderLimit`) e offre un pulsante "Carica altri canali".
-/// Questo e' il fix principale al blocco/crash osservato aprendo la guida:
-/// una `VStack` non lazy con migliaia di righe (AsyncImage + GeometryReader
-/// per riga) istanzia tutte le viste in un solo passaggio di layout
-/// sincrono sul main thread, superando il tempo massimo concesso dal
-/// sistema prima della terminazione forzata.
+///
+/// IMPORTANTE su Lazy stack: `LazyVStack`/`LazyHStack` funzionano in modo
+/// lazy SOLO quando hanno un `ScrollView` come antenato diretto, perche' e'
+/// quel `ScrollView` a comunicare loro quale porzione di contenuto e'
+/// visibile. La colonna canali (`channelColumnClip`) NON vive dentro un
+/// proprio `ScrollView`: e' sincronizzata manualmente con la timeline
+/// tramite un offset verticale condiviso. Usare `LazyVStack` li' produce
+/// una vista vuota o intermittente, perche' SwiftUI non ha modo di sapere
+/// quale range renderizzare. Per questo la colonna canali usa `VStack`
+/// (non lazy), reso sicuro dalla paginazione: al massimo `renderLimit`
+/// righe vengono create, mai l'intera playlist. La timeline invece vive
+/// dentro un vero `ScrollView` e li' `LazyVStack` e' corretto e sicuro.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let streams: [XtreamStream]
@@ -39,8 +46,8 @@ struct EPGGridView: View {
     /// l'intera lista.
     @State private var renderLimit: Int
 
-    private var reloadTask: Task<Void, Never>?
     @State private var reloadTaskBox = TaskBox()
+    @State private var didAppear = false
 
     private let pixelsPerMinute: CGFloat = 2.6
     private let channelColumnWidth: CGFloat = 148
@@ -68,7 +75,9 @@ struct EPGGridView: View {
                 scopeKey: Self.scopeKey(for: credentials)
             )
         )
-        _renderLimit = State(initialValue: min(40, streams.count))
+        _renderLimit = State(
+            initialValue: min(40, max(streams.count, 0))
+        )
     }
 
     /// Contenitore di riferimento per il task di reload corrente, cosi' da
@@ -129,7 +138,8 @@ struct EPGGridView: View {
     /// `filteredStreams`, che deve essere usato in ogni `ForEach` della
     /// griglia e nel caricamento EPG.
     private var pagedStreams: [XtreamStream] {
-        Array(filteredStreams.prefix(min(renderLimit, hardRenderCap)))
+        let safeLimit = max(renderLimit, 0)
+        return Array(filteredStreams.prefix(min(safeLimit, hardRenderCap)))
     }
 
     private var canLoadMore: Bool {
@@ -197,7 +207,12 @@ struct EPGGridView: View {
                 }
             }
         }
-        .task(id: streamIdentity) {
+        .onAppear {
+            guard !didAppear else { return }
+            didAppear = true
+            scheduleReload()
+        }
+        .onChange(of: streamIdentity) { _, _ in
             scheduleReload()
         }
         .onChange(of: searchQuery) { _, _ in
@@ -308,6 +323,11 @@ struct EPGGridView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 4)
+            } else if streams.isEmpty {
+                Text("Nessun canale disponibile da questa sorgente.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 4)
             }
         }
         .padding(.horizontal, 12)
@@ -333,7 +353,16 @@ struct EPGGridView: View {
                 rulerClip
             }
 
-            if pagedStreams.isEmpty {
+            if streams.isEmpty {
+                ContentUnavailableView(
+                    "Nessun canale live",
+                    systemImage: "tv.slash",
+                    description: Text(
+                        "Questa sorgente non ha ancora canali live caricati. Torna indietro e aggiorna il catalogo."
+                    )
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if pagedStreams.isEmpty {
                 ContentUnavailableView(
                     showFavoritesOnly ? "Nessun canale preferito" : "Nessun canale trovato",
                     systemImage: showFavoritesOnly ? "star.slash" : "magnifyingglass",
@@ -381,14 +410,14 @@ struct EPGGridView: View {
             .clipped()
     }
 
-    /// Colonna canali: usa `LazyVStack` per ridurre il lavoro di layout
-    /// iniziale. La paginazione (`pagedStreams`) resta comunque la difesa
-    /// primaria contro gli hang, perche' questa colonna non vive dentro un
-    /// proprio `ScrollView` indipendente (e' sincronizzata via offset con
-    /// la timeline), quindi `LazyVStack` da sola non basterebbe su liste
-    /// molto grandi.
+    /// Colonna canali: `VStack` NON lazy, deliberatamente. Vedi il commento
+    /// in testa al file: essendo fuori da un proprio `ScrollView` e
+    /// sincronizzata via offset manuale, `LazyVStack` qui produce una vista
+    /// vuota o intermittente. La sicurezza contro gli hang e' garantita
+    /// dalla paginazione (`pagedStreams`, al massimo `renderPageSize` righe
+    /// per volta), non dalla laziness dello stack.
     private var channelColumnClip: some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             ForEach(pagedStreams) { stream in
                 channelLabel(for: stream)
             }
@@ -419,6 +448,9 @@ struct EPGGridView: View {
         .accessibilityLabel("Carica altri \(min(renderPageSize, remainingCount)) canali")
     }
 
+    /// Timeline: vive dentro un vero `ScrollView`, quindi `LazyVStack` qui
+    /// e' corretto e sicuro (l'antenato ScrollView fornisce il viewport
+    /// necessario alla laziness).
     private var timelineScroll: some View {
         ScrollViewReader { proxy in
             ScrollView([.horizontal, .vertical], showsIndicators: true) {
@@ -457,18 +489,14 @@ struct EPGGridView: View {
 
                 jumpToNowRequested = false
             }
-            .task(id: streamIdentity) {
-                try? await Task.sleep(nanoseconds: 300_000_000)
-
-                guard !Task.isCancelled else {
-                    return
-                }
-
-                withAnimation(.snappy) {
-                    proxy.scrollTo(
-                        "nowAnchor",
-                        anchor: UnitPoint(x: 0.15, y: 0)
-                    )
+            .onAppear {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    withAnimation(.snappy) {
+                        proxy.scrollTo(
+                            "nowAnchor",
+                            anchor: UnitPoint(x: 0.15, y: 0)
+                        )
+                    }
                 }
             }
         }
