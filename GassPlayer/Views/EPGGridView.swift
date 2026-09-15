@@ -1,8 +1,11 @@
 import SwiftUI
 
-/// EPG touch-first ottimizzato per apertura immediata, griglia senza linee e
-/// indicatore live bianco. Le tile dinamiche mostrano la parte gia' andata in
-/// onda piu' viva a sinistra e la parte rimanente piu' morbida a destra.
+/// EPG touch-first ottimizzato per apertura immediata. L'indicatore live e'
+/// una freccia bianca rivolta verso il basso, ancorata nella sezione orario
+/// condivisa con le tile: orario e programmi scorrono insieme in un unico
+/// ScrollView orizzontale, cosi' restano sempre sincronizzati. Ogni tile ha
+/// una resa "viva a sinistra, sfumata/sfocata a destra", uniforme su tutta
+/// la griglia.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -31,14 +34,15 @@ struct EPGGridView: View {
 
     private let renderPageSize = 12
     private let hardRenderCap = 72
-    private let maxConcurrentRequests = 6
-    private let shortEPGLimit = 48
+    private let maxConcurrentRequests = 8
+    private let shortEPGLimit = 24
     private let searchDebounceNanoseconds: UInt64 = 250_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 350_000_000
     private let channelLogoWidth: CGFloat = 86
     private let channelLogoHeight: CGFloat = 76
     private let rowHeight: CGFloat = 96
     private let blockHeight: CGFloat = 82
+    private let timeAxisHeight: CGFloat = 26
     private let pixelsPerMinute: CGFloat = 1.85
 
     /// Visualizza 30 minuti passati e 2 ore complete future.
@@ -76,6 +80,8 @@ struct EPGGridView: View {
         var id: String { url.absoluteString }
     }
 
+    // MARK: - Sources
+
     private var streams: [XtreamStream] {
         xtreamCatalog.streams(for: kind)
     }
@@ -94,28 +100,37 @@ struct EPGGridView: View {
         return normalized.isEmpty ? nil : normalized
     }
 
-    private var epgGroups: [XtreamCategory] {
-        let usedIDs = Set(streams.compactMap { stream -> String? in
-            guard let raw = stream.categoryId else { return nil }
-            let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            return normalized.isEmpty || normalized == "0" ? nil : normalized
-        })
+    /// Calcola gruppi e conteggi in un'unica passata O(n) invece di ripetere
+    /// un filtro lineare per ogni gruppo nel menu (evitava un costo O(n*g)).
+    private var groupsWithCounts: (groups: [XtreamCategory], counts: [String: Int]) {
+        var counts: [String: Int] = [:]
+        var usedIDs = Set<String>()
 
-        return liveCategories
+        for stream in streams {
+            guard let raw = stream.categoryId else { continue }
+            let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty, normalized != "0" else { continue }
+            counts[normalized, default: 0] += 1
+            usedIDs.insert(normalized)
+        }
+
+        let groups = liveCategories
             .filter { usedIDs.contains($0.categoryId) }
             .sorted {
                 $0.categoryName.localizedCaseInsensitiveCompare($1.categoryName) == .orderedAscending
             }
+
+        return (groups, counts)
     }
 
     private var selectedGroupName: String {
         guard let groupID = normalizedSelectedGroupID else { return "Tutti" }
-        return epgGroups.first(where: { $0.categoryId == groupID })?.categoryName ?? "Gruppo"
+        return groupsWithCounts.groups.first(where: { $0.categoryId == groupID })?.categoryName ?? "Gruppo"
     }
 
     private var selectedGroupSystemImage: String {
         guard let groupID = normalizedSelectedGroupID,
-              let group = epgGroups.first(where: { $0.categoryId == groupID }) else {
+              let group = groupsWithCounts.groups.first(where: { $0.categoryId == groupID }) else {
             return "square.grid.2x2"
         }
         return Self.groupIcon(for: group.categoryName)
@@ -138,6 +153,7 @@ struct EPGGridView: View {
     }
 
     /// Mantiene l'ordine nativo della playlist anche nella selezione "Tutti".
+    /// Se nessun filtro e' attivo, evita del tutto il ciclo `.filter`.
     private var filteredStreams: [XtreamStream] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let groupID = normalizedSelectedGroupID
@@ -177,6 +193,8 @@ struct EPGGridView: View {
         return "\(normalizedSelectedGroupID ?? "all")|\(selectedDayOffset)|\(ids)"
     }
 
+    // MARK: - Time axis
+
     private var selectedDate: Date {
         Calendar.autoupdatingCurrent.date(byAdding: .day, value: selectedDayOffset, to: now) ?? now
     }
@@ -209,6 +227,14 @@ struct EPGGridView: View {
 
     private var timelineWidth: CGFloat {
         CGFloat(windowDuration / 60) * pixelsPerMinute
+    }
+
+    /// Offset orizzontale della posizione live: costante rispetto all'inizio
+    /// della finestra, perche' la finestra stessa si ricentra su `now` a ogni
+    /// tick. Il risultato visivo e' che le tile scorrono sotto la freccia,
+    /// che resta ancorata nello stesso punto della sezione orario.
+    private var livePositionX: CGFloat {
+        CGFloat(now.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
 
     private var displayedTimeLabel: String {
@@ -292,7 +318,8 @@ struct EPGGridView: View {
             scheduleReload()
         }
         .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
-            // Aggiorna posizione live e stato dei programmi senza rifare la rete.
+            // Aggiorna solo l'orologio: la finestra si ricentra, la freccia
+            // resta ferma nello stesso punto e le tile scorrono sotto di lei.
             now = date
         }
         .onDisappear {
@@ -315,8 +342,8 @@ struct EPGGridView: View {
             )
             .foregroundStyle(.white)
         } else {
-            ScrollView {
-                LazyVStack(spacing: 0) {
+            ScrollView(.vertical) {
+                VStack(spacing: 0) {
                     searchHeader
                     dayTimeHeader
 
@@ -329,13 +356,7 @@ struct EPGGridView: View {
                         .foregroundStyle(.white)
                         .padding(.top, 40)
                     } else {
-                        ForEach(pagedStreams) { stream in
-                            epgRow(for: stream)
-                        }
-
-                        if canLoadMore {
-                            loadMoreButton
-                        }
+                        epgGrid
                     }
                 }
                 .padding(.bottom, 32)
@@ -347,6 +368,37 @@ struct EPGGridView: View {
                         .tint(.white)
                         .padding(12)
                         .transition(.opacity)
+                }
+            }
+        }
+    }
+
+    /// Colonna loghi canale fissa a sinistra + un unico ScrollView
+    /// orizzontale che racchiude sezione orario e tutte le righe programma:
+    /// scorrendo insieme, restano perfettamente sincronizzati.
+    private var epgGrid: some View {
+        HStack(alignment: .top, spacing: 0) {
+            LazyVStack(spacing: 0) {
+                Color.clear.frame(height: timeAxisHeight)
+
+                ForEach(pagedStreams) { stream in
+                    channelLogoPanel(stream)
+                        .frame(height: rowHeight)
+                }
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                let totalWidth = max(timelineWidth, 380)
+
+                LazyVStack(spacing: 0) {
+                    timeAxisRow(width: totalWidth)
+
+                    ForEach(pagedStreams) { stream in
+                        timelineRow(for: stream, width: totalWidth)
+                            .task(id: stream.streamId) {
+                                await loadProgramsIfNeeded(for: stream)
+                            }
+                    }
                 }
             }
         }
@@ -374,12 +426,13 @@ struct EPGGridView: View {
                     Label("Tutti i canali", systemImage: "square.grid.2x2")
                         .tag(String?.none)
 
-                    if !epgGroups.isEmpty {
+                    let data = groupsWithCounts
+                    if !data.groups.isEmpty {
                         Divider()
 
-                        ForEach(epgGroups) { group in
+                        ForEach(data.groups) { group in
                             Label(
-                                "\(group.categoryName) (\(groupChannelCount(group.categoryId)))",
+                                "\(group.categoryName) (\(data.counts[group.categoryId] ?? 0))",
                                 systemImage: Self.groupIcon(for: group.categoryName)
                             )
                             .tag(Optional(group.categoryId))
@@ -554,13 +607,58 @@ struct EPGGridView: View {
         .padding(.bottom, 16)
     }
 
-    private func epgRow(for stream: XtreamStream) -> some View {
-        HStack(spacing: 0) {
-            channelLogoPanel(stream)
-            timelinePanel(stream)
+    /// Sezione orario condivisa: nessuna griglia di linee, solo la freccia
+    /// bianca rivolta verso il basso, marcata alla posizione esatta del
+    /// minuto corrente. Vive nello stesso ScrollView orizzontale delle tile,
+    /// quindi scorre sempre in modo identico e sincronizzato.
+    private func timeAxisRow(width: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            if isToday {
+                VStack(spacing: 2) {
+                    Text(now.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+
+                    Image(systemName: "arrowtriangle.down.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .fixedSize()
+                .offset(x: livePositionX - 14, y: 0)
+            }
         }
-        .frame(height: rowHeight)
-        .background(Color.white.opacity(0.018))
+        .frame(width: width, height: timeAxisHeight, alignment: .topLeading)
+    }
+
+    private func timelineRow(for stream: XtreamStream, width: CGFloat) -> some View {
+        let programs = visiblePrograms(for: stream)
+
+        return ZStack(alignment: .leading) {
+            if programs.isEmpty {
+                unavailableBlock(for: stream, width: width)
+            } else {
+                ForEach(programs) { program in
+                    programBlock(program, stream: stream)
+                }
+            }
+
+            if isToday {
+                liveMarkerLine
+            }
+        }
+        .frame(width: width, height: rowHeight, alignment: .leading)
+        .clipped()
+    }
+
+    /// Sottile riferimento verticale allineato alla freccia, limitato alla
+    /// sola riga corrente: aiuta a collegare visivamente freccia e tile
+    /// senza introdurre una linea continua su tutta la griglia.
+    private var liveMarkerLine: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.16))
+            .frame(width: 1)
+            .offset(x: livePositionX)
+            .allowsHitTesting(false)
     }
 
     private func channelLogoPanel(_ stream: XtreamStream) -> some View {
@@ -601,30 +699,6 @@ struct EPGGridView: View {
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
-    private func timelinePanel(_ stream: XtreamStream) -> some View {
-        let programs = visiblePrograms(for: stream)
-        let totalWidth = max(timelineWidth, 380)
-
-        return ScrollView(.horizontal, showsIndicators: false) {
-            ZStack(alignment: .leading) {
-                if programs.isEmpty {
-                    unavailableBlock(for: stream, width: totalWidth)
-                } else {
-                    ForEach(programs) { program in
-                        programBlock(program, stream: stream)
-                    }
-                }
-
-                if isToday {
-                    liveIndicator
-                }
-            }
-            .frame(width: totalWidth, height: rowHeight, alignment: .leading)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .clipped()
-    }
-
     private func unavailableBlock(for stream: XtreamStream, width: CGFloat) -> some View {
         let loading = loadingStreamIDs.contains(stream.streamId)
         let failed = failedStreamIDs.contains(stream.streamId)
@@ -656,7 +730,7 @@ struct EPGGridView: View {
         let durationMinutes = max(1, clippedEnd.timeIntervalSince(clippedStart) / 60)
         let width = max(CGFloat(durationMinutes) * pixelsPerMinute, 88)
         let isCurrent = isToday && program.isCurrent(at: now)
-        let progress = programProgress(for: program)
+        let progress = isCurrent ? programProgress(for: program) : 0
 
         return Button {
             selectedProgram = SelectedProgram(program: program, stream: stream)
@@ -698,6 +772,11 @@ struct EPGGridView: View {
         )
     }
 
+    /// Resa uniforme per ogni tile: viva a sinistra, progressivamente
+    /// sfumata e sfocata verso destra. Il livello di blur e' ottenuto
+    /// sovrapponendo un duplicato del riempimento sfocato e mascherato con
+    /// un gradiente, cosi' solo la parte destra appare fuori fuoco senza
+    /// impattare il testo (che resta sempre nitido e leggibile).
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
@@ -708,62 +787,40 @@ struct EPGGridView: View {
         let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
         let base = programColor(for: stream, program: program)
 
-        if isCurrent {
-            GeometryReader { geometry in
-                let completedWidth = max(0, min(geometry.size.width, geometry.size.width * progress))
-
-                ZStack(alignment: .leading) {
-                    // Parte futura: meno satura, piu' soffusa verso destra.
-                    shape.fill(
-                        LinearGradient(
-                            colors: [
-                                base.opacity(0.72),
-                                base.opacity(0.42),
-                                Color.black.opacity(0.20)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-
-                    // Parte gia' trasmessa: colore piu' vivo e definito.
-                    Rectangle()
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    base.opacity(1.0),
-                                    base.opacity(0.92)
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .frame(width: completedWidth)
-                }
-                .clipShape(shape)
-            }
-        } else {
+        ZStack {
             shape.fill(base)
-        }
-    }
 
-    /// Marcatore live senza linea verticale: solo un punto bianco deciso nella
-    /// posizione temporale esatta della timeline, sovrapposto alle tile.
-    private var liveIndicator: some View {
-        let minutesFromStart = now.timeIntervalSince(windowStart) / 60
-        let x = CGFloat(minutesFromStart) * pixelsPerMinute
+            shape
+                .fill(base.opacity(0.9))
+                .blur(radius: 7)
+                .mask(
+                    LinearGradient(
+                        colors: [.clear, .white.opacity(0.55), .white],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
 
-        return Circle()
-            .fill(.white)
-            .frame(width: 10, height: 10)
-            .shadow(color: .white.opacity(0.85), radius: 5)
-            .overlay {
-                Circle()
-                    .strokeBorder(Color.black.opacity(0.28), lineWidth: 1)
+            shape.fill(
+                LinearGradient(
+                    colors: [Color.black.opacity(0.0), Color.black.opacity(0.34)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+
+            if isCurrent {
+                GeometryReader { geometry in
+                    let playedWidth = max(0, min(geometry.size.width, geometry.size.width * progress))
+
+                    shape
+                        .fill(base)
+                        .frame(width: playedWidth, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-            .offset(x: x - 5, y: (rowHeight - 10) / 2)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        }
+        .clipShape(shape)
     }
 
     private func programProgress(for program: EPGProgram) -> CGFloat {
@@ -771,29 +828,6 @@ struct EPGGridView: View {
         let elapsed = now.timeIntervalSince(program.start)
         let total = program.end.timeIntervalSince(program.start)
         return CGFloat(min(max(elapsed / total, 0), 1))
-    }
-
-    private var loadMoreButton: some View {
-        Button {
-            let newLimit = min(
-                renderLimit + renderPageSize,
-                min(filteredStreams.count, hardRenderCap)
-            )
-            guard newLimit != renderLimit else { return }
-            renderLimit = newLimit
-            scheduleReload()
-        } label: {
-            Label(
-                "Carica altri \(min(renderPageSize, remainingCount)) canali",
-                systemImage: "arrow.down.circle"
-            )
-            .font(.headline)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-        }
-        .foregroundStyle(.white)
-        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .padding(16)
     }
 
     private func logoBackgroundColor(for stream: XtreamStream) -> Color {
@@ -814,13 +848,6 @@ struct EPGGridView: View {
         (programsByStream[stream.streamId] ?? []).filter {
             $0.end > windowStart && $0.start < windowEnd
         }
-    }
-
-    private func groupChannelCount(_ categoryID: String) -> Int {
-        streams.lazy.filter {
-            $0.categoryId?.trimmingCharacters(in: .whitespacesAndNewlines) == categoryID
-        }
-        .count
     }
 
     private static func groupIcon(for groupName: String) -> String {
@@ -898,8 +925,54 @@ struct EPGGridView: View {
         }
     }
 
-    /// Apertura rapida: prima cache immediata, poi rete solo per i canali che
-    /// non hanno dati. Il refresh manuale resta l'unico caso che forza rete.
+    private func loadProgramsIfNeeded(for stream: XtreamStream) async {
+        guard programsByStream[stream.streamId] == nil, !loadingStreamIDs.contains(stream.streamId) else {
+            return
+        }
+        await loadPrograms(for: stream, forceRefresh: false)
+    }
+
+    @MainActor
+    private func loadPrograms(for stream: XtreamStream, forceRefresh: Bool) async {
+        guard !loadingStreamIDs.contains(stream.streamId) else { return }
+
+        let scope = cacheScope
+        if !forceRefresh, let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId) {
+            programsByStream[stream.streamId] = cached
+            failedStreamIDs.remove(stream.streamId)
+            return
+        }
+
+        loadingStreamIDs.insert(stream.streamId)
+        defer { loadingStreamIDs.remove(stream.streamId) }
+
+        do {
+            let programs = try await EPGService(credentials: credentials).shortEPG(
+                streamId: stream.streamId,
+                limit: shortEPGLimit,
+                forceRefresh: forceRefresh
+            )
+            programsByStream[stream.streamId] = programs
+            EPGMemoryCache.shared.store(scope: scope, streamId: stream.streamId, programs: programs)
+
+            if programs.isEmpty {
+                failedStreamIDs.insert(stream.streamId)
+            } else {
+                failedStreamIDs.remove(stream.streamId)
+            }
+        } catch {
+            failedStreamIDs.insert(stream.streamId)
+            DebugLogger.logAsync(
+                .warning,
+                "EPG: caricamento fallito per stream \(stream.streamId): \(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// Apertura rapida: idrata subito dalla cache in memoria, poi effettua
+    /// richieste di rete concorrenti solo per i canali senza dati (o tutti
+    /// in caso di refresh esplicito), con un limite EPG piu' leggero per
+    /// ridurre tempo di risposta e payload della prima apertura.
     @MainActor
     private func reloadEPG(forceRefresh: Bool = false) async {
         loadingIndicatorTask?.cancel()
