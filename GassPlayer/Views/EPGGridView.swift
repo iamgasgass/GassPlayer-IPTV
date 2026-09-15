@@ -2,12 +2,22 @@ import SwiftUI
 
 /// Guida TV a griglia.
 ///
+/// FIX CRITICO: la colonna canali e la timeline usano `VStack` classico,
+/// NON `LazyVStack`. Con soli `renderPageSize` (40) canali per pagina non
+/// c'e' alcun rischio di hang/crash da watchdog, e un `VStack` reale evita
+/// due difetti documentati e riproducibili di `LazyVStack` dentro
+/// `ScrollView`:
+/// 1) contenuto vuoto/"fantasma" quando i dati cambiano dopo il primo
+///    render (Open Radar FB9747151, Apple Developer Forums thread 718929);
+/// 2) `ScrollViewReader.scrollTo(_:)` inaffidabile o silenzioso, perche'
+///    una vista mai istanziata da `LazyVStack` non puo' essere raggiunta
+///    dal proxy di scroll (Stack Overflow #78163553, Apple Developer
+///    Forums thread 745050: "changing LazyVStack to VStack fixes
+///    scrollTo").
+///
 /// ATTENZIONE MANUTENTORI: `channelColumnClip` DEVE chiamare
 /// `channelLabel(for:)`. NON deve mai chiamare `timelineRow(for:)` o
-/// `programBlock(_:stream:)`. Se la colonna canali (larga
-/// `channelColumnWidth` = 148pt) mostra riquadri blu con titolo/orario
-/// programma tagliati invece di icona+nome canale+stella, il bug e'
-/// esattamente questo scambio di funzioni.
+/// `programBlock(_:stream:)`.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -32,6 +42,7 @@ struct EPGGridView: View {
     @State private var reminderToast: String?
     @State private var jumpToNowRequested = false
     @State private var catchupPlayback: CatchupPlayback?
+    @State private var scrollGeneration = 0
 
     @State private var renderLimit = 40
     @State private var reloadTaskBox = TaskBox()
@@ -42,8 +53,11 @@ struct EPGGridView: View {
     private let rowHeight: CGFloat = 60
     private let rulerHeight: CGFloat = 30
 
+    /// Con `VStack` classico (non lazy), questi limiti restano
+    /// deliberatamente contenuti per garantire un rendering istantaneo e
+    /// sicuro anche su dispositivi meno potenti.
     private let renderPageSize = 40
-    private let hardRenderCap = 400
+    private let hardRenderCap = 120
     private let maxConcurrentRequests = 4
     private let shortEPGLimit = 48
     private let searchDebounceNanoseconds: UInt64 = 300_000_000
@@ -133,6 +147,17 @@ struct EPGGridView: View {
         max(0, min(filteredStreams.count, hardRenderCap) - renderLimit)
     }
 
+    /// Identita' stabile della pagina corrente. Usata per forzare la
+    /// ricostruzione completa di colonna canali e timeline quando cambia
+    /// (nuova ricerca, nuovo filtro, altri canali caricati, refresh
+    /// esplicito): questo evita del tutto la classe di bug "contenuto
+    /// vuoto/fantasma dopo un aggiornamento dati" che affligge i
+    /// container che tentano un update incrementale in-place.
+    private var contentIdentity: String {
+        let ids = pagedStreams.map(\.streamId).map(String.init).joined(separator: ",")
+        return "\(ids)#\(scrollGeneration)"
+    }
+
     private var streamIdentity: String {
         let host = credentials.host
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -206,15 +231,18 @@ struct EPGGridView: View {
         }
         .onChange(of: searchQuery) { _, _ in
             renderLimit = min(renderPageSize, max(filteredStreams.count, 1))
+            scrollGeneration += 1
             scheduleReload(debounced: true)
         }
         .onChange(of: showFavoritesOnly) { _, _ in
             renderLimit = min(renderPageSize, max(filteredStreams.count, 1))
+            scrollGeneration += 1
             scheduleReload()
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             timelineStart = calendar.startOfDay(for: Date())
             now = Date()
+            scrollGeneration += 1
             scheduleReload(forceRefresh: true)
         }
         .onReceive(
@@ -249,10 +277,9 @@ struct EPGGridView: View {
             .transition(.move(edge: .top).combined(with: .opacity))
     }
 
-    /// Toolbar ridotta a 3 azioni essenziali (refresh, preferiti, ora
-    /// corrente) per evitare che troppi pulsanti si accavallino con il
-    /// titolo inline su schermi stretti, come osservato nello screenshot
-    /// (titolo "Guida TV" troncato in "G..." accanto a "Chiudi").
+    /// Ogni azione da' un feedback ESPLICITO tramite toast, cosi' l'utente
+    /// vede sempre che il tocco ha avuto effetto — non solo uno spinner
+    /// silenzioso che potrebbe passare inosservato.
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .navigationBarLeading) {
@@ -264,8 +291,11 @@ struct EPGGridView: View {
         ToolbarItem(placement: .navigationBarTrailing) {
             Menu {
                 Button {
+                    reminderToast = "Aggiornamento guida in corso…"
+
                     Task {
                         await xtreamCatalog.refresh(credentials: credentials, kind: kind)
+                        scrollGeneration += 1
                         scheduleReload(forceRefresh: true)
                     }
                 } label: {
@@ -276,6 +306,10 @@ struct EPGGridView: View {
                     withAnimation(.snappy) {
                         showFavoritesOnly.toggle()
                     }
+
+                    reminderToast = showFavoritesOnly
+                        ? "Mostro solo i canali preferiti"
+                        : "Mostro tutti i canali"
                 } label: {
                     Label(
                         showFavoritesOnly ? "Mostra tutti i canali" : "Solo preferiti",
@@ -290,6 +324,7 @@ struct EPGGridView: View {
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
+                    .font(.body.weight(.medium))
             }
             .accessibilityLabel("Altre azioni guida TV")
         }
@@ -396,10 +431,6 @@ struct EPGGridView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                // HStack: SwiftUI garantisce layout affiancato, MAI
-                // sovrapposto. La colonna canali (148pt) e la timeline
-                // (timelineWidth, scrollabile) occupano regioni orizzontali
-                // separate e non possono accavallarsi in un HStack.
                 ZStack(alignment: .topLeading) {
                     HStack(spacing: 0) {
                         channelColumnClip
@@ -424,6 +455,11 @@ struct EPGGridView: View {
                             .padding(10)
                     }
                 }
+                // Forza la ricostruzione COMPLETA di colonna e timeline
+                // quando cambia l'identita' dei dati mostrati, invece di
+                // affidarsi a un aggiornamento incrementale che con i
+                // container a scorrimento e' risultato inaffidabile.
+                .id(contentIdentity)
             }
         }
     }
@@ -436,9 +472,8 @@ struct EPGGridView: View {
             .clipped()
     }
 
-    /// Colonna canali fissa. DEVE renderizzare `channelLabel(for:)` per
-    /// ogni stream. Se qui compare `timelineRow` o `programBlock`, e' il
-    /// bug che produce i riquadri blu troncati al posto dei nomi canale.
+    /// Colonna canali fissa: `VStack` classico. DEVE renderizzare
+    /// `channelLabel(for:)` per ogni stream.
     private var channelColumnClip: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(pagedStreams) { stream in
@@ -473,14 +508,16 @@ struct EPGGridView: View {
         .accessibilityLabel("Carica altri \(min(renderPageSize, remainingCount)) canali")
     }
 
-    /// Timeline scorrevole. Renderizza `timelineRow(for:)`, MAI
-    /// `channelLabel`. Vive dentro un vero `ScrollView`, quindi
-    /// `LazyVStack` qui e' corretto.
+    /// Timeline scorrevole: `VStack` classico (non lazy). Renderizza
+    /// `timelineRow(for:)`, MAI `channelLabel`. Con `VStack` reale,
+    /// `proxy.scrollTo("nowAnchor")` funziona in modo affidabile perche'
+    /// la vista target esiste sempre nell'albero, indipendentemente dallo
+    /// scroll corrente.
     private var timelineScroll: some View {
         ScrollViewReader { proxy in
             ScrollView([.horizontal, .vertical], showsIndicators: true) {
                 ZStack(alignment: .topLeading) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
                         ForEach(pagedStreams) { stream in
                             timelineRow(for: stream)
                         }
@@ -512,10 +549,11 @@ struct EPGGridView: View {
                     )
                 }
 
+                reminderToast = "Posizionato sull'orario corrente"
                 jumpToNowRequested = false
             }
             .onAppear {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                     withAnimation(.snappy) {
                         proxy.scrollTo(
                             "nowAnchor",
@@ -549,9 +587,6 @@ struct EPGGridView: View {
         .frame(width: timelineWidth, alignment: .leading)
     }
 
-    /// Etichetta canale: icona, nome, stato EPG breve, stella preferiti.
-    /// Sfondo `.ultraThinMaterial` rettangolare — NON un riquadro blu
-    /// arrotondato come i blocchi programma.
     private func channelLabel(for stream: XtreamStream) -> some View {
         HStack(spacing: 8) {
             AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
@@ -879,6 +914,7 @@ struct EPGGridView: View {
         }
 
         renderLimit = newLimit
+        scrollGeneration += 1
         scheduleReload()
     }
 
@@ -1002,6 +1038,7 @@ struct EPGGridView: View {
             return
         }
 
+        scrollGeneration += 1
         isInitialEPGLoad = false
         isRefreshingEPG = false
     }
