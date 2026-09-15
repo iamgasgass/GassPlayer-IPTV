@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// EPG touch-first con geometria a coordinata temporale fissa: il cursore
-/// live (ora + freccia in giu') resta ancorato nel layout, mentre la timeline
-/// e le tile avanzano progressivamente verso sinistra sotto quell'asse.
-/// La colonna banner e l'inizio della timeline sono coordinate esplicite e
-/// condivise, cosi' logo e prima tile iniziano sempre nello stesso punto.
+/// EPG touch-first con una sola coordinata temporale live: nella sezione
+/// oraria sopra le tile si vedono ore passate, l'ora corrente con freccia
+/// bianca in giu' e le ore future. Il marker resta fisso; al passare del
+/// tempo ore e programmi scorrono progressivamente verso sinistra sotto di
+/// esso. Il confine pieno/trasparente di ogni tile usa il medesimo asse.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -38,19 +38,20 @@ struct EPGGridView: View {
     private let searchDebounceNanoseconds: UInt64 = 250_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 300_000_000
 
-    // Layout reference geometry: shared x-boundaries for banners and timeline.
+    // Coordinate layout condivise da banner, riga ore e tile.
     private let horizontalLayoutInset: CGFloat = 16
     private let channelColumnWidth: CGFloat = 86
     private let channelColumnGap: CGFloat = 12
     private let rowHeight: CGFloat = 96
     private let bannerHeight: CGFloat = 76
     private let blockHeight: CGFloat = 82
+    private let timeAxisHeight: CGFloat = 34
     private let timelineTopInset: CGFloat = 6
     private let pixelsPerMinute: CGFloat = 1.85
     private let minimumProgramBlockWidth: CGFloat = 46
     private let liveAnchorRatio: CGFloat = 0.26
 
-    // Time window: content travels from right to left under a fixed live axis.
+    // Finestra: 45 minuti passati + 135 minuti futuri.
     private let pastWindow: TimeInterval = 45 * 60
     private let futureWindow: TimeInterval = 135 * 60
 
@@ -103,7 +104,7 @@ struct EPGGridView: View {
         return normalized.isEmpty ? nil : normalized
     }
 
-    /// Playlist order is intentionally preserved for both "Tutti" and groups.
+    /// Ordine originale playlist/provider, anche nel menu dei gruppi.
     private var groupsWithCounts: (groups: [XtreamCategory], counts: [String: Int]) {
         var counts: [String: Int] = [:]
         var seenIDs = Set<String>()
@@ -113,6 +114,7 @@ struct EPGGridView: View {
             guard let raw = stream.categoryId else { continue }
             let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !id.isEmpty, id != "0" else { continue }
+
             counts[id, default: 0] += 1
             if seenIDs.insert(id).inserted {
                 orderedIDs.append(id)
@@ -225,6 +227,10 @@ struct EPGGridView: View {
 
     private var displayedTimeLabel: String {
         isToday ? now.formatted(date: .omitted, time: .shortened) : "12:00"
+    }
+
+    private var previousTimeLabel: String {
+        windowStart.formatted(date: .omitted, time: .shortened)
     }
 
     private var dayTitle: String {
@@ -361,9 +367,9 @@ struct EPGGridView: View {
         }
     }
 
-    /// The fixed live anchor is resolved from real available width. The clock
-    /// and arrow remain fixed at that coordinate; timeline content is shifted
-    /// by the same amount so programs move beneath the marker as time changes.
+    /// Riga ore, freccia e tile usano lo stesso viewport. Il marker rimane
+    /// fermo; l'origine temporale cambia ogni minuto, quindi ore e tile si
+    /// muovono verso sinistra senza creare un secondo indicatore nella tile.
     private var epgGrid: some View {
         GeometryReader { proxy in
             let availableTimelineWidth = max(
@@ -372,13 +378,12 @@ struct EPGGridView: View {
             )
             let fixedLiveX = availableTimelineWidth * liveAnchorRatio
             let contentOriginX = fixedLiveX - CGFloat(pastWindow / 60) * pixelsPerMinute
-            let totalContentWidth = max(
-                availableTimelineWidth - contentOriginX,
-                timelineWidth
-            )
+            let canvasWidth = max(availableTimelineWidth - contentOriginX, timelineWidth)
 
             HStack(alignment: .top, spacing: channelColumnGap) {
                 LazyVStack(spacing: 0) {
+                    timeAxisLeadingCell
+
                     ForEach(pagedStreams) { stream in
                         channelBanner(stream)
                             .frame(width: channelColumnWidth, height: rowHeight)
@@ -386,20 +391,22 @@ struct EPGGridView: View {
                 }
 
                 ZStack(alignment: .topLeading) {
-                    // Fixed marker in the viewport: it never moves with time.
-                    if isToday {
-                        liveTimelineMarker
-                            .offset(x: fixedLiveX - 15, y: -2)
-                            .zIndex(3)
-                    }
+                    timeAxisRow(
+                        canvasWidth: canvasWidth,
+                        contentOriginX: contentOriginX,
+                        fixedLiveX: fixedLiveX
+                    )
+                    .offset(x: contentOriginX)
 
-                    // Timeline content changes origin as current time advances.
                     LazyVStack(spacing: 0) {
+                        Color.clear.frame(height: timeAxisHeight)
+
                         ForEach(pagedStreams) { stream in
                             timelineRow(
                                 for: stream,
-                                canvasWidth: totalContentWidth,
-                                contentOriginX: contentOriginX
+                                canvasWidth: canvasWidth,
+                                contentOriginX: contentOriginX,
+                                fixedLiveX: fixedLiveX
                             )
                             .task(id: stream.streamId) {
                                 await loadProgramsIfNeeded(for: stream)
@@ -407,13 +414,19 @@ struct EPGGridView: View {
                         }
                     }
                     .offset(x: contentOriginX)
+
+                    if isToday {
+                        fixedLiveMarker
+                            .offset(x: fixedLiveX - 15, y: 0)
+                            .zIndex(5)
+                    }
                 }
                 .frame(width: availableTimelineWidth, alignment: .leading)
                 .clipped()
             }
             .padding(.horizontal, horizontalLayoutInset)
         }
-        .frame(height: CGFloat(pagedStreams.count) * rowHeight)
+        .frame(height: timeAxisHeight + CGFloat(pagedStreams.count) * rowHeight)
     }
 
     // MARK: - Toolbar Liquid Glass
@@ -533,9 +546,7 @@ struct EPGGridView: View {
         } else {
             pill
                 .background(.ultraThinMaterial, in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.6)
-                }
+                .overlay { Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.6) }
         }
     }
 
@@ -567,8 +578,9 @@ struct EPGGridView: View {
         .padding(.bottom, 18)
     }
 
-    /// "Oggi" and the fixed live time remain in their dedicated header area.
-    /// The arrow is the fixed reference; only EPG content below advances.
+    /// A fianco a Oggi: solo l'ora precedente alla finestra, senza freccia
+    /// duplicata. La freccia/ora corrente esistono una sola volta nella riga
+    /// oraria EPG, come riferimento temporale della griglia.
     private var dayTimeHeader: some View {
         HStack(alignment: .center, spacing: 14) {
             Button {
@@ -581,18 +593,10 @@ struct EPGGridView: View {
             }
             .buttonStyle(.plain)
 
-            if isToday {
-                HStack(spacing: 4) {
-                    Text(displayedTimeLabel)
-                        .font(.system(size: 17, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                    Image(systemName: "arrowtriangle.down.fill")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Ora corrente \(displayedTimeLabel)")
-            }
+            Text(previousTimeLabel)
+                .font(.system(size: 18, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.48))
+                .monospacedDigit()
 
             Spacer()
 
@@ -611,21 +615,60 @@ struct EPGGridView: View {
         .padding(.bottom, 16)
     }
 
-    /// The same clock + down arrow is placed at the invariant visual x-axis
-    /// over the EPG viewport. It is intentionally independent from timeline
-    /// content so it remains stationary while tiles progress under it.
-    private var liveTimelineMarker: some View {
-        VStack(spacing: 2) {
+    private var timeAxisLeadingCell: some View {
+        Color.clear
+            .frame(width: channelColumnWidth, height: timeAxisHeight)
+    }
+
+    /// Ore passate, ora live e ore future: il contenuto della riga si muove
+    /// con la stessa origine delle tile. La freccia separata resta fissa sopra
+    /// la sua coordinata live, pertanto il tempo scorre sotto l'indicatore.
+    private func timeAxisRow(
+        canvasWidth: CGFloat,
+        contentOriginX: CGFloat,
+        fixedLiveX: CGFloat
+    ) -> some View {
+        let firstHour = Calendar.autoupdatingCurrent.date(
+            bySetting: .minute,
+            value: 0,
+            of: windowStart
+        ) ?? windowStart
+        let numberOfTicks = Int(ceil(windowDuration / 3600)) + 2
+
+        return ZStack(alignment: .topLeading) {
+            ForEach(0..<numberOfTicks, id: \.self) { index in
+                let date = firstHour.addingTimeInterval(TimeInterval(index) * 3600)
+                let minuteOffset = date.timeIntervalSince(windowStart) / 60
+                let x = CGFloat(minuteOffset) * pixelsPerMinute
+
+                Text(date.formatted(date: .omitted, time: .shortened))
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.48))
+                    .fixedSize()
+                    .offset(x: x, y: 4)
+            }
+        }
+        .frame(width: canvasWidth, height: timeAxisHeight, alignment: .topLeading)
+    }
+
+    /// Unico indicatore live della guida: ora esatta sopra, freccia bianca in
+    /// giu' sotto. E' fermo nel viewport all'asse `fixedLiveX`; non e' mai
+    /// duplicato nelle tile, nelle righe o nell'header.
+    private var fixedLiveMarker: some View {
+        VStack(spacing: 1) {
             Text(displayedTimeLabel)
-                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .monospacedDigit()
                 .foregroundStyle(.white)
                 .fixedSize()
+
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(.white)
-                .shadow(color: .white.opacity(0.75), radius: 3)
+                .shadow(color: .white.opacity(0.80), radius: 3)
         }
-        .frame(width: 30, alignment: .center)
+        .frame(width: 30, height: timeAxisHeight, alignment: .top)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -633,7 +676,8 @@ struct EPGGridView: View {
     private func timelineRow(
         for stream: XtreamStream,
         canvasWidth: CGFloat,
-        contentOriginX: CGFloat
+        contentOriginX: CGFloat,
+        fixedLiveX: CGFloat
     ) -> some View {
         let programs = visiblePrograms(for: stream)
 
@@ -645,7 +689,8 @@ struct EPGGridView: View {
                     programBlock(
                         program,
                         stream: stream,
-                        contentOriginX: contentOriginX
+                        contentOriginX: contentOriginX,
+                        fixedLiveX: fixedLiveX
                     )
                 }
             }
@@ -654,9 +699,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner geometry uses the fixed 86pt column and 76pt height, vertically
-    /// centered in its 96pt row. Its leading/trailing edges therefore match
-    /// every row exactly, and the timeline begins after one shared 12pt gap.
+    /// Banner canale: 86x76 centrato nella riga 96, colonna e gap invarianti.
     private func channelBanner(_ stream: XtreamStream) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -714,13 +757,14 @@ struct EPGGridView: View {
         .frame(width: width, height: rowHeight, alignment: .leading)
     }
 
-    /// Tile width remains purely temporal. `contentOriginX` converts every
-    /// program's absolute time coordinate into the fixed-anchor canvas; the
-    /// result makes the tile stream progress leftward under the live marker.
+    /// Larghezza tile = durata reale. Il taglio cromatico e' calcolato con
+    /// l'identica geometria della freccia fissa: nella viewport il bordo fra
+    /// pieno e trasparente cade sul suo asse, mentre le tile avanzano sotto.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
-        contentOriginX: CGFloat
+        contentOriginX: CGFloat,
+        fixedLiveX: CGFloat
     ) -> some View {
         let clippedStart = max(program.start, windowStart)
         let clippedEnd = min(program.end, windowEnd)
@@ -728,7 +772,7 @@ struct EPGGridView: View {
         let durationMinutes = max(1, clippedEnd.timeIntervalSince(clippedStart) / 60)
         let width = max(minimumProgramBlockWidth, CGFloat(durationMinutes) * pixelsPerMinute)
         let startX = CGFloat(startMinutes) * pixelsPerMinute
-        let liveCutInTile = isToday ? min(max(-contentOriginX - startX + liveAnchorLocalOffset, 0), width) : width
+        let brightWidth = isToday ? min(max(fixedLiveX - (contentOriginX + startX), 0), width) : width
 
         return Button {
             selectedProgram = SelectedProgram(program: program, stream: stream)
@@ -757,7 +801,7 @@ struct EPGGridView: View {
             programTileBackground(
                 stream: stream,
                 program: program,
-                brightWidth: liveCutInTile
+                brightWidth: brightWidth
             )
         }
         .offset(x: startX, y: timelineTopInset)
@@ -766,17 +810,9 @@ struct EPGGridView: View {
         )
     }
 
-    /// In the local canvas generated by `timelineRow`, fixedLiveX is restored
-    /// by `contentOriginX`; this term resolves to the exact live x position
-    /// relative to the tile. Keeping the calculation centralized prevents
-    /// visual drift between the marker and the bright/blurred transition.
-    private var liveAnchorLocalOffset: CGFloat {
-        CGFloat(pastWindow / 60) * pixelsPerMinute
-    }
-
-    /// Future/right side: muted frosted blur. Past/left side: dense saturated
-    /// color. The cut occurs at `brightWidth`, which maps to the stationary
-    /// live arrow in the visible viewport.
+    /// Sinistra = colore pieno/acceso; destra = vetro sfumato, trasparente e
+    /// blurred. La transizione parte precisamente da brightWidth, cioe' sotto
+    /// la freccia live per il programma che interseca l'istante corrente.
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
@@ -787,22 +823,22 @@ struct EPGGridView: View {
         let base = programColor(for: stream, program: program)
 
         ZStack(alignment: .leading) {
-            shape.fill(base.opacity(0.22))
+            shape.fill(base.opacity(0.20))
 
             shape
                 .fill(
                     LinearGradient(
-                        colors: [base.opacity(0.38), base.opacity(0.16), Color.black.opacity(0.28)],
+                        colors: [base.opacity(0.34), base.opacity(0.14), Color.black.opacity(0.30)],
                         startPoint: .leading,
                         endPoint: .trailing
                     )
                 )
                 .blur(radius: 12)
-                .opacity(0.88)
+                .opacity(0.90)
 
             shape.fill(
                 LinearGradient(
-                    colors: [Color.black.opacity(0.02), Color.black.opacity(0.48)],
+                    colors: [Color.black.opacity(0.02), Color.black.opacity(0.50)],
                     startPoint: .leading,
                     endPoint: .trailing
                 )
