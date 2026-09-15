@@ -1,10 +1,14 @@
 import Foundation
 
+// MARK: - Credentials
+
 struct XtreamCredentials: Codable, Equatable {
     var host: String
     var username: String
     var password: String
 }
+
+// MARK: - Authentication response
 
 struct XtreamAuthResponse: Codable {
     struct UserInfo: Codable {
@@ -13,7 +17,8 @@ struct XtreamAuthResponse: Codable {
         let expDate: String?
 
         enum CodingKeys: String, CodingKey {
-            case username, status
+            case username
+            case status
             case expDate = "exp_date"
         }
     }
@@ -32,11 +37,15 @@ struct XtreamAuthResponse: Codable {
     }
 }
 
+// MARK: - Categories
+
 struct XtreamCategory: Identifiable, Hashable {
     let categoryId: String
     let categoryName: String
 
-    var id: String { categoryId }
+    var id: String {
+        categoryId
+    }
 }
 
 extension XtreamCategory: Decodable {
@@ -60,6 +69,8 @@ extension XtreamCategory: Decodable {
     }
 }
 
+// MARK: - Live and VOD streams
+
 struct XtreamStream: Identifiable, Hashable {
     let streamId: Int
     let name: String
@@ -67,7 +78,9 @@ struct XtreamStream: Identifiable, Hashable {
     let categoryId: String?
     let containerExtension: String?
 
-    var id: Int { streamId }
+    var id: Int {
+        streamId
+    }
 }
 
 extension XtreamStream: Decodable {
@@ -105,49 +118,70 @@ extension XtreamStream: Decodable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .nonEmpty
 
-        containerExtension = container.decodeFlexibleString(forKey: .containerExtension)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .nonEmpty
+        containerExtension = container.decodeFlexibleString(
+            forKey: .containerExtension
+        )?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        .nonEmpty
     }
 }
 
-enum XtreamStreamKind: String, CaseIterable, Identifiable {
-    case live, movie, series
+// MARK: - Stream kind
 
-    var id: String { rawValue }
+enum XtreamStreamKind: String, CaseIterable, Identifiable {
+    case live
+    case movie
+    case series
+
+    var id: String {
+        rawValue
+    }
 
     var pathComponent: String {
         switch self {
-        case .live: return "live"
-        case .movie: return "movie"
-        case .series: return "series"
+        case .live:
+            return "live"
+        case .movie:
+            return "movie"
+        case .series:
+            return "series"
         }
     }
 
     var displayName: String {
         switch self {
-        case .live: return "Live TV"
-        case .movie: return "Film (VOD)"
-        case .series: return "Serie TV"
+        case .live:
+            return "Live TV"
+        case .movie:
+            return "Film (VOD)"
+        case .series:
+            return "Serie TV"
         }
     }
 
     var systemImage: String {
         switch self {
-        case .live: return "tv"
-        case .movie: return "film"
-        case .series: return "rectangle.stack.fill"
+        case .live:
+            return "tv"
+        case .movie:
+            return "film"
+        case .series:
+            return "rectangle.stack.fill"
         }
     }
 
     var defaultExtension: String {
         switch self {
-        case .live: return "m3u8"
-        case .movie, .series: return "mp4"
+        case .live:
+            return "m3u8"
+        case .movie, .series:
+            return "mp4"
         }
     }
 }
+
+// MARK: - Errors
 
 enum XtreamError: LocalizedError {
     case malformedHost(String)
@@ -181,14 +215,18 @@ enum XtreamError: LocalizedError {
     }
 }
 
-// MARK: - Flexible decoding helpers
+// MARK: - Flexible decoding
 
+/// Decodifica difensiva per provider Xtream non uniformi.
+///
+/// Esiste una sola estensione `KeyedDecodingContainer` in questo file e una
+/// sola definizione per ogni metodo. Non aggiungere copie generiche con
+/// `<K: CodingKey> where K == Key`: dopo la specializzazione sarebbero
+/// equivalenti a queste firme e Swift produrrebbe `invalid redeclaration`.
 extension KeyedDecodingContainer {
-    /// Decodifica una stringa tollerando provider Xtream che restituiscono
-    /// lo stesso campo come String, Int, Double, Bool o null. Le firme usano
-    /// direttamente `Key` (tipo associato del container) e sono quindi
-    /// compatibili con Swift 6: nessun parametro generico ridondante o
-    /// shadowing di `Key`.
+    /// Legge un valore come stringa, tollerando String, Int, Double, Bool o
+    /// null. I provider Xtream spesso restituiscono lo stesso campo con tipi
+    /// diversi tra endpoint e categorie.
     func decodeFlexibleString(forKey key: Key) -> String? {
         if let value = try? decodeIfPresent(String.self, forKey: key) {
             return value
@@ -199,7 +237,9 @@ extension KeyedDecodingContainer {
         }
 
         if let value = try? decodeIfPresent(Double.self, forKey: key) {
-            return value.rounded() == value ? String(Int(value)) : String(value)
+            return value.rounded() == value
+                ? String(Int(value))
+                : String(value)
         }
 
         if let value = try? decodeIfPresent(Bool.self, forKey: key) {
@@ -209,9 +249,9 @@ extension KeyedDecodingContainer {
         return nil
     }
 
-    /// Decodifica un intero tollerando numeri JSON, double e stringhe
-    /// numeriche. Un valore non interpretabile restituisce nil anziche'
-    /// provocare un errore dell'intera risposta catalogo.
+    /// Legge un valore come intero, tollerando Int, Double e stringhe
+    /// numeriche. Un valore non interpretabile restituisce nil senza
+    /// far fallire l'intera decodifica della playlist.
     func decodeFlexibleInt(forKey key: Key) -> Int? {
         if let value = try? decodeIfPresent(Int.self, forKey: key) {
             return value
@@ -222,14 +262,18 @@ extension KeyedDecodingContainer {
         }
 
         if let value = try? decodeIfPresent(String.self, forKey: key) {
-            return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
+            let normalized = value.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
+            return Int(normalized)
         }
 
         return nil
     }
 
-    /// Decodifica booleani da bool nativo, 0/1 numerici o le rappresentazioni
-    /// stringa comuni pubblicate da provider Xtream non uniformi.
+    /// Legge un booleano, tollerando Bool, numeri 0/1 e le rappresentazioni
+    /// testuali piu' comuni restituite da pannelli Xtream incompatibili.
     func decodeFlexibleBool(forKey key: Key) -> Bool? {
         if let value = try? decodeIfPresent(Bool.self, forKey: key) {
             return value
@@ -244,7 +288,10 @@ extension KeyedDecodingContainer {
         }
 
         if let value = try? decodeIfPresent(String.self, forKey: key) {
-            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            switch value.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            .lowercased() {
             case "1", "true", "yes", "y":
                 return true
             case "0", "false", "no", "n", "":
@@ -258,9 +305,11 @@ extension KeyedDecodingContainer {
     }
 }
 
+// MARK: - String utilities
+
 extension String {
-    /// Converte stringhe vuote in nil per non propagare URL, categorie o
-    /// titoli semanticamente assenti come stringhe non opzionali vuote.
+    /// Trasforma una stringa vuota in nil; evita URL, categorie e titoli
+    /// semanticamente assenti ma tecnicamente non opzionali.
     var nonEmpty: String? {
         isEmpty ? nil : self
     }
