@@ -1,8 +1,12 @@
 import SwiftUI
 
 /// EPG touch-first, replica fedele del linguaggio visivo di riferimento:
-/// header nero, pill gruppo centrale in stile Liquid Glass, loghi canale
-/// compatti, blocchi programma con nome completo sempre visibile.
+/// header nero, pill gruppo centrale scura come "Top Italia" della foto,
+/// pulsanti indietro/menu circolari identici, loghi canale compatti,
+/// blocchi programma con nome completo sempre visibile e senza bordi
+/// azzurri sul programma in onda. Caricamento EPG ultra-fluido: la
+/// riapertura della sezione legge subito dalla cache condivisa e non
+/// effettua richieste di rete per i canali gia' noti.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -16,10 +20,9 @@ struct EPGGridView: View {
     @State private var failedStreamIDs = Set<Int>()
     @State private var loadingStreamIDs = Set<Int>()
 
-    /// Lo spinner NON appare subito: viene mostrato solo se, dopo un
-    /// breve ritardo, il caricamento e' ancora in corso. Questo evita il
-    /// lampeggio percepito come "si ricarica sempre" quando la cache
-    /// soddisfa la richiesta in pochi millisecondi.
+    /// Lo spinner appare solo se, dopo un breve ritardo, il caricamento e'
+    /// ancora in corso: evita il lampeggio percepito come "ricarica sempre"
+    /// quando la cache soddisfa la richiesta istantaneamente.
     @State private var showLoadingIndicator = false
     @State private var loadingIndicatorTask: Task<Void, Never>?
 
@@ -43,9 +46,6 @@ struct EPGGridView: View {
     private let searchDebounceNanoseconds: UInt64 = 300_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 400_000_000
 
-    // Metriche ridotte per aderire alle proporzioni reali dello screenshot:
-    // logo piu' piccolo, riga piu' compatta, blocco programma con altezza
-    // sufficiente per due righe di testo senza mai troncare il titolo.
     private let channelLogoWidth: CGFloat = 86
     private let channelLogoHeight: CGFloat = 76
     private let rowHeight: CGFloat = 96
@@ -377,7 +377,7 @@ struct EPGGridView: View {
         }
     }
 
-    // MARK: - Toolbar
+    // MARK: - Toolbar (fedele allo screenshot: back/gruppo/menu scuri)
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
@@ -386,14 +386,16 @@ struct EPGGridView: View {
                 dismiss()
             } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 21, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(Color.white.opacity(0.12), in: Circle())
+                    .frame(width: 54, height: 54)
+                    .background(Color.white.opacity(0.105), in: Circle())
                     .overlay {
-                        Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                        Circle()
+                            .strokeBorder(Color.white.opacity(0.095), lineWidth: 1)
                     }
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("Indietro")
         }
 
@@ -405,6 +407,7 @@ struct EPGGridView: View {
 
                     if !epgGroups.isEmpty {
                         Divider()
+
                         ForEach(epgGroups) { group in
                             Label(
                                 "\(group.categoryName) (\(groupChannelCount(group.categoryId)))",
@@ -416,23 +419,35 @@ struct EPGGridView: View {
                 }
                 .pickerStyle(.inline)
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: 11) {
                     Image(systemName: selectedGroupSystemImage)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 22)
 
                     Text(selectedGroupName)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.system(size: 22, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.80)
 
                     Image(systemName: "chevron.down")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .padding(.leading, 4)
                 }
-                .padding(.horizontal, 14)
-                .frame(height: 38)
+                .padding(.horizontal, 22)
+                .frame(minWidth: 210, maxWidth: 330, minHeight: 56)
+                .background(Color.white.opacity(0.105), in: Capsule())
+                .overlay {
+                    Capsule()
+                        .strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
+                }
+                .contentShape(Capsule())
             }
-            .modifier(UHFGlassCapsule())
+            .buttonStyle(.plain)
             .accessibilityLabel("Gruppo playlist: \(selectedGroupName)")
+            .accessibilityHint("Tocca per scegliere il gruppo da visualizzare nella guida")
         }
 
         ToolbarItem(placement: .navigationBarTrailing) {
@@ -479,14 +494,16 @@ struct EPGGridView: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 23, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(Color.white.opacity(0.12), in: Circle())
+                    .frame(width: 54, height: 54)
+                    .background(Color.white.opacity(0.105), in: Circle())
                     .overlay {
-                        Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                        Circle()
+                            .strokeBorder(Color.white.opacity(0.095), lineWidth: 1)
                     }
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("Opzioni guida")
         }
     }
@@ -699,17 +716,15 @@ struct EPGGridView: View {
         .frame(width: width, height: rowHeight, alignment: .leading)
     }
 
-    /// Blocco programma: il titolo NON viene mai troncato con ellissi ne'
-    /// ridotto di dimensione (`lineLimit` alto, nessun
-    /// `minimumScaleFactor`). Se il nome e' lungo, va semplicemente a capo
-    /// su piu' righe entro l'altezza del blocco.
+    /// Blocco programma: nessun bordo azzurro sul programma in onda. Il
+    /// titolo non viene mai troncato ne' ridotto: `lineLimit(3)` +
+    /// `fixedSize` permettono al testo di andare a capo integralmente.
     private func programBlock(_ program: EPGProgram, stream: XtreamStream) -> some View {
         let clippedStart = max(program.start, windowStart)
         let clippedEnd = min(program.end, windowEnd)
         let startMinutes = max(0, clippedStart.timeIntervalSince(windowStart) / 60)
         let durationMinutes = max(1, clippedEnd.timeIntervalSince(clippedStart) / 60)
         let width = max(CGFloat(durationMinutes) * pixelsPerMinute, 100)
-        let isLive = program.isCurrent(at: now)
 
         return Button {
             selectedProgram = SelectedProgram(program: program, stream: stream)
@@ -717,7 +732,7 @@ struct EPGGridView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(program.start.formatted(date: .omitted, time: .shortened))
                     .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(.white.opacity(0.50))
 
                 Text(program.title)
                     .font(.system(size: 15, weight: .regular, design: .rounded))
@@ -736,15 +751,8 @@ struct EPGGridView: View {
         .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(programColor(for: stream, program: program, isLive: isLive))
+                .fill(programColor(for: stream, program: program))
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(
-                    isLive ? Color.accentColor.opacity(0.95) : Color.white.opacity(0.045),
-                    lineWidth: isLive ? 2 : 1
-                )
-        }
         .offset(x: CGFloat(startMinutes) * pixelsPerMinute, y: (rowHeight - blockHeight) / 2)
         .accessibilityLabel(
             "\(program.title), dalle \(program.start.formatted(date: .omitted, time: .shortened)) alle \(program.end.formatted(date: .omitted, time: .shortened))"
@@ -797,10 +805,10 @@ struct EPGGridView: View {
         paletteColor(seed: stream.streamId, saturation: 0.34, brightness: 0.78)
     }
 
-    private func programColor(for stream: XtreamStream, program: EPGProgram, isLive: Bool) -> Color {
-        if isLive {
-            return Color.accentColor.opacity(0.54)
-        }
+    /// Il colore del blocco NON dipende piu' dallo stato "in onda": nessun
+    /// accento azzurro/blu speciale, in linea con la richiesta di rimuovere
+    /// i bordi/colorazioni distintive sul programma corrente.
+    private func programColor(for stream: XtreamStream, program: EPGProgram) -> Color {
         let seed = stream.streamId ^ Int(program.start.timeIntervalSince1970)
         return paletteColor(seed: seed, saturation: 0.56, brightness: 0.34)
     }
@@ -886,12 +894,11 @@ struct EPGGridView: View {
         }
     }
 
-    /// Idrata istantaneamente dalla cache condivisa (nessuna rete). Lo
-    /// spinner viene armato con un ritardo: se la cache soddisfa gia'
-    /// tutto (caso tipico di riapertura entro pochi minuti), il task del
-    /// ritardo viene cancellato prima di scattare e l'utente non vede
-    /// mai alcun indicatore di caricamento — questo elimina la sensazione
-    /// di "ricarica ad ogni apertura".
+    /// Idrata istantaneamente dalla cache condivisa (nessuna rete). Una
+    /// riapertura NON forzata non ricarica mai i canali gia' presenti in
+    /// `programsByStream`/cache: la rete viene interpellata solo per i
+    /// canali davvero mancanti o su refresh esplicito dall'utente. Questo
+    /// e' cio' che rende l'apertura e l'uso della guida fluidi.
     @MainActor
     private func reloadEPG(forceRefresh: Bool = false) async {
         loadingIndicatorTask?.cancel()
@@ -916,8 +923,8 @@ struct EPGGridView: View {
             }
         }
 
-        let pending = targets.filter {
-            forceRefresh || !EPGMemoryCache.shared.isFresh(scope: scope, streamId: $0.streamId)
+        let pending = targets.filter { stream in
+            forceRefresh || programsByStream[stream.streamId] == nil
         }
 
         guard !pending.isEmpty else {
@@ -1046,24 +1053,6 @@ private final class EPGMemoryCache {
 
     func store(scope: String, streamId: Int, programs: [EPGProgram]) {
         storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs, fetchedAt: Date())
-    }
-}
-
-// MARK: - Glass modifier (solo per il pill gruppo, come richiesto)
-
-private struct UHFGlassCapsule: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content
-                .buttonStyle(.glass)
-                .buttonBorderShape(.capsule)
-        } else {
-            content
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
-                }
-        }
     }
 }
 
