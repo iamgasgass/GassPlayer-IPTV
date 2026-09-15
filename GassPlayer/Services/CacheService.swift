@@ -1,5 +1,11 @@
 import Foundation
 
+/// Cache generica in memoria, con scadenza per voce (TTL) e invalidazione
+/// per chiave singola o per prefisso. Usata da `CachedXtreamRepository`
+/// (categorie/stream/catalogo) ed `EPGService` (guida breve/completa).
+///
+/// Tutte le operazioni sono isolate nell'actor: non serve sincronizzazione
+/// aggiuntiva lato chiamante.
 actor CacheService {
     static let shared = CacheService()
 
@@ -10,186 +16,82 @@ actor CacheService {
 
     private var store: [String: Entry] = [:]
 
+    /// Restituisce il valore memorizzato per `key` se presente e non scaduto.
+    /// Una voce scaduta viene rimossa immediatamente (lazy eviction).
     func value<T>(for key: String) -> T? {
-        guard let entry = store[key], entry.expiresAt > Date() else {
-            store[key] = nil
+        guard let entry = store[key] else {
+            return nil
+        }
+
+        guard entry.expiresAt > Date() else {
+            store.removeValue(forKey: key)
             return nil
         }
 
         return entry.value as? T
     }
 
+    /// Memorizza `value` per `key` con una scadenza a `ttl` secondi da ora.
+    /// Un `ttl` <= 0 rimuove immediatamente la chiave, se presente.
     func set<T>(
         _ value: T,
         for key: String,
         ttl: TimeInterval = 300
     ) {
+        guard ttl > 0 else {
+            store.removeValue(forKey: key)
+            return
+        }
+
         store[key] = Entry(
             value: value,
             expiresAt: Date().addingTimeInterval(ttl)
         )
     }
 
+    /// Rimuove una singola chiave, indipendentemente dalla scadenza.
+    /// Indispensabile per invalidare l'EPG di un canale specifico senza
+    /// distruggere la cache degli altri canali o del catalogo.
+    func removeValue(for key: String) {
+        store.removeValue(forKey: key)
+    }
+
+    /// Rimuove tutte le chiavi che iniziano con `prefix`.
+    /// Usata per invalidazioni di gruppo (es. tutte le categorie live,
+    /// oppure tutte le varianti di short EPG di un canale).
     func invalidate(prefix: String) {
         let keys = store.keys.filter { $0.hasPrefix(prefix) }
 
         for key in keys {
-            store[key] = nil
+            store.removeValue(forKey: key)
         }
     }
 
+    /// Pulizia proattiva delle voci scadute. Non obbligatoria (la lettura
+    /// e' gia' lazy), ma utile per contenere la memoria se la cache riceve
+    /// molte chiavi effimere (es. EPG di playlist molto grandi).
+    func removeExpiredValues() {
+        let now = Date()
+
+        store = store.filter { _, entry in
+            entry.expiresAt > now
+        }
+    }
+
+    /// Conteggio voci correnti, opzionalmente filtrate per prefisso.
+    /// Utile per diagnostica/debug console.
+    func count(prefix: String? = nil) -> Int {
+        removeExpiredValues()
+
+        guard let prefix else {
+            return store.count
+        }
+
+        return store.keys.lazy.filter { $0.hasPrefix(prefix) }.count
+    }
+
+    /// Svuota completamente la cache. Usare solo per logout/reset totale.
     func clearAll() {
-        store.removeAll()
-    }
-}
-
-actor CachedXtreamRepository {
-    private let api: XtreamAPIService
-    private let cachePrefix: String
-
-    init(credentials: XtreamCredentials) {
-        api = XtreamAPIService(credentials: credentials)
-        cachePrefix = Self.makeCachePrefix(credentials: credentials)
-    }
-
-    func categories(
-        kind: XtreamStreamKind,
-        forceRefresh: Bool = false
-    ) async throws -> [XtreamCategory] {
-        let key = "\(cachePrefix).categories.\(kind.rawValue)"
-
-        if !forceRefresh,
-           let cached: [XtreamCategory] = await CacheService.shared.value(
-            for: key
-           ) {
-            return cached
-        }
-
-        let result = try await RetryPolicy.withRetry(
-            shouldRetry: Self.shouldRetry
-        ) {
-            try await self.api.fetchCategories(kind: kind)
-        }
-
-        await CacheService.shared.set(result, for: key, ttl: 600)
-        return result
-    }
-
-    func streams(
-        kind: XtreamStreamKind,
-        categoryId: String?,
-        forceRefresh: Bool = false
-    ) async throws -> [XtreamStream] {
-        let categoryKey = categoryId?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty == false
-            ? categoryId!.trimmingCharacters(in: .whitespacesAndNewlines)
-            : "all"
-
-        let key = "\(cachePrefix).streams.\(kind.rawValue).\(categoryKey)"
-
-        if !forceRefresh,
-           let cached: [XtreamStream] = await CacheService.shared.value(
-            for: key
-           ) {
-            return cached
-        }
-
-        let result = try await RetryPolicy.withRetry(
-            shouldRetry: Self.shouldRetry
-        ) {
-            try await self.api.fetchStreams(
-                kind: kind,
-                categoryId: categoryId
-            )
-        }
-
-        await CacheService.shared.set(result, for: key, ttl: 300)
-        return result
-    }
-
-    func allStreams(
-        kind: XtreamStreamKind,
-        forceRefresh: Bool = false
-    ) async throws -> [XtreamStream] {
-        let key = "\(cachePrefix).catalog.\(kind.rawValue)"
-
-        if !forceRefresh,
-           let cached: [XtreamStream] = await CacheService.shared.value(
-            for: key
-           ) {
-            return cached
-        }
-
-        let result = try await RetryPolicy.withRetry(
-            shouldRetry: Self.shouldRetry
-        ) {
-            try await self.api.fetchAllStreams(kind: kind)
-        }
-
-        let ttl: TimeInterval = kind == .movie ? 900 : 300
-        await CacheService.shared.set(result, for: key, ttl: ttl)
-        return result
-    }
-
-    func invalidate(kind: XtreamStreamKind? = nil) async {
-        guard let kind else {
-            await CacheService.shared.invalidate(prefix: cachePrefix)
-            return
-        }
-
-        await CacheService.shared.invalidate(
-            prefix: "\(cachePrefix)."
-        )
-
-        // Il catalogo globale può includere contenuti recuperati per categoria:
-        // per coerenza un refresh per tipo invalida tutte le voci della sorgente.
-        _ = kind
-    }
-
-    func streamURL(
-        for stream: XtreamStream,
-        kind: XtreamStreamKind
-    ) -> URL? {
-        api.streamURL(for: stream, kind: kind)
-    }
-
-    private static func shouldRetry(_ error: Error) -> Bool {
-        guard let error = error as? XtreamError else {
-            return true
-        }
-
-        switch error {
-        case .wrongCredentials,
-             .malformedHost,
-             .invalidURL,
-             .decoding:
-            return false
-
-        case .unreachable,
-             .timeout,
-             .httpStatus,
-             .noProviderVPN:
-            return true
-        }
-    }
-
-    private static func makeCachePrefix(
-        credentials: XtreamCredentials
-    ) -> String {
-        let host = credentials.host
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            .lowercased()
-
-        let input = "\(host)|\(credentials.username)"
-
-        let hash = input.utf8.reduce(UInt64(14_695_981_039_346_656_037)) {
-            value,
-            byte in
-            (value ^ UInt64(byte)) &* UInt64(1_099_511_628_211)
-        }
-
-        return "xtream.\(String(hash, radix: 16))"
+        store.removeAll(keepingCapacity: false)
     }
 }
