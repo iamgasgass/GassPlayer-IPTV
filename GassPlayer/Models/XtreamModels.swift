@@ -184,10 +184,12 @@ enum XtreamError: LocalizedError {
 // MARK: - Flexible decoding helpers
 
 extension KeyedDecodingContainer {
-    /// Decodifica un campo come stringa, accettando anche numeri, booleani
-    /// o `null`. Molti provider Xtream restituiscono tipi non uniformi per
-    /// lo stesso campo tra endpoint diversi.
-    func decodeFlexibleString<K: CodingKey>(forKey key: K) -> String? where K == Key {
+    /// Decodifica una stringa tollerando provider Xtream che restituiscono
+    /// lo stesso campo come String, Int, Double, Bool o null. Le firme usano
+    /// direttamente `Key` (tipo associato del container) e sono quindi
+    /// compatibili con Swift 6: nessun parametro generico ridondante o
+    /// shadowing di `Key`.
+    func decodeFlexibleString(forKey key: Key) -> String? {
         if let value = try? decodeIfPresent(String.self, forKey: key) {
             return value
         }
@@ -207,9 +209,10 @@ extension KeyedDecodingContainer {
         return nil
     }
 
-    /// Decodifica un campo come intero, accettando anche stringhe numeriche
-    /// o valori a virgola mobile (troncati).
-    func decodeFlexibleInt<K: CodingKey>(forKey key: K) -> Int? where K == Key {
+    /// Decodifica un intero tollerando numeri JSON, double e stringhe
+    /// numeriche. Un valore non interpretabile restituisce nil anziche'
+    /// provocare un errore dell'intera risposta catalogo.
+    func decodeFlexibleInt(forKey key: Key) -> Int? {
         if let value = try? decodeIfPresent(Int.self, forKey: key) {
             return value
         }
@@ -225,9 +228,9 @@ extension KeyedDecodingContainer {
         return nil
     }
 
-    /// Decodifica un campo come booleano, accettando 0/1, "true"/"false",
-    /// "yes"/"no" e varianti maiuscole/minuscole.
-    func decodeFlexibleBool<K: CodingKey>(forKey key: K) -> Bool? where K == Key {
+    /// Decodifica booleani da bool nativo, 0/1 numerici o le rappresentazioni
+    /// stringa comuni pubblicate da provider Xtream non uniformi.
+    func decodeFlexibleBool(forKey key: Key) -> Bool? {
         if let value = try? decodeIfPresent(Bool.self, forKey: key) {
             return value
         }
@@ -256,9 +259,8 @@ extension KeyedDecodingContainer {
 }
 
 extension String {
-    /// Restituisce `nil` se la stringa e' vuota, altrimenti se stessa.
-    /// Utile per convertire stringhe vuote provenienti da JSON in optional
-    /// puliti, evitando placeholder come icone o categorie vuote ma non nil.
+    /// Converte stringhe vuote in nil per non propagare URL, categorie o
+    /// titoli semanticamente assenti come stringhe non opzionali vuote.
     var nonEmpty: String? {
         isEmpty ? nil : self
     }
