@@ -1,6 +1,165 @@
 import Foundation
 import Combine
 
+/// Repository con cache per l'API Xtream: aggiunge TTL, retry selettivo e
+/// invalidazione granulare sopra `XtreamAPIService`, che resta senza stato.
+actor CachedXtreamRepository {
+    private let api: XtreamAPIService
+    private let cachePrefix: String
+
+    init(credentials: XtreamCredentials) {
+        api = XtreamAPIService(credentials: credentials)
+        cachePrefix = Self.makeCachePrefix(credentials: credentials)
+    }
+
+    func categories(
+        kind: XtreamStreamKind,
+        forceRefresh: Bool = false
+    ) async throws -> [XtreamCategory] {
+        let key = "\(cachePrefix).categories.\(kind.rawValue)"
+
+        if !forceRefresh,
+           let cached: [XtreamCategory] = await CacheService.shared.value(for: key) {
+            return cached
+        }
+
+        let result = try await RetryPolicy.withRetry(shouldRetry: Self.shouldRetry) {
+            try await self.api.fetchCategories(kind: kind)
+        }
+
+        await CacheService.shared.set(result, for: key, ttl: 600)
+        return result
+    }
+
+    func streams(
+        kind: XtreamStreamKind,
+        categoryId: String?,
+        forceRefresh: Bool = false
+    ) async throws -> [XtreamStream] {
+        let categoryKey = categoryId?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
+            ? categoryId!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "all"
+
+        let key = "\(cachePrefix).streams.\(kind.rawValue).\(categoryKey)"
+
+        if !forceRefresh,
+           let cached: [XtreamStream] = await CacheService.shared.value(for: key) {
+            return cached
+        }
+
+        let result = try await RetryPolicy.withRetry(shouldRetry: Self.shouldRetry) {
+            try await self.api.fetchStreams(kind: kind, categoryId: categoryId)
+        }
+
+        await CacheService.shared.set(result, for: key, ttl: 300)
+        return result
+    }
+
+    func allStreams(
+        kind: XtreamStreamKind,
+        forceRefresh: Bool = false
+    ) async throws -> [XtreamStream] {
+        let key = "\(cachePrefix).catalog.\(kind.rawValue)"
+
+        if !forceRefresh,
+           let cached: [XtreamStream] = await CacheService.shared.value(for: key) {
+            return cached
+        }
+
+        let result = try await RetryPolicy.withRetry(shouldRetry: Self.shouldRetry) {
+            try await self.api.fetchAllStreams(kind: kind)
+        }
+
+        let ttl: TimeInterval = kind == .movie ? 900 : 300
+        await CacheService.shared.set(result, for: key, ttl: ttl)
+        return result
+    }
+
+    func seriesList(forceRefresh: Bool = false) async throws -> [XtreamSeriesItem] {
+        let key = "\(cachePrefix).series.list"
+
+        if !forceRefresh,
+           let cached: [XtreamSeriesItem] = await CacheService.shared.value(for: key) {
+            return cached
+        }
+
+        let result = try await RetryPolicy.withRetry(shouldRetry: Self.shouldRetry) {
+            try await self.api.fetchSeriesList()
+        }
+
+        await CacheService.shared.set(result, for: key, ttl: 300)
+        return result
+    }
+
+    /// Invalida la cache relativa a un tipo di contenuto specifico, oppure
+    /// l'intera sorgente se `kind` e' `nil`. A differenza di una versione
+    /// precedente, un `kind` esplicito NON invalida piu' l'intera sorgente:
+    /// solo le voci di categorie/stream/catalogo pertinenti a quel tipo.
+    func invalidate(kind: XtreamStreamKind? = nil) async {
+        guard let kind else {
+            await CacheService.shared.invalidate(prefix: cachePrefix)
+            return
+        }
+
+        let prefix = "\(cachePrefix)."
+
+        switch kind {
+        case .live:
+            await CacheService.shared.invalidate(prefix: "\(prefix)categories.live")
+            await CacheService.shared.invalidate(prefix: "\(prefix)streams.live.")
+            await CacheService.shared.invalidate(prefix: "\(prefix)catalog.live")
+
+        case .movie:
+            await CacheService.shared.invalidate(prefix: "\(prefix)categories.movie")
+            await CacheService.shared.invalidate(prefix: "\(prefix)streams.movie.")
+            await CacheService.shared.invalidate(prefix: "\(prefix)catalog.movie")
+
+        case .series:
+            await CacheService.shared.invalidate(prefix: "\(prefix)categories.series")
+            await CacheService.shared.removeValue(for: "\(prefix)series.list")
+        }
+    }
+
+    func streamURL(
+        for stream: XtreamStream,
+        kind: XtreamStreamKind
+    ) -> URL? {
+        api.streamURL(for: stream, kind: kind)
+    }
+
+    private static func shouldRetry(_ error: Error) -> Bool {
+        guard let error = error as? XtreamError else {
+            return true
+        }
+
+        switch error {
+        case .wrongCredentials, .malformedHost, .invalidURL, .decoding:
+            return false
+        case .unreachable, .timeout, .httpStatus, .noProviderVPN:
+            return true
+        }
+    }
+
+    private static func makeCachePrefix(credentials: XtreamCredentials) -> String {
+        let host = credentials.host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
+
+        let input = "\(host)|\(credentials.username)"
+
+        let hash = input.utf8.reduce(
+            UInt64(14_695_981_039_346_656_037)
+        ) { value, byte in
+            (value ^ UInt64(byte)) &* UInt64(1_099_511_628_211)
+        }
+
+        return "xtream.\(String(hash, radix: 16))"
+    }
+}
+
 /// Catalogo Xtream condiviso per l'intera sessione applicativa.
 ///
 /// Strategia:
@@ -11,7 +170,10 @@ import Combine
 ///   l'intervallo di aggiornamento configurato in Impostazioni e' scaduto,
 ///   oppure se non esiste ancora nessuna cache per questa sorgente;
 /// - live, VOD e serie leggono gli stessi dati in memoria: cambiare tab o
-///   categoria non causa ulteriori richieste di playlist.
+///   categoria non causa ulteriori richieste di playlist;
+/// - Live, VOD e Serie sono trattate come sezioni indipendenti: un errore
+///   in una sola sezione non invalida piu' lo stato delle altre sezioni
+///   gia' caricate con successo.
 @MainActor
 final class XtreamCatalogStore: ObservableObject {
     enum LoadState: Equatable {
@@ -197,6 +359,11 @@ final class XtreamCatalogStore: ObservableObject {
         )
     }
 
+    /// Carica Live, VOD e Serie come operazioni indipendenti. Un fallimento
+    /// isolato (es. Serie non disponibili) non deve azzerare o marcare come
+    /// fallito lo stato di sezioni gia' caricate con successo (es. Live TV),
+    /// perche' altrimenti l'apertura della guida TV puo' risultare bloccata
+    /// anche quando i canali live sono perfettamente disponibili.
     private func loadAll(
         credentials: XtreamCredentials,
         fingerprint: String,
@@ -205,6 +372,7 @@ final class XtreamCatalogStore: ObservableObject {
         guard !Task.isCancelled else { return }
 
         let hadContent = !liveStreams.isEmpty || !vodStreams.isEmpty || !seriesItems.isEmpty
+
         if !hadContent {
             state = .loading
         }
@@ -212,38 +380,74 @@ final class XtreamCatalogStore: ObservableObject {
         let repository = CachedXtreamRepository(credentials: credentials)
         let api = XtreamAPIService(credentials: credentials)
 
-        do {
-            async let live: Void = loadStreamSection(
+        async let liveResult: Result<Void, Error> = loadResult {
+            try await self.loadStreamSection(
                 kind: .live,
                 repository: repository,
                 forceRefresh: forceRefresh
             )
-            async let vod: Void = loadStreamSection(
+        }
+
+        async let vodResult: Result<Void, Error> = loadResult {
+            try await self.loadStreamSection(
                 kind: .movie,
                 repository: repository,
                 forceRefresh: forceRefresh
             )
-            async let series: Void = loadSeriesSection(
+        }
+
+        async let seriesResult: Result<Void, Error> = loadResult {
+            try await self.loadSeriesSection(
                 repository: repository,
                 api: api,
                 forceRefresh: forceRefresh
             )
+        }
 
-            _ = try await (live, vod, series)
+        let (live, vod, series) = await (liveResult, vodResult, seriesResult)
 
-            guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else { return }
+
+        let failures = [live, vod, series].compactMap { result -> Error? in
+            guard case .failure(let error) = result else { return nil }
+            return error
+        }
+
+        let hasContentNow = !liveStreams.isEmpty || !vodStreams.isEmpty || !seriesItems.isEmpty
+
+        if hasContentNow {
             loadedSourceFingerprint = fingerprint
             settings.markRefreshed()
             lastRefreshDate = settings.lastRefreshDate
             state = .loaded
 
             await persistSnapshot(fingerprint: fingerprint)
-        } catch let error as XtreamError {
-            state = hadContent ? .loaded : .failed(error.errorDescription ?? "Errore Xtream non specificato.")
+
+            for failure in failures {
+                DebugLogger.logAsync(
+                    .warning,
+                    "Catalogo: sezione non aggiornata: \(failure.localizedDescription)"
+                )
+            }
+        } else if let firstFailure = failures.first as? XtreamError {
+            state = .failed(firstFailure.errorDescription ?? "Errore Xtream non specificato.")
+        } else if let firstFailure = failures.first {
+            state = .failed("Errore imprevisto: \(firstFailure.localizedDescription)")
+        } else {
+            state = .loaded
+        }
+    }
+
+    private func loadResult(
+        _ operation: @escaping @MainActor () async throws -> Void
+    ) async -> Result<Void, Error> {
+        do {
+            try await operation()
+            return .success(())
         } catch is CancellationError {
-            if !hadContent { state = .idle }
+            return .failure(CancellationError())
         } catch {
-            state = hadContent ? .loaded : .failed("Errore imprevisto: \(error.localizedDescription)")
+            return .failure(error)
         }
     }
 
@@ -254,7 +458,21 @@ final class XtreamCatalogStore: ObservableObject {
     ) async {
         guard !Task.isCancelled else { return }
 
-        state = .loading
+        let hadContent: Bool
+
+        switch kind {
+        case .live:
+            hadContent = !liveStreams.isEmpty
+        case .movie:
+            hadContent = !vodStreams.isEmpty
+        case .series:
+            hadContent = !seriesItems.isEmpty
+        }
+
+        if !hadContent {
+            state = .loading
+        }
+
         let repository = CachedXtreamRepository(credentials: credentials)
         let api = XtreamAPIService(credentials: credentials)
 
@@ -277,11 +495,16 @@ final class XtreamCatalogStore: ObservableObject {
             guard !Task.isCancelled else { return }
             state = .loaded
         } catch let error as XtreamError {
-            state = .failed(error.errorDescription ?? "Errore Xtream non specificato.")
+            state = hadContent ? .loaded : .failed(error.errorDescription ?? "Errore Xtream non specificato.")
+
+            DebugLogger.logAsync(
+                .warning,
+                "Catalogo: sezione \(kind.rawValue) non aggiornata: \(error.localizedDescription)"
+            )
         } catch is CancellationError {
-            state = .idle
+            if !hadContent { state = .idle }
         } catch {
-            state = .failed("Errore imprevisto: \(error.localizedDescription)")
+            state = hadContent ? .loaded : .failed("Errore imprevisto: \(error.localizedDescription)")
         }
     }
 
@@ -290,14 +513,8 @@ final class XtreamCatalogStore: ObservableObject {
         repository: CachedXtreamRepository,
         forceRefresh: Bool
     ) async throws {
-        async let categories = repository.categories(
-            kind: kind,
-            forceRefresh: forceRefresh
-        )
-        async let catalog = repository.allStreams(
-            kind: kind,
-            forceRefresh: forceRefresh
-        )
+        async let categories = repository.categories(kind: kind, forceRefresh: forceRefresh)
+        async let catalog = repository.allStreams(kind: kind, forceRefresh: forceRefresh)
 
         let (loadedCategories, loadedStreams) = try await (categories, catalog)
         guard !Task.isCancelled else { return }
@@ -319,11 +536,8 @@ final class XtreamCatalogStore: ObservableObject {
         api: XtreamAPIService,
         forceRefresh: Bool
     ) async throws {
-        async let categories = repository.categories(
-            kind: .series,
-            forceRefresh: forceRefresh
-        )
-        async let series = api.fetchSeriesList()
+        async let categories = repository.categories(kind: .series, forceRefresh: forceRefresh)
+        async let series = repository.seriesList(forceRefresh: forceRefresh)
 
         let (loadedCategories, loadedSeries) = try await (categories, series)
         guard !Task.isCancelled else { return }
