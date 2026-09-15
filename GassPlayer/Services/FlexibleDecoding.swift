@@ -50,18 +50,11 @@ enum FlexibleArrayDecoder {
     }
 }
 
-extension KeyedDecodingContainer {
-    func decodeFlexibleInt(forKey key: K) -> Int? {
-        if let intValue = try? decode(Int.self, forKey: key) { return intValue }
-        if let stringValue = try? decode(String.self, forKey: key), let parsed = Int(stringValue) { return parsed }
-        if let doubleValue = try? decode(Double.self, forKey: key) { return Int(doubleValue) }
-        return nil
-    }
-
-    func decodeFlexibleString(forKey key: K) -> String? {
-        if let stringValue = try? decode(String.self, forKey: key) { return stringValue }
-        if let intValue = try? decode(Int.self, forKey: key) { return String(intValue) }
-        if let doubleValue = try? decode(Double.self, forKey: key) { return String(doubleValue) }
-        return nil
-    }
-}
+// NOTA: gli helper `decodeFlexibleInt(forKey:)` e `decodeFlexibleString(forKey:)`
+// su `KeyedDecodingContainer` sono definiti UNA SOLA VOLTA, in
+// `GassPlayer/Models/XtreamModels.swift` (insieme a `decodeFlexibleBool`).
+// Non ridichiararli qui: Swift considera equivalenti le firme generiche
+// `<K: CodingKey>(forKey key: K)` e quelle dirette `(forKey key: Key)` dopo
+// la risoluzione dei generici, quindi una seconda copia in questo file
+// produce "invalid redeclaration" in fase di compilazione dell'intero
+// modulo GassPlayer.
