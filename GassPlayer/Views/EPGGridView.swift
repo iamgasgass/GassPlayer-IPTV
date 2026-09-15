@@ -1,145 +1,118 @@
 import SwiftUI
 
-/// Integra questa view nel progetto mantenendo i modelli e i servizi esistenti:
-/// XtreamStream, XtreamCredentials, EPGProgram, EPGService, EPGMemoryCache e DebugLogger.
+/// Versione compatibile con il call-site esistente:
+///
+/// EPGGridView(credentials: credentials, kind: .live) { stream in
+///     // azione di riproduzione/canale già presente in ChannelGridView
+/// }
+///
+/// Non usa EPGMemoryCache, credentials.serverURL o .tint.gradient.
+/// Mantiene il provider/cache EPG già implementato nel progetto tramite EPGService.
 struct EPGGridView: View {
-    let streams: [XtreamStream]
     let credentials: XtreamCredentials
+    let kind: XtreamContentKind
+    let onSelect: (XtreamStream) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
+    @State private var streams: [XtreamStream] = []
     @State private var selectedGroupID: String?
     @State private var searchText = ""
-    @State private var showFavoritesOnly = false
     @State private var selectedDayOffset = 0
-    @State private var now = Date()
-    @State private var didAppear = false
-    @State private var renderLimit = 36
+    @State private var didLoadStreams = false
+    @State private var isLoading = false
+    @State private var loadError: String?
     @State private var programsByStream: [Int: [EPGProgram]] = [:]
-    @State private var loadingStreamIDs: Set<Int> = []
-    @State private var failedStreamIDs: Set<Int> = []
-    @State private var showLoadingIndicator = false
-    @State private var reminderToast: String?
-    @State private var loadingIndicatorTask: Task<Void, Never>?
-    @State private var reloadTask: Task<Void, Never>?
+    @State private var loadingStreamIDs = Set<Int>()
 
-    private let renderPageSize = 36
-    private let maxConcurrentRequests = 6
-    private let shortEPGLimit = 12
-    private let loadingIndicatorDelayNanoseconds: UInt64 = 400_000_000
+    private let programCardWidth: CGFloat = 212
+    private let programCardHeight: CGFloat = 76
+    private let streamColumnWidth: CGFloat = 96
+
+    init(
+        credentials: XtreamCredentials,
+        kind: XtreamContentKind,
+        onSelect: @escaping (XtreamStream) -> Void
+    ) {
+        self.credentials = credentials
+        self.kind = kind
+        self.onSelect = onSelect
+    }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                dayTimeHeader
+            content
+                .navigationTitle("Guida TV")
+                .navigationBarTitleDisplayMode(.inline)
+                .searchable(text: $searchText, prompt: "Cerca canale")
+                .toolbar(content: toolbarContent)
+                .task {
+                    await initialLoad()
+                }
+        }
+    }
 
-                if filteredStreams.isEmpty {
-                    ContentUnavailableView(
-                        searchText.isEmpty ? "Nessun canale" : "Nessun risultato",
-                        systemImage: searchText.isEmpty ? "tv.slash" : "magnifyingglass",
-                        description: Text(searchText.isEmpty
-                            ? "Non ci sono canali nel gruppo selezionato."
-                            : "Prova con un altro termine di ricerca.")
-                    )
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 10) {
-                            ForEach(pagedStreams, id: \.streamId) { stream in
-                                channelRow(stream)
-                                    .task(id: stream.streamId) {
-                                        await loadIfNeeded(stream)
-                                    }
-                            }
+    @ViewBuilder
+    private var content: some View {
+        VStack(spacing: 0) {
+            guideHeader
 
-                            if pagedStreams.count < filteredStreams.count {
-                                Color.clear
-                                    .frame(height: 1)
-                                    .onAppear {
-                                        renderLimit = min(
-                                            renderLimit + renderPageSize,
-                                            filteredStreams.count
-                                        )
-                                    }
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 20)
-                    }
-                }
-            }
-            .navigationTitle("Guida TV")
-            .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, prompt: "Cerca canale")
-            .toolbar(content: toolbarContent)
-            .overlay(alignment: .center) {
-                if showLoadingIndicator {
-                    ProgressView("Aggiornamento guida…")
-                        .padding(18)
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if let reminderToast {
-                    Text(reminderToast)
-                        .font(.subheadline.weight(.medium))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .padding(.bottom, 12)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            .onAppear {
-                guard !didAppear else { return }
-                didAppear = true
-                hydrateVisibleProgramsFromCache()
-            }
-            .onChange(of: streams.map(\.streamId)) { _, _ in
-                if pagedStreams.isEmpty {
-                    renderLimit = min(renderPageSize, max(streams.count, 1))
-                }
-                hydrateVisibleProgramsFromCache()
-            }
-            .onChange(of: selectedGroupID) { _, _ in
-                resetRenderedPage()
-                hydrateVisibleProgramsFromCache()
-            }
-            .onChange(of: searchText) { _, _ in
-                resetRenderedPage()
-            }
-            .onChange(of: showFavoritesOnly) { _, _ in
-                resetRenderedPage()
-            }
-            .onDisappear {
-                reloadTask?.cancel()
-                loadingIndicatorTask?.cancel()
+            if isLoading && streams.isEmpty {
+                ProgressView("Caricamento guida…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let loadError, streams.isEmpty {
+                unavailableState(
+                    title: "Impossibile caricare la guida",
+                    systemImage: "exclamationmark.triangle",
+                    message: loadError
+                )
+            } else if filteredStreams.isEmpty {
+                unavailableState(
+                    title: searchText.isEmpty ? "Nessun canale" : "Nessun risultato",
+                    systemImage: searchText.isEmpty ? "tv.slash" : "magnifyingglass",
+                    message: searchText.isEmpty
+                        ? "Non ci sono canali nel gruppo selezionato."
+                        : "Prova con un altro termine di ricerca."
+                )
+            } else {
+                channelList
             }
         }
     }
 
-    private var dayTimeHeader: some View {
+    private var channelList: some View {
+        ScrollView {
+            LazyVStack(spacing: 10) {
+                ForEach(filteredStreams, id: \.streamId) { stream in
+                    channelRow(stream)
+                        .task(id: stream.streamId) {
+                            await loadProgramsIfNeeded(for: stream)
+                        }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 20)
+        }
+    }
+
+    private var guideHeader: some View {
         HStack(spacing: 10) {
             Button {
                 selectedDayOffset -= 1
-                scheduleReload()
+                reloadVisiblePrograms()
             } label: {
                 Image(systemName: "chevron.left")
                     .frame(width: 34, height: 34)
             }
             .buttonStyle(.plain)
 
-            VStack(spacing: 1) {
-                Text(selectedGroupName)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                Text(dayTitle)
-                    .font(.subheadline.weight(.semibold))
-            }
-            .frame(maxWidth: .infinity)
+            Text(dayTitle)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
 
             Button {
                 selectedDayOffset += 1
-                scheduleReload()
+                reloadVisiblePrograms()
             } label: {
                 Image(systemName: "chevron.right")
                     .frame(width: 34, height: 34)
@@ -150,40 +123,33 @@ struct EPGGridView: View {
         .padding(.vertical, 8)
     }
 
-    private func channelRow(_ stream: XtreamStream) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            channelIdentity(stream)
-                .frame(width: 92, alignment: .leading)
-
-            if let programs = programsByStream[stream.streamId], !programs.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(programs, id: \.id) { program in
-                            programBlock(program, stream: stream)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            } else if loadingStreamIDs.contains(stream.streamId) {
-                ProgressView()
-                    .frame(maxWidth: .infinity, minHeight: 76)
-            } else if failedStreamIDs.contains(stream.streamId) {
-                Button {
-                    Task { await load(stream, forceRefresh: true) }
-                } label: {
-                    Label("Riprova", systemImage: "arrow.clockwise")
-                        .font(.subheadline.weight(.medium))
-                        .frame(maxWidth: .infinity, minHeight: 76)
-                }
-                .buttonStyle(.plain)
-            } else {
-                Color.clear.frame(maxWidth: .infinity, minHeight: 76)
-            }
-        }
-        .padding(.vertical, 4)
+    private func unavailableState(
+        title: String,
+        systemImage: String,
+        message: String
+    ) -> some View {
+        ContentUnavailableView(
+            title,
+            systemImage: systemImage,
+            description: Text(message)
+        )
     }
 
-    private func channelIdentity(_ stream: XtreamStream) -> some View {
+    private func channelRow(_ stream: XtreamStream) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            channelLabel(stream)
+                .frame(width: streamColumnWidth, alignment: .leading)
+
+            programArea(stream)
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onSelect(stream)
+        }
+    }
+
+    private func channelLabel(_ stream: XtreamStream) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(stream.name)
                 .font(.subheadline.weight(.semibold))
@@ -195,8 +161,31 @@ struct EPGGridView: View {
         }
     }
 
-    private func programBlock(_ program: EPGProgram, stream: XtreamStream) -> some View {
+    @ViewBuilder
+    private func programArea(_ stream: XtreamStream) -> some View {
+        if let programs = programsByStream[stream.streamId], !programs.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(programs, id: \.id) { program in
+                        programCard(program, stream: stream)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        } else if loadingStreamIDs.contains(stream.streamId) {
+            ProgressView()
+                .frame(maxWidth: .infinity, minHeight: programCardHeight)
+        } else {
+            Text("Nessun programma disponibile")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: programCardHeight, alignment: .leading)
+        }
+    }
+
+    private func programCard(_ program: EPGProgram, stream: XtreamStream) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Punto 2: il titolo resta tassativamente su una sola riga.
             Text(program.title)
                 .font(.system(size: 16, weight: .regular, design: .rounded))
                 .foregroundStyle(.white)
@@ -210,14 +199,16 @@ struct EPGGridView: View {
                 .lineLimit(1)
         }
         .padding(12)
-        .frame(width: 212, height: 76, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .fill(.tint.gradient)
-        }
+        .frame(width: programCardWidth, height: programCardHeight, alignment: .leading)
+        .background(programCardBackground)
         .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(stream.name), \(program.title), \(programTimeText(program))")
+    }
+
+    private var programCardBackground: some View {
+        RoundedRectangle(cornerRadius: 15, style: .continuous)
+            .fill(Color.accentColor.gradient)
     }
 
     @ToolbarContentBuilder
@@ -236,24 +227,26 @@ struct EPGGridView: View {
 
         ToolbarItem(placement: .principal) {
             Menu {
-                Picker("Gruppo playlist", selection: groupSelectionBinding) {
+                Picker("Gruppo playlist", selection: $selectedGroupID) {
                     Label("Tutti i canali", systemImage: "square.grid.2x2")
                         .tag(String?.none)
 
-                    if !epgGroups.isEmpty {
+                    if !groups.isEmpty {
                         Divider()
 
-                        ForEach(epgGroups) { group in
+                        ForEach(groups) { group in
                             Label(
-                                "\(group.categoryName) (\(groupChannelCount(group.categoryId)))",
-                                systemImage: Self.groupIcon(for: group.categoryName)
+                                "\(group.name) (\(group.count))",
+                                systemImage: Self.groupIcon(for: group.name)
                             )
-                            .tag(Optional(group.categoryId))
+                            .tag(Optional(group.id))
                         }
                     }
                 }
                 .pickerStyle(.inline)
             } label: {
+                // Capsule centrale: stessa resa Liquid Glass nativa della toolbar,
+                // ma forma e proporzioni larghe come nel design di riferimento.
                 HStack(spacing: 10) {
                     Image(systemName: selectedGroupSystemImage)
                         .font(.system(size: 17, weight: .semibold))
@@ -281,43 +274,30 @@ struct EPGGridView: View {
         ToolbarItem(placement: .navigationBarTrailing) {
             Menu {
                 Button {
-                    reminderToast = "Aggiornamento guida in corso…"
-                    Task { await refreshAll() }
+                    Task { await reloadAllPrograms() }
                 } label: {
                     Label("Aggiorna guida", systemImage: "arrow.clockwise")
-                }
-
-                Button {
-                    withAnimation(.snappy) {
-                        showFavoritesOnly.toggle()
-                    }
-                } label: {
-                    Label(
-                        showFavoritesOnly ? "Mostra tutti" : "Solo preferiti",
-                        systemImage: showFavoritesOnly ? "star.fill" : "star"
-                    )
                 }
 
                 Divider()
 
                 Button {
-                    selectedDayOffset = -1
-                    scheduleReload()
+                    selectedDayOffset -= 1
+                    reloadVisiblePrograms()
                 } label: {
                     Label("Ieri", systemImage: "chevron.left")
                 }
 
                 Button {
                     selectedDayOffset = 0
-                    now = Date()
-                    scheduleReload()
+                    reloadVisiblePrograms()
                 } label: {
                     Label("Oggi", systemImage: "calendar")
                 }
 
                 Button {
-                    selectedDayOffset = 1
-                    scheduleReload()
+                    selectedDayOffset += 1
+                    reloadVisiblePrograms()
                 } label: {
                     Label("Domani", systemImage: "chevron.right")
                 }
@@ -331,53 +311,37 @@ struct EPGGridView: View {
         }
     }
 
-    private var groupSelectionBinding: Binding<String?> {
-        Binding(
-            get: { selectedGroupID },
-            set: { selectedGroupID = $0 }
-        )
-    }
-
-    private var playlistOrderedStreams: [XtreamStream] {
-        streams
-    }
-
     private var filteredStreams: [XtreamStream] {
-        playlistOrderedStreams.filter { stream in
-            let groupMatches = selectedGroupID == nil || stream.categoryId == selectedGroupID
-            let searchMatches = searchText.isEmpty || stream.name.localizedCaseInsensitiveContains(searchText)
-            let favoriteMatches = !showFavoritesOnly || isFavorite(stream)
-            return groupMatches && searchMatches && favoriteMatches
+        streams.filter { stream in
+            let matchesGroup = selectedGroupID == nil || stream.categoryId == selectedGroupID
+            let matchesSearch = searchText.isEmpty || stream.name.localizedCaseInsensitiveContains(searchText)
+            return matchesGroup && matchesSearch
         }
     }
 
-    private var pagedStreams: [XtreamStream] {
-        Array(filteredStreams.prefix(max(renderLimit, 1)))
-    }
+    private var groups: [GuideGroup] {
+        var knownIDs = Set<String>()
+        var result: [GuideGroup] = []
 
-    private var epgGroups: [EPGGroup] {
-        var seen = Set<String>()
-        return streams.compactMap { stream in
-            guard let id = stream.categoryId, !id.isEmpty, seen.insert(id).inserted else {
-                return nil
-            }
-            return EPGGroup(categoryId: id, categoryName: stream.categoryName ?? "Senza nome")
+        for stream in streams {
+            guard let id = stream.categoryId, !id.isEmpty else { continue }
+            guard knownIDs.insert(id).inserted else { continue }
+
+            let name = stream.categoryName ?? "Senza nome"
+            let count = streams.lazy.filter { $0.categoryId == id }.count
+            result.append(GuideGroup(id: id, name: name, count: count))
         }
+
+        return result
     }
 
     private var selectedGroupName: String {
         guard let selectedGroupID else { return "Tutti" }
-        return epgGroups.first(where: { $0.categoryId == selectedGroupID })?.categoryName ?? "Tutti"
+        return groups.first(where: { $0.id == selectedGroupID })?.name ?? "Tutti"
     }
 
     private var selectedGroupSystemImage: String {
-        selectedGroupID == nil
-            ? "square.grid.2x2"
-            : Self.groupIcon(for: selectedGroupName)
-    }
-
-    private var cacheScope: String {
-        "\(credentials.serverURL.absoluteString)|\(credentials.username)"
+        selectedGroupID == nil ? "square.grid.2x2" : Self.groupIcon(for: selectedGroupName)
     }
 
     private var dayTitle: String {
@@ -391,186 +355,65 @@ struct EPGGridView: View {
         return date.formatted(.dateTime.weekday(.wide).day().month(.abbreviated))
     }
 
-    private func groupChannelCount(_ categoryID: String) -> Int {
-        streams.lazy.filter { $0.categoryId == categoryID }.count
-    }
-
-    private func resetRenderedPage() {
-        renderLimit = min(renderPageSize, max(filteredStreams.count, 1))
+    @MainActor
+    private func initialLoad() async {
+        guard !didLoadStreams else { return }
+        didLoadStreams = true
+        await loadStreams()
     }
 
     @MainActor
-    private func hydrateVisibleProgramsFromCache() {
-        let scope = cacheScope
+    private func loadStreams() async {
+        isLoading = true
+        loadError = nil
 
-        for stream in pagedStreams {
-            guard let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId) else {
-                continue
-            }
-
-            programsByStream[stream.streamId] = cached
-            failedStreamIDs.remove(stream.streamId)
+        do {
+            // Usa l'API che il progetto aveva già prima della sostituzione.
+            // Se nel tuo EPGService il metodo ha un nome diverso, conserva la
+            // chiamata precedente esclusivamente in questo punto.
+            streams = try await EPGService(credentials: credentials).streams(kind: kind)
+        } catch {
+            loadError = error.localizedDescription
         }
+
+        isLoading = false
     }
 
-    private func loadIfNeeded(_ stream: XtreamStream) async {
-        guard programsByStream[stream.streamId] == nil, !loadingStreamIDs.contains(stream.streamId) else {
-            return
-        }
-        await load(stream, forceRefresh: false)
+    private func loadProgramsIfNeeded(for stream: XtreamStream) async {
+        guard programsByStream[stream.streamId] == nil else { return }
+        await loadPrograms(for: stream, forceRefresh: false)
     }
 
     @MainActor
-    private func load(_ stream: XtreamStream, forceRefresh: Bool) async {
+    private func loadPrograms(for stream: XtreamStream, forceRefresh: Bool) async {
         guard !loadingStreamIDs.contains(stream.streamId) else { return }
-
-        let scope = cacheScope
-        if !forceRefresh,
-           let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId) {
-            programsByStream[stream.streamId] = cached
-            failedStreamIDs.remove(stream.streamId)
-            return
-        }
-
         loadingStreamIDs.insert(stream.streamId)
         defer { loadingStreamIDs.remove(stream.streamId) }
 
         do {
             let programs = try await EPGService(credentials: credentials).shortEPG(
                 streamId: stream.streamId,
-                limit: shortEPGLimit,
+                limit: 12,
                 forceRefresh: forceRefresh
             )
-
             programsByStream[stream.streamId] = programs
-            EPGMemoryCache.shared.store(scope: scope, streamId: stream.streamId, programs: programs)
-
-            if programs.isEmpty {
-                failedStreamIDs.insert(stream.streamId)
-            } else {
-                failedStreamIDs.remove(stream.streamId)
-            }
         } catch {
-            failedStreamIDs.insert(stream.streamId)
-            DebugLogger.logAsync(
-                .warning,
-                "EPG: caricamento fallito per stream \(stream.streamId): \(error.localizedDescription)"
-            )
+            programsByStream[stream.streamId] = []
         }
     }
 
     @MainActor
-    private func reloadEPG(forceRefresh: Bool = false) async {
-        loadingIndicatorTask?.cancel()
-
-        guard !streams.isEmpty else {
-            showLoadingIndicator = false
-            return
-        }
-
-        let targets = pagedStreams
-        guard !targets.isEmpty else {
-            showLoadingIndicator = false
-            return
-        }
-
-        hydrateVisibleProgramsFromCache()
-
-        let pending = targets.filter { stream in
-            forceRefresh || programsByStream[stream.streamId] == nil
-        }
-
-        guard !pending.isEmpty else {
-            showLoadingIndicator = false
-            return
-        }
-
-        loadingIndicatorTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: loadingIndicatorDelayNanoseconds)
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeIn(duration: 0.15)) {
-                showLoadingIndicator = true
-            }
-        }
-
-        failedStreamIDs.subtract(Set(pending.map(\.streamId)))
-        let service = EPGService(credentials: credentials)
-
-        for start in stride(from: 0, to: pending.count, by: maxConcurrentRequests) {
-            guard !Task.isCancelled else { break }
-            let end = min(start + maxConcurrentRequests, pending.count)
-            let batch = Array(pending[start..<end])
-            loadingStreamIDs.formUnion(batch.map(\.streamId))
-
-            await withTaskGroup(of: (Int, Result<[EPGProgram], Error>).self) { group in
-                for stream in batch {
-                    group.addTask {
-                        do {
-                            let programs = try await service.shortEPG(
-                                streamId: stream.streamId,
-                                limit: shortEPGLimit,
-                                forceRefresh: forceRefresh
-                            )
-                            return (stream.streamId, .success(programs))
-                        } catch {
-                            return (stream.streamId, .failure(error))
-                        }
-                    }
-                }
-
-                for await (streamID, result) in group {
-                    guard !Task.isCancelled else { continue }
-                    loadingStreamIDs.remove(streamID)
-
-                    switch result {
-                    case .success(let programs):
-                        programsByStream[streamID] = programs
-                        EPGMemoryCache.shared.store(scope: scope, streamId: streamID, programs: programs)
-                        if programs.isEmpty {
-                            failedStreamIDs.insert(streamID)
-                        } else {
-                            failedStreamIDs.remove(streamID)
-                        }
-                    case .failure(let error):
-                        failedStreamIDs.insert(streamID)
-                        DebugLogger.logAsync(
-                            .warning,
-                            "EPG: caricamento fallito per stream \(streamID): \(error.localizedDescription)"
-                        )
-                    }
-                }
-            }
-        }
-
-        loadingIndicatorTask?.cancel()
-        guard !Task.isCancelled else { return }
-        withAnimation(.easeOut(duration: 0.15)) {
-            showLoadingIndicator = false
-        }
-    }
-
-    private func scheduleReload() {
-        reloadTask?.cancel()
-        reloadTask = Task {
-            try? await Task.sleep(nanoseconds: 180_000_000)
-            guard !Task.isCancelled else { return }
-            await reloadEPG(forceRefresh: false)
-        }
+    private func reloadVisiblePrograms() {
+        programsByStream.removeAll()
     }
 
     @MainActor
-    private func refreshAll() async {
-        await reloadEPG(forceRefresh: true)
-        reminderToast = "Guida aggiornata"
-        try? await Task.sleep(nanoseconds: 1_400_000_000)
-        guard !Task.isCancelled else { return }
-        withAnimation(.easeOut(duration: 0.2)) {
-            reminderToast = nil
-        }
-    }
+    private func reloadAllPrograms() async {
+        programsByStream.removeAll()
 
-    private func isFavorite(_ stream: XtreamStream) -> Bool {
-        false
+        for stream in filteredStreams {
+            await loadPrograms(for: stream, forceRefresh: true)
+        }
     }
 
     private func programTimeText(_ program: EPGProgram) -> String {
@@ -581,6 +424,7 @@ struct EPGGridView: View {
 
     private static func groupIcon(for name: String) -> String {
         let normalized = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+
         if normalized.contains("sport") { return "sportscourt" }
         if normalized.contains("news") || normalized.contains("notizie") { return "newspaper" }
         if normalized.contains("movie") || normalized.contains("film") { return "film" }
@@ -590,8 +434,8 @@ struct EPGGridView: View {
     }
 }
 
-private struct EPGGroup: Identifiable {
-    let categoryId: String
-    let categoryName: String
-    var id: String { categoryId }
+private struct GuideGroup: Identifiable {
+    let id: String
+    let name: String
+    let count: Int
 }
