@@ -1,9 +1,11 @@
 import SwiftUI
 
 /// EPG touch-first: asse live unico, freccia bianca nella riga orario e tile
-/// allineate temporalmente allo stesso asse. La parte piena termina esattamente
-/// sotto la freccia; da quel punto la tile passa a un colore piu' spento,
-/// senza alcuna sfocatura (nessun `.blur`), solo gradiente di opacita'.
+/// allineate temporalmente allo stesso asse. La riga "Oggi" mostra l'ora
+/// precedente e l'ora successiva derivate dalla STESSA finestra temporale
+/// (`windowStart` / `windowEnd`) usata per posizionare la freccia live e per
+/// calcolare il taglio acceso/spento delle tile, cosi' header e indicatore
+/// restano sempre coerenti fra loro. Nessun `.blur`/radius: solo gradienti.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -236,18 +238,23 @@ struct EPGGridView: View {
         CGFloat(now.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
 
+    /// Etichetta della freccia live: identica sia nella riga oraria EPG sia
+    /// in qualunque altro punto che debba mostrare l'ora corrente.
     private var displayedTimeLabel: String {
         isToday ? now.formatted(date: .omitted, time: .shortened) : "12:00"
     }
 
-    /// Ora precedente mostrata di fianco a "Oggi", come nel riferimento.
+    /// Ora precedente mostrata di fianco a "Oggi": e' esattamente l'inizio
+    /// della finestra EPG (`windowStart`), la stessa usata per l'asse live.
     private var previousTimeLabel: String {
         windowStart.formatted(date: .omitted, time: .shortened)
     }
 
-    /// Ora successiva mostrata a destra, allineata al bordo della riga.
+    /// Ora successiva mostrata a destra: e' esattamente la fine della
+    /// finestra EPG (`windowEnd`), coerente con l'ultima ora visibile nella
+    /// timeline sottostante, non un valore arbitrario "+1 ora da ora".
     private var nextTimeLabel: String {
-        selectedDate.addingTimeInterval(60 * 60).formatted(date: .omitted, time: .shortened)
+        windowEnd.formatted(date: .omitted, time: .shortened)
     }
 
     private var dayTitle: String {
@@ -575,9 +582,12 @@ struct EPGGridView: View {
         .padding(.bottom, 18)
     }
 
-    /// Layout maniacale identico al riferimento: "Oggi" a sinistra, ora
-    /// precedente subito dopo, freccia/chevron centrale come separatore
-    /// visivo, ora successiva allineata al bordo destro della riga.
+    /// Layout identico al riferimento e coerente con l'asse live sottostante:
+    /// "Oggi" a sinistra, ora precedente (`windowStart`), freccia/chevron
+    /// come separatore, ora successiva (`windowEnd`) allineata a destra.
+    /// Poiche' `previousTimeLabel` e `nextTimeLabel` derivano dalla stessa
+    /// finestra della timeline, l'header non puo' mai disallinearsi rispetto
+    /// alla freccia live mostrata nella riga oraria EPG sottostante.
     private var dayTimeHeader: some View {
         HStack(alignment: .center, spacing: 10) {
             Button {
@@ -620,14 +630,17 @@ struct EPGGridView: View {
 
     /// Freccia in giu' nella riga dell'orario. Il suo centro e' liveAxisX;
     /// lo stesso liveAxisX definisce, per ogni tile, il taglio netto fra
-    /// zona accesa a sinistra e zona spenta a destra.
+    /// zona accesa a sinistra e zona spenta a destra. E' l'UNICO indicatore
+    /// live dell'intera guida: non viene duplicato ne' nell'header ne' nelle
+    /// singole tile.
     private func timeAxisRow(width: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             if isToday {
                 VStack(spacing: 1) {
-                    Text(now.formatted(date: .omitted, time: .shortened))
+                    Text(displayedTimeLabel)
                         .font(.system(size: 11, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
+                        .monospacedDigit()
 
                     Image(systemName: "arrowtriangle.down.fill")
                         .font(.system(size: 14, weight: .bold))
@@ -637,7 +650,7 @@ struct EPGGridView: View {
                 .fixedSize()
                 .frame(width: 30, alignment: .center)
                 .offset(x: liveAxisX - 15, y: 0)
-                .accessibilityLabel("Ora: \(now.formatted(date: .omitted, time: .shortened))")
+                .accessibilityLabel("Ora: \(displayedTimeLabel)")
             }
         }
         .frame(width: width, height: timeAxisHeight, alignment: .topLeading)
