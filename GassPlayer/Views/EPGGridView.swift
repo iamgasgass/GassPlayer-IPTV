@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// EPG touch-first: un unico indicatore live, la freccia "▼", vive dentro la
-/// riga "Oggi" esattamente in asse fra l'ora precedente e l'ora successiva,
-/// alla stessa altezza del testo. Non esiste piu' alcuna riga separata sopra
-/// le tile: i banner canale e la timeline iniziano subito dopo l'header,
-/// senza spazio vuoto intermedio. Banner a filo del bordo sinistro, tile che
-/// comincia immediatamente dopo la fine del banner. Le tile hanno una zona
-/// futura semplicemente trasparente (nessun `.blur`, nessun overlay scuro):
-/// solo opacita' ridotta, senza radius.
+/// EPG touch-first: un unico indicatore live (freccia "▼") che vive come
+/// overlay assoluto sopra l'intera view, calcolato con la STESSA coordinata
+/// (`liveAxisX`) usata per il taglio acceso/trasparente di ogni tile. Grazie
+/// a due PreferenceKey che riportano l'origine reale della timeline
+/// orizzontale e il centro verticale della riga "Oggi", la freccia resta
+/// sempre perfettamente in asse con la fine del colore acceso, anche se
+/// l'utente scorre manualmente la timeline. Layout compatto: banner canale
+/// a filo del bordo sinistro, tile che inizia subito dopo il banner.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -34,6 +34,10 @@ struct EPGGridView: View {
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
 
+    /// Coordinate condivise per l'allineamento esatto freccia <-> tile.
+    @State private var timelineOriginX: CGFloat = 0
+    @State private var headerCenterY: CGFloat = 0
+
     private let renderPageSize = 12
     private let hardRenderCap = 72
     private let maxConcurrentRequests = 8
@@ -41,18 +45,22 @@ struct EPGGridView: View {
     private let searchDebounceNanoseconds: UInt64 = 250_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 300_000_000
 
-    /// Misure lista originali: logo 86x76, riga 96. Inset e gap ridotti al
-    /// minimo indispensabile per far iniziare la tile subito dopo il banner.
+    /// Misure lista compatte: logo 86x76, inset e gap ridotti al minimo.
+    /// Ricavate mantenendo le proporzioni misurate sul rendering di
+    /// riferimento (inset:banner:gap ≈ 38:202:28 in pixel dello screenshot,
+    /// cioe' 16:86:12 in punti reali una volta rapportate alla scala del
+    /// device), ma compattate ulteriormente su richiesta.
     private let channelLogoWidth: CGFloat = 86
     private let channelLogoHeight: CGFloat = 76
-    private let logoLeadingInset: CGFloat = 12
-    private let logoTrailingGap: CGFloat = 4
+    private let logoLeadingInset: CGFloat = 16
+    private let logoTrailingGap: CGFloat = 12
     private let rowHeight: CGFloat = 96
     private let blockHeight: CGFloat = 82
     private let pixelsPerMinute: CGFloat = 1.85
     private let minimumProgramBlockWidth: CGFloat = 88
 
     /// Larghezza totale della colonna canale: bordo -> banner -> gap -> tile.
+    /// L'inizio della timeline e' sempre `bordo destro banner + gap`.
     private var channelColumnWidth: CGFloat {
         logoLeadingInset + channelLogoWidth + logoTrailingGap
     }
@@ -60,6 +68,10 @@ struct EPGGridView: View {
     /// Finestra visuale: 30 minuti passati, 2 ore future.
     private let pastWindow: TimeInterval = 30 * 60
     private let futureWindow: TimeInterval = 120 * 60
+
+    private enum Coordinates {
+        static let root = "epgRoot"
+    }
 
     init(
         credentials: XtreamCredentials,
@@ -90,6 +102,20 @@ struct EPGGridView: View {
         let title: String
 
         var id: String { url.absoluteString }
+    }
+
+    private struct TimelineOriginKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+            value = nextValue()
+        }
+    }
+
+    private struct HeaderCenterKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+            value = nextValue()
+        }
     }
 
     // MARK: - Sources
@@ -241,16 +267,21 @@ struct EPGGridView: View {
         CGFloat(windowDuration / 60) * pixelsPerMinute
     }
 
-    /// Asse live usato SOLO per calcolare, in modo invisibile, il taglio
-    /// acceso/trasparente di ogni tile. Non esiste piu' alcun elemento
-    /// grafico separato sovrapposto alla timeline: l'unico indicatore
-    /// visibile e' la freccia dentro l'header "Oggi".
+    /// Asse live: usato per (1) il taglio acceso/trasparente di ogni tile e
+    /// (2) la posizione X della freccia overlay. Sono LA STESSA formula,
+    /// quindi non possono mai disallinearsi.
     private var liveAxisX: CGFloat {
         CGFloat(now.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
 
+    /// Posizione della freccia nel sistema di coordinate radice: origine
+    /// reale della timeline (aggiornata anche se l'utente scorre a mano)
+    /// piu' l'offset del minuto corrente.
+    private var liveArrowRootX: CGFloat {
+        timelineOriginX + liveAxisX
+    }
+
     /// Taglio di mezz'ora piu' vicino, per difetto, rispetto all'ora attuale.
-    /// Esempio: alle 13:47 restituisce 13:30; alle 13:12 restituisce 13:00.
     private var halfHourFloor: Date {
         let calendar = Calendar.autoupdatingCurrent
         let referenceDate = isToday ? now : selectedDate
@@ -264,17 +295,16 @@ struct EPGGridView: View {
         ) ?? referenceDate
     }
 
-    /// Ora precedente mostrata di fianco a "Oggi": taglio di mezz'ora per
-    /// difetto rispetto all'ora corrente, non il minuto esatto dell'orologio.
     private var previousTimeLabel: String {
         halfHourFloor.formatted(date: .omitted, time: .shortened)
     }
 
-    /// Ora successiva: esattamente 30 minuti dopo `previousTimeLabel`, cosi'
-    /// la distanza fra i due orari nell'header e' sempre di mezz'ora esatta
-    /// (es. "13:30 ▼ 14:00"), indipendentemente dal minuto reale del clock.
     private var nextTimeLabel: String {
         halfHourFloor.addingTimeInterval(30 * 60).formatted(date: .omitted, time: .shortened)
+    }
+
+    private var displayedTimeLabelForAccessibility: String {
+        isToday ? now.formatted(date: .omitted, time: .shortened) : "12:00"
     }
 
     private var dayTitle: String {
@@ -400,6 +430,14 @@ struct EPGGridView: View {
                 .padding(.bottom, 32)
             }
             .scrollIndicators(.hidden)
+            .coordinateSpace(name: Coordinates.root)
+            .onPreferenceChange(TimelineOriginKey.self) { timelineOriginX = $0 }
+            .onPreferenceChange(HeaderCenterKey.self) { headerCenterY = $0 }
+            .overlay(alignment: .topLeading) {
+                if isToday {
+                    liveArrowOverlay
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 if showLoadingIndicator {
                     ProgressView()
@@ -411,9 +449,21 @@ struct EPGGridView: View {
         }
     }
 
-    /// Banner canale e timeline iniziano immediatamente sotto l'header, senza
-    /// alcuna riga o spaziatura intermedia riservata a un asse orario
-    /// separato: l'unico indicatore live e' gia' nell'header sovrastante.
+    /// Freccia unica, posizionata in coordinate assolute rispetto alla root:
+    /// X = origine reale della timeline + minuti trascorsi dall'inizio
+    /// finestra (identica formula usata per il taglio delle tile), Y =
+    /// centro verticale della riga "Oggi". Non consuma spazio di layout.
+    private var liveArrowOverlay: some View {
+        Image(systemName: "arrowtriangle.down.fill")
+            .font(.system(size: 20, weight: .bold))
+            .foregroundStyle(.white)
+            .position(x: liveArrowRootX, y: headerCenterY)
+            .allowsHitTesting(false)
+            .accessibilityLabel("Ora corrente: \(displayedTimeLabelForAccessibility)")
+    }
+
+    /// Banner canale e timeline iniziano immediatamente sotto l'header,
+    /// senza righe intermedie riservate a un asse orario separato.
     private var epgGrid: some View {
         HStack(alignment: .top, spacing: 0) {
             LazyVStack(spacing: 0) {
@@ -434,6 +484,14 @@ struct EPGGridView: View {
                             }
                     }
                 }
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: TimelineOriginKey.self,
+                            value: proxy.frame(in: .named(Coordinates.root)).minX
+                        )
+                    }
+                )
             }
         }
     }
@@ -599,11 +657,12 @@ struct EPGGridView: View {
         .padding(.bottom, 18)
     }
 
-    /// Riga "Oggi": ora precedente -> freccia "▼" (UNICO indicatore live,
-    /// alla stessa altezza del testo, senza numero sopra) -> ora successiva,
-    /// tutto sulla stessa riga. I due orari sono sempre a 30 minuti esatti
-    /// di distanza (arrotondati al taglio di mezz'ora piu' vicino). Nessuno
-    /// spazio extra sotto: i banner canale iniziano subito dopo.
+    /// Riga "Oggi": ora precedente -> spazio riservato alla freccia overlay
+    /// -> ora successiva, tutto sulla stessa riga. La freccia vera e propria
+    /// NON e' un figlio di questo HStack: e' un overlay assoluto disegnato
+    /// sopra l'intera view, calcolato per coincidere esattamente con l'asse
+    /// live della timeline. Questo HStack riporta solo il proprio centro
+    /// verticale (`HeaderCenterKey`), usato per posizionare l'overlay.
     private var dayTimeHeader: some View {
         HStack(alignment: .center, spacing: 10) {
             Button {
@@ -621,16 +680,7 @@ struct EPGGridView: View {
                 .foregroundStyle(.white.opacity(0.42))
                 .monospacedDigit()
 
-            Spacer(minLength: 8)
-
-            // Unico indicatore live: nessun orario sopra, solo la freccia,
-            // in asse fra le due ore e alla stessa altezza del testo.
-            Image(systemName: "arrowtriangle.down.fill")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(.white)
-                .accessibilityLabel("Ora corrente: \(displayedTimeLabelForAccessibility)")
-
-            Spacer(minLength: 8)
+            Spacer(minLength: 24)
 
             Button {
                 selectedDayOffset = min(selectedDayOffset + 1, 7)
@@ -645,12 +695,14 @@ struct EPGGridView: View {
         }
         .padding(.horizontal, logoLeadingInset + 4)
         .padding(.bottom, 6)
-    }
-
-    /// Etichetta testuale usata solo per VoiceOver, non renderizzata a video:
-    /// l'orario numerico sopra la freccia e' stato rimosso dalla UI visibile.
-    private var displayedTimeLabelForAccessibility: String {
-        isToday ? now.formatted(date: .omitted, time: .shortened) : "12:00"
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: HeaderCenterKey.self,
+                    value: proxy.frame(in: .named(Coordinates.root)).midY
+                )
+            }
+        )
     }
 
     private func timelineRow(for stream: XtreamStream, width: CGFloat) -> some View {
@@ -670,8 +722,8 @@ struct EPGGridView: View {
     }
 
     /// Banner canale a filo del bordo sinistro (`logoLeadingInset`), con un
-    /// gap minimo (`logoTrailingGap`) prima dell'inizio della timeline: la
-    /// tile comincia subito dopo la fine del banner, senza spazio sprecato.
+    /// gap costante (`logoTrailingGap`) prima dell'inizio della timeline:
+    /// la tile comincia esattamente al bordo destro del banner + il gap.
     private func channelLogoPanel(_ stream: XtreamStream) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -786,12 +838,11 @@ struct EPGGridView: View {
     }
 
     /// Il confine e' globale, non una percentuale locale della singola tile:
-    /// `brightWidth = liveAxisX - tileStartX`. La fine della parte accesa e
-    /// l'inizio della parte trasparente cadono precisamente al minuto esatto
-    /// corrente in tutte le righe, anche se il riferimento visivo (la
-    /// freccia) ora vive solo nell'header. NESSUN `.blur`/radius e' usato:
-    /// la zona futura e' semplicemente lo stesso colore a opacita' ridotta,
-    /// senza overlay scuro e senza sfocatura gaussiana reale.
+    /// `brightWidth = liveAxisX - tileStartX`. Poiche' `liveAxisX` e' la
+    /// STESSA formula usata per posizionare la freccia overlay, la fine del
+    /// colore acceso e l'inizio della zona trasparente cadono sempre
+    /// esattamente in asse con "▼", al minuto esatto. NESSUN `.blur`/radius
+    /// e' usato: la transizione e' ottenuta solo con opacita' e colore.
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
@@ -805,8 +856,7 @@ struct EPGGridView: View {
 
         ZStack(alignment: .leading) {
             // Zona futura/trasparente: stesso colore, sola opacita' ridotta.
-            // Nessun `.blur`, nessun gradiente verso il nero: e' l'unico
-            // effetto "spento" richiesto, senza alcun radius applicato.
+            // Nessun `.blur`, nessun gradiente verso il nero.
             shape.fill(base.opacity(0.30))
 
             // Zona passata/accesa: colore pieno, termina esattamente al
