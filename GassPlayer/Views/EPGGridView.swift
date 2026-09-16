@@ -1,12 +1,13 @@
 import SwiftUI
 
 /// EPG touch-first con una geometria essenziale:
-/// - "Oggi" e banner canale restano fissi a sinistra, entrambi allineati
-///   esattamente al bordo iniziale della barra di ricerca (stesso inset);
-/// - dalla destra di "Oggi" in poi, orari, freccia live e tile condividono
-///   un unico ScrollView orizzontale;
-/// - la fine del colore acceso e l'inizio dell'area trasparente di ogni tile
-///   coincidono, in asse verticale, con la freccia "▼" dell'header.
+/// - "Oggi" e banner canale restano fissi a sinistra, allineati allo stesso
+///   inset della barra di ricerca;
+/// - la colonna banner e' larga esattamente `fixedLeadingInset + banner`,
+///   senza gap aggiuntivo: la tile inizia dove finisce il banner;
+/// - la riga oraria mostra, rispetto all'istante dell'indicatore live:
+///   -30 minuti, la freccia "▼", +1 ora, +2 ore, tutte posizionate sulla
+///   stessa coordinata usata per il taglio acceso/trasparente delle tile.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -40,12 +41,11 @@ struct EPGGridView: View {
     private let searchDebounceNanoseconds: UInt64 = 250_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 300_000_000
 
-    /// `fixedLeadingInset` e' lo stesso inset orizzontale della barra di
-    /// ricerca (`searchHeader`): "Oggi" e i banner canale partono da qui,
-    /// garantendo l'allineamento verticale richiesto fra le tre sezioni.
-    private let fixedLeadingInset: CGFloat = 16
+    /// Stesso inset orizzontale della barra di ricerca: "Oggi" e i banner
+    /// canale partono da qui. La colonna banner NON ha gap aggiuntivo dopo
+    /// il banner: la tile inizia esattamente dove il banner finisce.
+    private let fixedLeadingInset: CGFloat = 12
     private let channelBannerWidth: CGFloat = 86
-    private let bannerToTimelineGap: CGFloat = 4
     private let rowHeight: CGFloat = 96
     private let bannerHeight: CGFloat = 76
     private let blockHeight: CGFloat = 82
@@ -53,11 +53,12 @@ struct EPGGridView: View {
     private let timelineTopInset: CGFloat = 7
     private let pixelsPerMinute: CGFloat = 1.85
     private let minimumProgramBlockWidth: CGFloat = 88
+    private let arrowGlyphWidth: CGFloat = 20
 
-    /// Larghezza della colonna fissa: esattamente inset + banner + gap,
-    /// nessuno spazio ulteriore. La tile inizia subito dopo questa colonna.
+    /// Larghezza della colonna fissa: esattamente inset + banner, nulla di
+    /// piu'. La tile comincia subito dopo.
     private var fixedColumnWidth: CGFloat {
-        fixedLeadingInset + channelBannerWidth + bannerToTimelineGap
+        fixedLeadingInset + channelBannerWidth
     }
 
     /// Finestra visuale: 30 minuti passati, 2 ore future.
@@ -235,36 +236,34 @@ struct EPGGridView: View {
         CGFloat(windowDuration / 60) * pixelsPerMinute
     }
 
-    /// Coordinata dell'istante live sul canvas orizzontale condiviso: e' la
-    /// SOLA coordinata usata sia per la freccia dell'header, sia per il
-    /// confine acceso/trasparente di ogni tile. Nessun altro calcolo separato.
+    /// Coordinata dell'istante mostrato dalla freccia "▼" sul canvas
+    /// orizzontale condiviso. E' la SOLA coordinata usata sia per posizionare
+    /// gli orari dell'header sia per il confine acceso/trasparente di ogni
+    /// tile: entrambi derivano da `windowStart` con lo stesso `pixelsPerMinute`.
     private var liveAxisX: CGFloat {
-        CGFloat(now.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
+        CGFloat(windowCenter.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
+    }
+
+    /// Coordinata x corrispondente a `minutesFromLive` minuti di distanza
+    /// dall'istante della freccia, sullo stesso asse di `liveAxisX`.
+    private func axisX(minutesFromLive: Double) -> CGFloat {
+        liveAxisX + CGFloat(minutesFromLive) * pixelsPerMinute
     }
 
     private var displayedTimeLabel: String {
-        isToday ? now.formatted(date: .omitted, time: .shortened) : "12:00"
+        windowCenter.formatted(date: .omitted, time: .shortened)
     }
 
-    private var halfHourFloor: Date {
-        let calendar = Calendar.autoupdatingCurrent
-        let referenceDate = isToday ? now : selectedDate
-        let minute = calendar.component(.minute, from: referenceDate)
-        let roundedMinute = minute < 30 ? 0 : 30
-        return calendar.date(
-            bySettingHour: calendar.component(.hour, from: referenceDate),
-            minute: roundedMinute,
-            second: 0,
-            of: referenceDate
-        ) ?? referenceDate
+    private var minus30MinutesLabel: String {
+        windowCenter.addingTimeInterval(-30 * 60).formatted(date: .omitted, time: .shortened)
     }
 
-    private var previousTimeLabel: String {
-        halfHourFloor.formatted(date: .omitted, time: .shortened)
+    private var plusOneHourLabel: String {
+        windowCenter.addingTimeInterval(60 * 60).formatted(date: .omitted, time: .shortened)
     }
 
-    private var nextTimeLabel: String {
-        halfHourFloor.addingTimeInterval(30 * 60).formatted(date: .omitted, time: .shortened)
+    private var plusTwoHoursLabel: String {
+        windowCenter.addingTimeInterval(120 * 60).formatted(date: .omitted, time: .shortened)
     }
 
     private var dayTitle: String {
@@ -390,7 +389,7 @@ struct EPGGridView: View {
     }
 
     /// "Oggi" e' l'unico elemento fisso dell'header. Tutto cio' che segue
-    /// (i due orari, "▼" e il canvas delle tile) vive nello stesso
+    /// (i tre orari, "▼" e il canvas delle tile) vive nello stesso
     /// ScrollView orizzontale, cosi' il loro offset di scroll resta identico.
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -413,9 +412,9 @@ struct EPGGridView: View {
         }
     }
 
-    /// Colonna fissa: "Oggi" e ogni banner iniziano esattamente allo stesso
-    /// `fixedLeadingInset` usato dalla barra di ricerca, garantendo lo stesso
-    /// allineamento verticale fra le tre sezioni richiesto.
+    /// Colonna fissa: "Oggi" e ogni banner iniziano allo stesso
+    /// `fixedLeadingInset` della barra di ricerca. Larghezza colonna =
+    /// esattamente inset + banner, senza alcun gap ulteriore.
     private var fixedDayAndChannelColumn: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             Button {
@@ -442,35 +441,42 @@ struct EPGGridView: View {
         }
     }
 
-    /// Header scorrevole: ora precedente, freccia live e ora successiva sono
-    /// tutti verticalmente centrati con lo stesso `.frame(height:)`, quindi
-    /// nessuno dei tre risulta piu' basso degli altri. La freccia usa
-    /// esattamente `liveAxisX`, la stessa coordinata usata dalle tile.
+    /// Header scorrevole: -30 minuti, freccia live, +1 ora, +2 ore, tutti
+    /// posizionati con `axisX(minutesFromLive:)`, la stessa formula usata dal
+    /// confine acceso/trasparente delle tile. Nessun offset arbitrario.
     private func scrollingTimelineHeader(width: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
-            Text(previousTimeLabel)
+            Text(minus30MinutesLabel)
                 .font(.system(size: 22, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.42))
                 .monospacedDigit()
                 .fixedSize()
                 .frame(height: timelineHeaderHeight, alignment: .center)
-                .offset(x: max(0, liveAxisX - 120))
+                .offset(x: axisX(minutesFromLive: -30))
 
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 20, weight: .bold))
                 .foregroundStyle(.white)
                 .fixedSize()
                 .frame(height: timelineHeaderHeight, alignment: .center)
-                .offset(x: liveAxisX - 10)
+                .offset(x: liveAxisX - arrowGlyphWidth / 2)
                 .accessibilityLabel("Ora corrente: \(displayedTimeLabel)")
 
-            Text(nextTimeLabel)
+            Text(plusOneHourLabel)
                 .font(.system(size: 22, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.65))
                 .monospacedDigit()
                 .fixedSize()
                 .frame(height: timelineHeaderHeight, alignment: .center)
-                .offset(x: liveAxisX + 44)
+                .offset(x: axisX(minutesFromLive: 60))
+
+            Text(plusTwoHoursLabel)
+                .font(.system(size: 22, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.65))
+                .monospacedDigit()
+                .fixedSize()
+                .frame(height: timelineHeaderHeight, alignment: .center)
+                .offset(x: axisX(minutesFromLive: 120))
         }
         .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
     }
