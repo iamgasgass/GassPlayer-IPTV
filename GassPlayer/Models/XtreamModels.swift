@@ -15,11 +15,34 @@ struct XtreamAuthResponse: Codable {
         let username: String
         let status: String
         let expDate: String?
+        /// Numero di connessioni simultanee attualmente in uso (campo Xtream `active_cons`).
+        let activeConnections: String?
+        /// Numero massimo di connessioni simultanee consentite (campo Xtream `max_connections`).
+        let maxConnections: String?
 
         enum CodingKeys: String, CodingKey {
             case username
             case status
             case expDate = "exp_date"
+            case activeConnections = "active_cons"
+            case maxConnections = "max_connections"
+        }
+
+        // Init personalizzato: i pannelli Xtream non sono coerenti nel tipo
+        // usato per questi campi (a volte stringa, a volte numero), quindi
+        // si usa la decodifica "flessibile" già impiegata altrove nel file
+        // per evitare che l'intera autenticazione fallisca per un tipo
+        // inatteso su un campo puramente informativo.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+
+            username = container.decodeFlexibleString(forKey: .username) ?? ""
+            status = container.decodeFlexibleString(forKey: .status) ?? "unknown"
+            expDate = container.decodeFlexibleString(forKey: .expDate)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nonEmpty
+            activeConnections = container.decodeFlexibleString(forKey: .activeConnections)
+            maxConnections = container.decodeFlexibleString(forKey: .maxConnections)
         }
     }
 

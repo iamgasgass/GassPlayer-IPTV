@@ -5,6 +5,8 @@ struct SeriesEpisodesView: View {
     let seriesId: Int
     let seriesName: String
 
+    @EnvironmentObject private var recentlyWatched: RecentlyWatchedStore
+
     @State private var seriesInfo: XtreamSeriesInfo?
     @State private var selectedSeason: Int?
     @State private var isLoading = true
@@ -69,14 +71,27 @@ struct SeriesEpisodesView: View {
         if let url = service.episodeStreamURL(episodeId: episode.streamId, ext: ext) {
             selectedEpisodeTitle = episode.title
             selectedEpisodeURL = url
+
+            recentlyWatched.record(
+                id: [
+                    credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                    credentials.username,
+                    "series",
+                    String(seriesId),
+                    String(episode.streamId)
+                ].joined(separator: "|"),
+                title: "\(seriesName) · \(episode.title)",
+                kind: "series",
+                streamURL: url
+            )
         }
     }
 
     private func loadSeriesInfo() async {
         isLoading = true; errorMessage = nil
-        let service = XtreamAPIService(credentials: credentials)
+        let repository = CachedXtreamRepository(credentials: credentials)
         do {
-            let info = try await service.fetchSeriesInfo(seriesId: seriesId)
+            let info = try await repository.seriesInfo(seriesId: seriesId)
             seriesInfo = info
             selectedSeason = info.sortedSeasonNumbers.first
             if info.sortedSeasonNumbers.isEmpty {

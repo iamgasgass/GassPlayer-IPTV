@@ -27,6 +27,16 @@ final class SourceManager: ObservableObject {
         guard let idx = sources.firstIndex(where: { $0.id == source.id }) else { return }
         sources[idx].name = newName; persist()
     }
+
+    /// Sostituisce integralmente una sorgente esistente (usato dalla
+    /// schermata "Modifica dettagli"): aggiorna nome, icona, host e
+    /// credenziali in un colpo solo, preservando id, ordinamento e stato
+    /// di pin/abilitazione già presenti.
+    func update(_ source: MediaSourceConfig) {
+        guard let idx = sources.firstIndex(where: { $0.id == source.id }) else { return }
+        sources[idx] = source
+        persist()
+    }
     func move(fromOffsets: IndexSet, toOffset: Int) {
         sources.move(fromOffsets: fromOffsets, toOffset: toOffset)
         for (i, _) in sources.enumerated() { sources[i].sortOrder = i }

@@ -143,6 +143,22 @@ actor XtreamAPIService {
         }
     }
 
+    /// Recupera le informazioni account senza imporre che lo stato sia
+    /// "active": usata dalla schermata "Gestisci sorgente" per mostrare lo
+    /// stato reale, le connessioni e la scadenza anche quando l'account non
+    /// è attivo — caso in cui `authenticate()` lancia `.wrongCredentials`
+    /// perché pensato per i soli flussi di riproduzione, che devono
+    /// bloccarsi subito su un account non valido.
+    func fetchAccountInfo() async throws -> XtreamAuthResponse {
+        let payload = try await data()
+
+        do {
+            return try JSONDecoder().decode(XtreamAuthResponse.self, from: payload)
+        } catch {
+            throw XtreamError.decoding(error)
+        }
+    }
+
     // MARK: - Categories
 
     func fetchCategories(kind: XtreamStreamKind) async throws -> [XtreamCategory] {

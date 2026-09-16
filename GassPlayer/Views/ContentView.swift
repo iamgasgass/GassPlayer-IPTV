@@ -21,6 +21,7 @@ struct ContentView: View {
     @StateObject private var overlayState = NavigationOverlayState()
     @StateObject private var vpnManager = PersonalVPNManager()
     @StateObject private var xtreamCatalog = XtreamCatalogStore()
+    @StateObject private var recentlyWatched = RecentlyWatchedStore()
 
     var body: some View {
         Group {
@@ -42,6 +43,7 @@ struct ContentView: View {
         .environmentObject(overlayState)
         .environmentObject(vpnManager)
         .environmentObject(xtreamCatalog)
+        .environmentObject(recentlyWatched)
     }
 
     private var mainTabs: some View {

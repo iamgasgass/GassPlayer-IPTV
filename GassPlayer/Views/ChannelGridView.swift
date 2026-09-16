@@ -71,6 +71,7 @@ struct ChannelGridView: View {
 
     @EnvironmentObject private var contentManagement: ContentManagementService
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
+    @EnvironmentObject private var recentlyWatched: RecentlyWatchedStore
 
     @AppStorage("gassplayer.grid.density")
     private var channelGridDensity = "comfortable"
@@ -307,6 +308,14 @@ struct ChannelGridView: View {
             .fullScreenCover(item: $selectedStream) { stream in
                 if let url = service.streamURL(for: stream, kind: kind) {
                     AdaptivePlayerView(url: url, title: stream.name)
+                        .onAppear {
+                            recentlyWatched.record(
+                                id: favoriteID(for: stream),
+                                title: stream.name,
+                                kind: kind.rawValue,
+                                streamURL: url
+                            )
+                        }
                 } else {
                     ContentUnavailableView(
                         "URL dello stream non valido",
@@ -460,6 +469,9 @@ struct ChannelGridView: View {
                     ) {
                         selectedSeries = item
                     }
+                    .onAppear {
+                        prefetchSeriesInfoIfNeeded(item)
+                    }
                 }
             }
             .padding(.horizontal, gridHorizontalPadding)
@@ -481,7 +493,7 @@ struct ChannelGridView: View {
                     artworkSize: artworkSize,
                     moviePosterHeight: moviePosterHeight,
                     isFavorite: contentManagement.isFavorite(id: favoriteID(for: stream)),
-                    currentProgram: kind == .live
+                    currentProgram: (kind == .live && CatalogSettings.shared.showEPGInChannelTiles)
                         ? (epgByStream[stream.streamId] ?? nil)
                         : nil,
                     onTap: {
@@ -621,6 +633,22 @@ struct ChannelGridView: View {
 
         return [host, credentials.username, kind.rawValue, String(stream.streamId)]
             .joined(separator: "|")
+    }
+
+    /// Precarica in background stagioni/episodi di una serie non appena la
+    /// sua card diventa visibile, così quando l'utente la apre davvero i
+    /// dati sono già in cache (`CachedXtreamRepository.seriesInfo`) e
+    /// `SeriesEpisodesView` non deve attendere la rete. Attivo solo se
+    /// l'utente ha abilitato "Precarica dettagli serie" in Impostazioni →
+    /// Catalogo: è una vera ottimizzazione di rete, non un semplice toggle
+    /// decorativo.
+    private func prefetchSeriesInfoIfNeeded(_ item: XtreamSeriesItem) {
+        guard CatalogSettings.shared.preloadSeries else { return }
+
+        Task {
+            _ = try? await CachedXtreamRepository(credentials: credentials)
+                .seriesInfo(seriesId: item.seriesId)
+        }
     }
 
     /// Carica il programma "in onda ora" (o il prossimo, in assenza di uno

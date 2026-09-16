@@ -106,6 +106,7 @@ struct M3UGroupChannelsView: View {
     let channels: [M3UChannel]
     let sourceKey: String
     @EnvironmentObject var contentManagement: ContentManagementService
+    @EnvironmentObject var recentlyWatched: RecentlyWatchedStore
     @State private var selectedChannel: M3UChannel?
 
     var body: some View {
@@ -147,6 +148,14 @@ struct M3UGroupChannelsView: View {
         .navigationTitle(groupTitle)
         .fullScreenCover(item: $selectedChannel) { channel in
             PlayerView(url: channel.streamURL, title: channel.title)
+                .onAppear {
+                    recentlyWatched.record(
+                        id: "\(sourceKey)-\(channel.id)",
+                        title: channel.title,
+                        kind: channel.kind.rawValue,
+                        streamURL: channel.streamURL
+                    )
+                }
         }
     }
 }

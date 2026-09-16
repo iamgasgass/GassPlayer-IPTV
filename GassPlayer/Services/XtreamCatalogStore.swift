@@ -93,6 +93,30 @@ actor CachedXtreamRepository {
         return result
     }
 
+    /// Dettaglio (stagioni/episodi) di una singola serie, con cache breve.
+    /// Usata sia da `SeriesEpisodesView` all'apertura sia dal prefetch
+    /// opzionale in `ChannelGridView` (impostazione "Precarica dettagli
+    /// serie"): se il prefetch è già passato di qui, l'apertura successiva
+    /// della serie legge dalla cache invece di rifare la chiamata di rete.
+    func seriesInfo(
+        seriesId: Int,
+        forceRefresh: Bool = false
+    ) async throws -> XtreamSeriesInfo {
+        let key = "\(cachePrefix).series.info.\(seriesId)"
+
+        if !forceRefresh,
+           let cached: XtreamSeriesInfo = await CacheService.shared.value(for: key) {
+            return cached
+        }
+
+        let result = try await RetryPolicy.withRetry(shouldRetry: Self.shouldRetry) {
+            try await self.api.fetchSeriesInfo(seriesId: seriesId)
+        }
+
+        await CacheService.shared.set(result, for: key, ttl: 300)
+        return result
+    }
+
     /// Invalida la cache relativa a un tipo di contenuto specifico, oppure
     /// l'intera sorgente se `kind` e' `nil`. A differenza di una versione
     /// precedente, un `kind` esplicito NON invalida piu' l'intera sorgente:
@@ -119,6 +143,7 @@ actor CachedXtreamRepository {
         case .series:
             await CacheService.shared.invalidate(prefix: "\(prefix)categories.series")
             await CacheService.shared.removeValue(for: "\(prefix)series.list")
+            await CacheService.shared.invalidate(prefix: "\(prefix)series.info.")
         }
     }
 

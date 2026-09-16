@@ -5,14 +5,19 @@ struct SettingsView: View {
     @EnvironmentObject var sourceManager: SourceManager
     @EnvironmentObject var lockManager: ParentalLockManager
     @EnvironmentObject var themeManager: ThemeManager
+    @EnvironmentObject var xtreamCatalog: XtreamCatalogStore
+    @EnvironmentObject var recentlyWatched: RecentlyWatchedStore
 
     @StateObject private var cloudSync = CloudSyncService()
     @StateObject private var downloadManager = DownloadManager()
+    @ObservedObject private var catalogSettings = CatalogSettings.shared
 
     @State private var subtitleLanguage = "it"
     @State private var traktConnected = false
     @State private var preferredDNS = "1.1.1.1"
     @State private var showResetConfirmation = false
+    @State private var isRefreshingCatalog = false
+    @State private var catalogActionFeedback: String?
 
     @AppStorage("gassplayer.playback.autoplayNextEpisode")
     private var autoplayNextEpisode = true
@@ -77,6 +82,23 @@ struct SettingsView: View {
         }
     }
 
+    private var activeXtreamCredentials: XtreamCredentials? {
+        sourceManager.activeSource?.xtreamCredentials
+    }
+
+    private var lastRefreshDescription: String {
+        guard let date = xtreamCatalog.lastRefreshDate else {
+            return "Mai aggiornato"
+        }
+        return "Aggiornato \(date.formatted(.relative(presentation: .named)))"
+    }
+
+    private var historyDetailDescription: String {
+        recentlyWatched.items.isEmpty
+            ? "Nessun elemento recente"
+            : "\(recentlyWatched.items.count) element\(recentlyWatched.items.count == 1 ? "o" : "i") in \u{201C}Continua a guardare\u{201D}"
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -85,6 +107,8 @@ struct SettingsView: View {
                     playbackSection
                     appearanceSection
                     librarySection
+                    catalogSection
+                    historySection
                     servicesSection
                     securitySection
                     diagnosticsSection
@@ -120,6 +144,17 @@ struct SettingsView: View {
                 Text(
                     "Autoplay, ripresa, velocità e opzioni della griglia torneranno ai valori predefiniti. Sorgenti e preferiti non verranno modificati."
                 )
+            }
+            .alert(
+                "Catalogo",
+                isPresented: Binding(
+                    get: { catalogActionFeedback != nil },
+                    set: { isPresented in if !isPresented { catalogActionFeedback = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(catalogActionFeedback ?? "")
             }
         }
     }
@@ -305,6 +340,139 @@ struct SettingsView: View {
                 )
             }
             .buttonStyle(.plain)
+        }
+    }
+
+    private var catalogSection: some View {
+        SettingsSection(
+            title: "Catalogo",
+            subtitle: "Aggiornamento canali, VOD e serie",
+            symbol: "arrow.triangle.2.circlepath",
+            tint: .teal
+        ) {
+            Menu {
+                Picker(
+                    "Aggiornamento automatico",
+                    selection: $catalogSettings.refreshInterval
+                ) {
+                    ForEach(CatalogSettings.RefreshInterval.allCases) { interval in
+                        Text(interval.title).tag(interval)
+                    }
+                }
+            } label: {
+                SettingsRow(
+                    title: "Aggiornamento automatico",
+                    detail: catalogSettings.refreshInterval.title,
+                    symbol: "clock.arrow.2.circlepath",
+                    tint: .teal,
+                    showsChevron: true
+                )
+            }
+            .buttonStyle(.plain)
+
+            SettingsDivider()
+
+            SettingsToggleRow(
+                title: "Aggiorna all'avvio",
+                detail: "Controlla nuovi contenuti ogni volta che apri l'app",
+                symbol: "bolt.badge.clock",
+                tint: .teal,
+                isOn: $catalogSettings.refreshOnLaunch
+            )
+
+            SettingsDivider()
+
+            SettingsToggleRow(
+                title: "Programma in corso nelle celle",
+                detail: "Mostra il programma live sotto ai canali in Live TV",
+                symbol: "text.below.photo",
+                tint: .cyan,
+                isOn: $catalogSettings.showEPGInChannelTiles
+            )
+
+            SettingsDivider()
+
+            SettingsToggleRow(
+                title: "Precarica dettagli serie",
+                detail: "Scarica stagioni ed episodi mentre scorri la griglia",
+                symbol: "square.stack.3d.down.forward.fill",
+                tint: .indigo,
+                isOn: $catalogSettings.preloadSeries
+            )
+
+            SettingsDivider()
+
+            Button {
+                Task { await refreshCatalogNow() }
+            } label: {
+                HStack {
+                    SettingsRow(
+                        title: "Aggiorna catalogo ora",
+                        detail: activeXtreamCredentials == nil
+                            ? "Richiede una sorgente Xtream attiva"
+                            : lastRefreshDescription,
+                        symbol: "arrow.clockwise",
+                        tint: .green,
+                        showsChevron: false
+                    )
+
+                    if isRefreshingCatalog {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isRefreshingCatalog || activeXtreamCredentials == nil)
+
+            SettingsDivider()
+
+            Button(role: .destructive) {
+                Task { await clearCatalogCache() }
+            } label: {
+                SettingsRow(
+                    title: "Svuota cache catalogo",
+                    detail: "La prossima apertura richiederà una nuova sincronizzazione",
+                    symbol: "trash",
+                    tint: .red,
+                    showsChevron: false,
+                    destructive: true
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var historySection: some View {
+        SettingsSection(
+            title: "Cronologia",
+            subtitle: "\"Continua a guardare\" in Home",
+            symbol: "clock.arrow.circlepath",
+            tint: .pink
+        ) {
+            SettingsRow(
+                title: "Elementi recenti",
+                detail: historyDetailDescription,
+                symbol: "play.rectangle.on.rectangle.fill",
+                tint: .pink,
+                showsChevron: false
+            )
+
+            SettingsDivider()
+
+            Button(role: .destructive) {
+                withAnimation(.snappy) { recentlyWatched.clear() }
+            } label: {
+                SettingsRow(
+                    title: "Svuota cronologia",
+                    detail: "Rimuove tutti gli elementi da \u{201C}Continua a guardare\u{201D}",
+                    symbol: "trash",
+                    tint: .red,
+                    showsChevron: false,
+                    destructive: true
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(recentlyWatched.items.isEmpty)
         }
     }
 
@@ -524,6 +692,35 @@ struct SettingsView: View {
         preferredPlaybackSpeed = 1.0
         channelGridDensity = "comfortable"
         showChannelNumbers = false
+    }
+
+    // MARK: - Azioni catalogo
+
+    @MainActor
+    private func refreshCatalogNow() async {
+        guard let credentials = activeXtreamCredentials else { return }
+        guard !isRefreshingCatalog else { return }
+
+        isRefreshingCatalog = true
+        defer { isRefreshingCatalog = false }
+
+        await xtreamCatalog.refresh(credentials: credentials)
+
+        switch xtreamCatalog.state {
+        case .loaded:
+            catalogActionFeedback = "Catalogo aggiornato correttamente."
+        case .failed(let message):
+            catalogActionFeedback = "Aggiornamento non riuscito: \(message)"
+        default:
+            catalogActionFeedback = "Aggiornamento avviato."
+        }
+    }
+
+    @MainActor
+    private func clearCatalogCache() async {
+        await xtreamCatalog.clearPersistedCache(credentials: activeXtreamCredentials)
+        xtreamCatalog.reset()
+        catalogActionFeedback = "Cache del catalogo svuotata. Verrà ricostruita al prossimo aggiornamento."
     }
 }
 

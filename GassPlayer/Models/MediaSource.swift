@@ -36,6 +36,10 @@ struct MediaSourceConfig: Codable, Identifiable, Equatable {
     var lastVerificationSucceeded: Bool?
     /// Numero di canali live rilevati durante l'ultima verifica (solo Xtream).
     var lastKnownChannelCount: Int?
+    /// Icona scelta dall'utente per identificare la sorgente/playlist
+    /// (mostrata nella schermata "Modifica dettagli"). `nil` finché
+    /// l'utente non ne sceglie una: si ricade sull'icona di `type`.
+    var iconName: String?
 
     init(
         id: UUID = UUID(),
@@ -50,7 +54,8 @@ struct MediaSourceConfig: Codable, Identifiable, Equatable {
         isPinned: Bool = false,
         lastVerifiedAt: Date? = nil,
         lastVerificationSucceeded: Bool? = nil,
-        lastKnownChannelCount: Int? = nil
+        lastKnownChannelCount: Int? = nil,
+        iconName: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -65,6 +70,7 @@ struct MediaSourceConfig: Codable, Identifiable, Equatable {
         self.lastVerifiedAt = lastVerifiedAt
         self.lastVerificationSucceeded = lastVerificationSucceeded
         self.lastKnownChannelCount = lastKnownChannelCount
+        self.iconName = iconName
     }
 
     // Init manuale così le sorgenti salvate prima dell'introduzione dei nuovi
@@ -85,5 +91,24 @@ struct MediaSourceConfig: Codable, Identifiable, Equatable {
         lastVerifiedAt = try container.decodeIfPresent(Date.self, forKey: .lastVerifiedAt)
         lastVerificationSucceeded = try container.decodeIfPresent(Bool.self, forKey: .lastVerificationSucceeded)
         lastKnownChannelCount = try container.decodeIfPresent(Int.self, forKey: .lastKnownChannelCount)
+        iconName = try container.decodeIfPresent(String.self, forKey: .iconName)
+    }
+}
+
+extension MediaSourceConfig {
+    /// Credenziali Xtream valide costruite da questa sorgente, se applicabile.
+    /// `nil` per sorgenti non-Xtream o con username/password mancanti, così
+    /// le viste che consumano questo valore possono disabilitare in modo
+    /// sicuro le funzioni che richiedono l'API Xtream (Guida TV, Gestisci EPG, ecc.).
+    var xtreamCredentials: XtreamCredentials? {
+        guard type == .xtream else { return nil }
+
+        guard let username = username?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !username.isEmpty,
+              let password, !password.isEmpty else {
+            return nil
+        }
+
+        return XtreamCredentials(host: host, username: username, password: password)
     }
 }
