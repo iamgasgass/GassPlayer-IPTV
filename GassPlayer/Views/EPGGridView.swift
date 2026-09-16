@@ -3,10 +3,9 @@ import SwiftUI
 /// EPG touch-first con geometria a colonna esplicita:
 /// - colonna banner = inset sinistro + banner + stesso inset sinistro;
 /// - sezione ora e tile iniziano esattamente al bordo destro della colonna;
-/// - nella sezione ora, i caratteri ':' degli orari futuri sono distanti
-///   precisamente 80pt, attraverso un passo temporale costante;
+/// - nella sezione ora, i due punti ':' degli orari futuri sono distanti 80pt;
 /// - il centro della freccia "▼" e il confine acceso/trasparente delle tile
-///   condividono l'identica coordinata `liveAxisX`, senza rampa oltre l'asse.
+///   condividono l'identica coordinata `liveAxisX`.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -42,10 +41,8 @@ struct EPGGridView: View {
 
     // MARK: - Fixed EPG geometry
 
-    /// Definizione richiesta della colonna banner:
-    /// `bannerColumnWidth = inset + banner + inset`.
-    /// Il secondo inset usa ESATTAMENTE lo stesso valore del primo, non un
-    /// valore distinto. La sezione ora e le tile iniziano al suo bordo destro.
+    /// Formula richiesta: `inset sinistro + banner + inset sinistro`.
+    /// La sezione ora e le tile iniziano esattamente dopo questa colonna.
     private let bannerInset: CGFloat = 12
     private let channelBannerWidth: CGFloat = 86
     private let rowHeight: CGFloat = 96
@@ -57,14 +54,11 @@ struct EPGGridView: View {
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Passo della riga oraria: la coordinata del carattere ':' di un orario
-    /// futuro e quella del ':' successivo hanno una distanza esatta di 80pt.
-    /// Per mantenere questa geometria, l'intervallo associato e' 60 minuti.
-    private let futureClockColonStep: CGFloat = 80
-    private let futureClockIntervalMinutes: Double = 60
+    /// Distanza effettiva fra i caratteri ':' degli orari futuri.
+    private let futureTimeColonSpacing: CGFloat = 80
+    private let timeLabelWidth: CGFloat = 56
 
     /// Unica larghezza ufficiale: 12 + 86 + 12 = 110pt.
-    /// Non esistono altri padding della griglia o gap dopo la colonna.
     private var bannerColumnWidth: CGFloat {
         bannerInset + channelBannerWidth + bannerInset
     }
@@ -250,11 +244,8 @@ struct EPGGridView: View {
         CGFloat(windowCenter.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
 
-    /// Coordinate dedicate della riga oraria. Sono calcolate rispetto al
-    /// carattere ':' dell'orario live: ogni ora futura e' separata di 80pt
-    /// dal ':' dell'ora futura precedente, come richiesto.
-    private func clockColonAxisX(hoursFromLive: Int) -> CGFloat {
-        liveAxisX + CGFloat(hoursFromLive) * futureClockColonStep
+    private func axisX(minutesFromLive: Double) -> CGFloat {
+        liveAxisX + CGFloat(minutesFromLive) * pixelsPerMinute
     }
 
     private var displayedTimeLabel: String {
@@ -266,11 +257,11 @@ struct EPGGridView: View {
     }
 
     private var plusOneHourLabel: String {
-        windowCenter.addingTimeInterval(futureClockIntervalMinutes * 60).formatted(date: .omitted, time: .shortened)
+        windowCenter.addingTimeInterval(60 * 60).formatted(date: .omitted, time: .shortened)
     }
 
     private var plusTwoHoursLabel: String {
-        windowCenter.addingTimeInterval(futureClockIntervalMinutes * 120).formatted(date: .omitted, time: .shortened)
+        windowCenter.addingTimeInterval(120 * 60).formatted(date: .omitted, time: .shortened)
     }
 
     private var dayTitle: String {
@@ -395,9 +386,9 @@ struct EPGGridView: View {
         }
     }
 
-    /// Non applica padding esterni: la colonna fissa e' precisamente
-    /// 12 + 86 + 12 = 110pt; la sezione ora/tile inizia nel child successivo
-    /// dell'HStack, esattamente a x = 110pt.
+    /// Nessun padding esterno: la colonna fissa e' precisamente
+    /// inset + banner + inset. La sezione ora/tile e' il child immediatamente
+    /// successivo dell'HStack e parte esattamente da quella larghezza.
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
             fixedDayAndChannelColumn
@@ -419,8 +410,8 @@ struct EPGGridView: View {
         }
     }
 
-    /// Colonna fissa da 110pt: “Oggi” e banner iniziano a 12pt; restano 12pt
-    /// tra bordo destro del banner e inizio della sezione ora/tile.
+    /// Colonna fissa: “Oggi” e banner iniziano all'inset sinistro; rimane lo
+    /// stesso inset a destra del banner prima dell'inizio della tile.
     private var fixedDayAndChannelColumn: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             Button {
@@ -447,17 +438,16 @@ struct EPGGridView: View {
         }
     }
 
-    /// -30 min -> ▼ -> +1 h -> +2 h. Le ore future sono posizionate in base
-    /// alla coordinata del loro carattere ':': +1h e +2h hanno esattamente
-    /// 80pt di distanza (non dipendono dalla larghezza dinamica del testo).
+    /// -30 min -> ▼ -> +1 h -> +2 h.
+    /// Il primo orario futuro (+1 h) e il secondo (+2 h) hanno i rispettivi
+    /// caratteri ':' distanti ESATTAMENTE 80pt: lo spazio e' imposto dal
+    /// layout, non dipende dal font o dalla larghezza delle stringhe.
     private func scrollingTimelineHeader(width: CGFloat) -> some View {
-        ZStack(alignment: .topLeading) {
-            clockLabel(
-                minus30MinutesLabel,
-                colonX: liveAxisX - futureClockColonStep / 2,
-                width: width,
-                opacity: 0.42
-            )
+        let futureColonX = axisX(minutesFromLive: 60)
+        let secondFutureColonX = futureColonX + futureTimeColonSpacing
+
+        return ZStack(alignment: .topLeading) {
+            timeLabel(minus30MinutesLabel, colonX: axisX(minutesFromLive: -30), width: width, opacity: 0.42)
 
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 20, weight: .bold))
@@ -466,38 +456,30 @@ struct EPGGridView: View {
                 .offset(x: liveAxisX - arrowGlyphWidth / 2)
                 .accessibilityLabel("Ora corrente: \(displayedTimeLabel)")
 
-            clockLabel(
-                plusOneHourLabel,
-                colonX: clockColonAxisX(hoursFromLive: 1),
-                width: width,
-                opacity: 0.65
-            )
-
-            clockLabel(
-                plusTwoHoursLabel,
-                colonX: clockColonAxisX(hoursFromLive: 2),
-                width: width,
-                opacity: 0.65
-            )
+            timeLabel(plusOneHourLabel, colonX: futureColonX, width: width, opacity: 0.65)
+            timeLabel(plusTwoHoursLabel, colonX: secondFutureColonX, width: width, opacity: 0.65)
         }
         .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
     }
 
-    /// Font monospaziato: “HH:mm” ha larghezza stabile di 58pt a 22pt.
-    /// Il ':' e' il terzo carattere e il suo centro cade a meta' label: con
-    /// `.position(x: colonX, ...)` ogni colon e' precisamente dove richiesto.
-    private func clockLabel(
+    /// Posiziona un orario `HH:mm` in modo che il suo ':' sia esattamente a
+    /// `colonX`. Per un font monospaziato i due caratteri HH occupano meta'
+    /// della label a sinistra del ':', mentre mm occupa meta' a destra.
+    private func timeLabel(
         _ label: String,
         colonX: CGFloat,
         width: CGFloat,
         opacity: Double
     ) -> some View {
         Text(label)
-            .font(.system(size: 22, weight: .medium, design: .monospaced))
-            .monospacedDigit()
+            .font(.system(size: 22, weight: .medium, design: .rounded))
             .foregroundStyle(.white.opacity(opacity))
-            .fixedSize()
-            .position(x: colonX, y: timelineHeaderHeight / 2)
+            .monospacedDigit()
+            .frame(width: timeLabelWidth, height: timelineHeaderHeight, alignment: .center)
+            .position(
+                x: colonX + timeLabelWidth / 2 - timeLabelWidth * 0.6,
+                y: timelineHeaderHeight / 2
+            )
             .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
             .clipped()
     }
@@ -631,9 +613,7 @@ struct EPGGridView: View {
         }
     }
 
-    /// La ricerca usa lo stesso inset sinistro della definizione ufficiale
-    /// della colonna banner, garantendo l'allineamento della “O” di Oggi e
-    /// del bordo sinistro del banner con l'inizio della search bar.
+    /// Ricerca, “Oggi” e banner usano tutti lo stesso inset sinistro.
     private var searchHeader: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
