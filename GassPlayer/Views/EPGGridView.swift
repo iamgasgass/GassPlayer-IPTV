@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// EPG touch-first con geometria ridotta all'essenziale:
-/// - l'inset esterno e' condiviso da ricerca, "Oggi" e banner;
-/// - il banner riempie la colonna sinistra intera (86×96), senza wrapper,
-///   padding interno esterno o area complementare;
-/// - la tile inizia immediatamente al bordo destro della colonna banner;
-/// - freccia live e taglio acceso/trasparente delle tile usano il medesimo
-///   centro geometrico `liveAxisX` sullo stesso canvas orizzontale.
+/// EPG touch-first con geometria a colonne rigorosa:
+/// - la colonna banner e' larga ESATTAMENTE 86pt, come il banner;
+/// - tile e sezione ora iniziano entrambe a x = 0 immediatamente dopo quella
+///   colonna, senza gap, padding, spacer o frame complementari nascosti;
+/// - l'intera griglia e' traslata una sola volta per allineare Oggi e banner
+///   al bordo iniziale della barra di ricerca;
+/// - freccia live e taglio acceso/trasparente di ogni tile condividono la
+///   stessa coordinata `liveAxisX` sullo stesso canvas orizzontale.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -40,19 +41,22 @@ struct EPGGridView: View {
     private let searchDebounceNanoseconds: UInt64 = 250_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 300_000_000
 
-    /// L'inset esterno allinea ricerca, "Oggi" e inizio banner.
+    /// L'unico inset esterno, uguale a quello della barra ricerca. Non entra
+    /// nel calcolo della colonna banner o della coordinata iniziale delle tile.
     private let gridLeadingInset: CGFloat = 12
-
-    /// La colonna e il banner hanno la STESSA frame. Nessun padding, gap,
-    /// spacer o wrapper viene aggiunto tra banner e timeline.
-    private let bannerColumnWidth: CGFloat = 86
+    private let channelBannerWidth: CGFloat = 86
     private let rowHeight: CGFloat = 96
+    private let bannerHeight: CGFloat = 76
     private let blockHeight: CGFloat = 82
     private let timelineHeaderHeight: CGFloat = 44
     private let timelineTopInset: CGFloat = 7
     private let pixelsPerMinute: CGFloat = 1.85
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
+
+    /// Questo valore e' deliberatamente identico alla larghezza visibile del
+    /// banner. Non include inset, padding, gap o spazio complementare.
+    private var bannerColumnWidth: CGFloat { channelBannerWidth }
 
     /// Finestra visuale: 30 minuti passati, 2 ore future.
     private let pastWindow: TimeInterval = 30 * 60
@@ -229,8 +233,8 @@ struct EPGGridView: View {
         CGFloat(windowDuration / 60) * pixelsPerMinute
     }
 
-    /// Unica coordinata del live sul canvas. La freccia e il taglio colore
-    /// delle tile leggono questo stesso valore senza conversioni ulteriori.
+    /// Unica coordinata del live sul canvas. Il suo centro corrisponde sia al
+    /// centro della freccia in header, sia alla fine della parte piena tile.
     private var liveAxisX: CGFloat {
         CGFloat(windowCenter.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
@@ -377,9 +381,8 @@ struct EPGGridView: View {
         }
     }
 
-    /// L'inset e' applicato una sola volta all'intera griglia. Dentro questa
-    /// griglia la colonna banner e' larga esattamente 86pt e la tile e'
-    /// direttamente adiacente: `HStack(spacing: 0)` senza gap.
+    /// L'inset e' applicato una sola volta qui. Dentro la HStack, la prima
+    /// colonna e' 86pt e la seconda (sezione ora + tile) parte subito dopo.
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
             fixedDayAndChannelColumn
@@ -402,8 +405,7 @@ struct EPGGridView: View {
         .padding(.leading, gridLeadingInset)
     }
 
-    /// “Oggi” shares the exact x origin of banners; its visual column width
-    /// is identical to the banner column and has no hidden complementary area.
+    /// Colonna fissa di 86pt reali: nessun padding, offset o frame interno.
     private var fixedDayAndChannelColumn: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             Button {
@@ -423,17 +425,18 @@ struct EPGGridView: View {
             } else {
                 ForEach(pagedStreams) { stream in
                     channelBanner(stream)
-                        .frame(width: bannerColumnWidth, height: rowHeight)
+                        .frame(width: bannerColumnWidth, height: rowHeight, alignment: .leading)
                 }
             }
         }
     }
 
-    /// -30 min -> ▼ -> +1 h -> +2 h. Every position uses liveAxisX / axisX,
-    /// so no arbitrary value can shift the visible ▼ from the tile split.
+    /// -30 min -> ▼ -> +1 h -> +2 h. Ogni x e' generata dalla stessa funzione
+    /// temporale; non rimangono offset manuali che possano disallineare header
+    /// e taglio cromatico delle tile.
     private func scrollingTimelineHeader(width: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
-            timelineHeaderLabel(minus30MinutesLabel, centerX: axisX(minutesFromLive: -30), canvasWidth: width)
+            timelineHeaderLabel(minus30MinutesLabel, centerX: axisX(minutesFromLive: -30))
 
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 20, weight: .bold))
@@ -442,24 +445,29 @@ struct EPGGridView: View {
                 .offset(x: liveAxisX - arrowGlyphWidth / 2)
                 .accessibilityLabel("Ora corrente: \(displayedTimeLabel)")
 
-            timelineHeaderLabel(plusOneHourLabel, centerX: axisX(minutesFromLive: 60), canvasWidth: width)
-            timelineHeaderLabel(plusTwoHoursLabel, centerX: axisX(minutesFromLive: 120), canvasWidth: width)
+            timelineHeaderLabel(plusOneHourLabel, centerX: axisX(minutesFromLive: 60))
+            timelineHeaderLabel(plusTwoHoursLabel, centerX: axisX(minutesFromLive: 120))
         }
         .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
+        .clipped()
     }
 
-    /// Centers each time label at its temporal coordinate rather than using
-    /// the leading edge as coordinate. This matches the arrow center and tile
-    /// split coordinate exactly.
-    private func timelineHeaderLabel(_ label: String, centerX: CGFloat, canvasWidth: CGFloat) -> some View {
+    /// Centra l'etichetta sul suo punto temporale reale. Il suo frame usa
+    /// meta' larghezza come offset, non `centerX` come bordo sinistro.
+    private func timelineHeaderLabel(_ label: String, centerX: CGFloat) -> some View {
         Text(label)
             .font(.system(size: 22, weight: .medium, design: .rounded))
             .foregroundStyle(.white.opacity(0.58))
             .monospacedDigit()
             .fixedSize()
-            .frame(width: canvasWidth, height: timelineHeaderHeight, alignment: .leading)
+            .frame(height: timelineHeaderHeight, alignment: .center)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .offset(x: centerX - proxy.size.width / 2)
+                }
+            }
             .offset(x: centerX)
-            .clipped()
     }
 
     // MARK: - Toolbar Liquid Glass
@@ -643,8 +651,8 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// The banner itself owns the complete 86×96 visual column. No padding,
-    /// no wrapper, no complementary frame exists between it and the timeline.
+    /// Nessun wrapper, nessun padding, nessun offset: il banner visibile
+    /// misura esattamente 86×76 ed e' l'unico contenuto della sua colonna.
     private func channelBanner(_ stream: XtreamStream) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -673,7 +681,7 @@ struct EPGGridView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
         }
-        .frame(width: bannerColumnWidth, height: rowHeight)
+        .frame(width: channelBannerWidth, height: bannerHeight)
         .contentShape(Rectangle())
         .onTapGesture {
             onPlayLive(stream)
