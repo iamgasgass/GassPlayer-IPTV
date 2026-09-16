@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// EPG touch-first con geometria a colonna esplicita:
-/// - colonna banner = inset sinistro + banner + inset destro;
+/// - colonna banner = inset sinistro + banner + stesso inset sinistro;
 /// - sezione ora e tile iniziano esattamente al bordo destro della colonna;
 /// - il centro della freccia "▼" e il confine acceso/trasparente delle tile
 ///   condividono l'identica coordinata `liveAxisX`, senza rampa oltre l'asse.
@@ -40,12 +40,12 @@ struct EPGGridView: View {
 
     // MARK: - Fixed EPG geometry
 
-    /// Questa e' la definizione richiesta della colonna banner:
-    /// `bannerColumnWidth = bannerLeadingInset + bannerWidth + bannerTrailingInset`.
-    /// La tile e la sezione ora iniziano ESATTAMENTE dopo questa larghezza.
-    private let bannerLeadingInset: CGFloat = 12
+    /// Definizione richiesta della colonna banner:
+    /// `bannerColumnWidth = inset + banner + inset`.
+    /// Il secondo inset usa ESATTAMENTE lo stesso valore del primo, non un
+    /// valore distinto. La sezione ora e le tile iniziano al suo bordo destro.
+    private let bannerInset: CGFloat = 12
     private let channelBannerWidth: CGFloat = 86
-    private let bannerTrailingInset: CGFloat = 4
     private let rowHeight: CGFloat = 96
     private let bannerHeight: CGFloat = 76
     private let blockHeight: CGFloat = 82
@@ -55,11 +55,10 @@ struct EPGGridView: View {
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Unica larghezza ufficiale della colonna fissa. Non esistono padding
-    /// esterni sulla griglia: la somma qui sotto e' tutto lo spazio a sinistra
-    /// della tile.
+    /// Unica larghezza ufficiale: 12 + 86 + 12 = 110pt.
+    /// Non esistono altri padding della griglia o gap dopo la colonna.
     private var bannerColumnWidth: CGFloat {
-        bannerLeadingInset + channelBannerWidth + bannerTrailingInset
+        bannerInset + channelBannerWidth + bannerInset
     }
 
     /// Finestra visuale: 30 minuti passati, 2 ore future.
@@ -385,9 +384,9 @@ struct EPGGridView: View {
         }
     }
 
-    /// Non applica padding esterni: la colonna fissa e' esattamente
-    /// `inset + banner + inset`, poi il canvas della sezione ora/tile parte
-    /// immediatamente nel successivo HStack child.
+    /// Non applica padding esterni: la colonna fissa e' precisamente
+    /// 12 + 86 + 12 = 110pt; la sezione ora/tile inizia nel child successivo
+    /// dell'HStack, esattamente a x = 110pt.
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
             fixedDayAndChannelColumn
@@ -409,8 +408,8 @@ struct EPGGridView: View {
         }
     }
 
-    /// La colonna fisica e' esattamente `bannerColumnWidth`; “Oggi” si
-    /// allinea all'inizio del banner usando il solo inset sinistro.
+    /// Colonna fissa da 110pt: “Oggi” e banner iniziano a 12pt; restano 12pt
+    /// tra bordo destro del banner e inizio della sezione ora/tile.
     private var fixedDayAndChannelColumn: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             Button {
@@ -420,7 +419,7 @@ struct EPGGridView: View {
                 Text(dayTitle)
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
-                    .padding(.leading, bannerLeadingInset)
+                    .padding(.leading, bannerInset)
                     .frame(width: bannerColumnWidth, height: timelineHeaderHeight, alignment: .leading)
             }
             .buttonStyle(.plain)
@@ -630,7 +629,7 @@ struct EPGGridView: View {
         .overlay {
             Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
         }
-        .padding(.horizontal, bannerLeadingInset)
+        .padding(.horizontal, bannerInset)
         .padding(.top, 10)
         .padding(.bottom, 18)
     }
@@ -685,7 +684,7 @@ struct EPGGridView: View {
             }
         }
         .frame(width: channelBannerWidth, height: bannerHeight)
-        .padding(.leading, bannerLeadingInset)
+        .padding(.leading, bannerInset)
         .contentShape(Rectangle())
         .onTapGesture {
             onPlayLive(stream)
