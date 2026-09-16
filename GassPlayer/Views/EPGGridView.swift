@@ -1,13 +1,12 @@
 import SwiftUI
 
-/// EPG touch-first con una geometria essenziale:
-/// - "Oggi" e banner canale restano fissi a sinistra, allineati allo stesso
-///   inset della barra di ricerca;
-/// - la colonna banner e' larga esattamente `fixedLeadingInset + banner`,
-///   senza gap aggiuntivo: la tile inizia dove finisce il banner;
-/// - la riga oraria mostra, rispetto all'istante dell'indicatore live:
-///   -30 minuti, la freccia "▼", +1 ora, +2 ore, tutte posizionate sulla
-///   stessa coordinata usata per il taglio acceso/trasparente delle tile.
+/// EPG touch-first con geometria ridotta all'essenziale:
+/// - la griglia ha un solo inset sinistro condiviso con "Oggi" e ricerca;
+/// - la colonna banner misura ESATTAMENTE quanto il banner (86pt), senza
+///   inset o spazio interno aggiuntivo;
+/// - la timeline/tile inizia immediatamente al bordo destro del banner;
+/// - freccia live e fine della parte accesa delle tile condividono la stessa
+///   coordinata matematica `liveAxisX` sul medesimo canvas orizzontale.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -41,10 +40,9 @@ struct EPGGridView: View {
     private let searchDebounceNanoseconds: UInt64 = 250_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 300_000_000
 
-    /// Stesso inset orizzontale della barra di ricerca: "Oggi" e i banner
-    /// canale partono da qui. La colonna banner NON ha gap aggiuntivo dopo
-    /// il banner: la tile inizia esattamente dove il banner finisce.
-    private let fixedLeadingInset: CGFloat = 12
+    /// Layout: l'inset esterno allinea Oggi, banner e ricerca. La colonna
+    /// interna e' ESATTAMENTE larga quanto il banner: nessun gap alla tile.
+    private let gridLeadingInset: CGFloat = 12
     private let channelBannerWidth: CGFloat = 86
     private let rowHeight: CGFloat = 96
     private let bannerHeight: CGFloat = 76
@@ -55,11 +53,9 @@ struct EPGGridView: View {
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Larghezza della colonna fissa: esattamente inset + banner, nulla di
-    /// piu'. La tile comincia subito dopo.
-    private var fixedColumnWidth: CGFloat {
-        fixedLeadingInset + channelBannerWidth
-    }
+    /// La colonna e' solo la larghezza effettiva del banner, senza inset,
+    /// padding, spacer o distanza complementare incorporata.
+    private var bannerColumnWidth: CGFloat { channelBannerWidth }
 
     /// Finestra visuale: 30 minuti passati, 2 ore future.
     private let pastWindow: TimeInterval = 30 * 60
@@ -236,16 +232,12 @@ struct EPGGridView: View {
         CGFloat(windowDuration / 60) * pixelsPerMinute
     }
 
-    /// Coordinata dell'istante mostrato dalla freccia "▼" sul canvas
-    /// orizzontale condiviso. E' la SOLA coordinata usata sia per posizionare
-    /// gli orari dell'header sia per il confine acceso/trasparente di ogni
-    /// tile: entrambi derivano da `windowStart` con lo stesso `pixelsPerMinute`.
+    /// Unica coordinata del live sul canvas. La freccia e il taglio colore
+    /// delle tile leggono questo stesso valore senza conversioni ulteriori.
     private var liveAxisX: CGFloat {
         CGFloat(windowCenter.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
 
-    /// Coordinata x corrispondente a `minutesFromLive` minuti di distanza
-    /// dall'istante della freccia, sullo stesso asse di `liveAxisX`.
     private func axisX(minutesFromLive: Double) -> CGFloat {
         liveAxisX + CGFloat(minutesFromLive) * pixelsPerMinute
     }
@@ -388,9 +380,8 @@ struct EPGGridView: View {
         }
     }
 
-    /// "Oggi" e' l'unico elemento fisso dell'header. Tutto cio' che segue
-    /// (i tre orari, "▼" e il canvas delle tile) vive nello stesso
-    /// ScrollView orizzontale, cosi' il loro offset di scroll resta identico.
+    /// L'inset e' applicato una sola volta all'intera griglia. Dentro questa
+    /// griglia la colonna banner e' larga 86pt esatti e la tile e' adiacente.
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
             fixedDayAndChannelColumn
@@ -410,11 +401,10 @@ struct EPGGridView: View {
                 }
             }
         }
+        .padding(.leading, gridLeadingInset)
     }
 
-    /// Colonna fissa: "Oggi" e ogni banner iniziano allo stesso
-    /// `fixedLeadingInset` della barra di ricerca. Larghezza colonna =
-    /// esattamente inset + banner, senza alcun gap ulteriore.
+    /// “Oggi” and banner column: the column itself is exactly 86pt wide.
     private var fixedDayAndChannelColumn: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             Button {
@@ -424,61 +414,54 @@ struct EPGGridView: View {
                 Text(dayTitle)
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
-                    .padding(.leading, fixedLeadingInset)
-                    .frame(height: timelineHeaderHeight, alignment: .leading)
+                    .frame(width: bannerColumnWidth, height: timelineHeaderHeight, alignment: .leading)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Giorno: \(dayTitle)")
 
             if pagedStreams.isEmpty {
-                Color.clear.frame(width: fixedColumnWidth, height: 1)
+                Color.clear.frame(width: bannerColumnWidth, height: 1)
             } else {
                 ForEach(pagedStreams) { stream in
                     channelBanner(stream)
-                        .frame(width: fixedColumnWidth, height: rowHeight, alignment: .leading)
+                        .frame(width: bannerColumnWidth, height: rowHeight, alignment: .leading)
                 }
             }
         }
     }
 
-    /// Header scorrevole: -30 minuti, freccia live, +1 ora, +2 ore, tutti
-    /// posizionati con `axisX(minutesFromLive:)`, la stessa formula usata dal
-    /// confine acceso/trasparente delle tile. Nessun offset arbitrario.
+    /// -30 min -> ▼ -> +1 h -> +2 h. Every horizontal x value is derived
+    /// from liveAxisX / axisX(), so no arbitrary layout offset can drift from
+    /// the tile bright-to-transparent boundary.
     private func scrollingTimelineHeader(width: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
-            Text(minus30MinutesLabel)
-                .font(.system(size: 22, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.42))
-                .monospacedDigit()
-                .fixedSize()
-                .frame(height: timelineHeaderHeight, alignment: .center)
-                .offset(x: axisX(minutesFromLive: -30))
+            timelineHeaderLabel(minus30MinutesLabel, at: axisX(minutesFromLive: -30), width: width)
 
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 20, weight: .bold))
                 .foregroundStyle(.white)
-                .fixedSize()
-                .frame(height: timelineHeaderHeight, alignment: .center)
+                .frame(width: arrowGlyphWidth, height: timelineHeaderHeight, alignment: .center)
                 .offset(x: liveAxisX - arrowGlyphWidth / 2)
                 .accessibilityLabel("Ora corrente: \(displayedTimeLabel)")
 
-            Text(plusOneHourLabel)
-                .font(.system(size: 22, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.65))
-                .monospacedDigit()
-                .fixedSize()
-                .frame(height: timelineHeaderHeight, alignment: .center)
-                .offset(x: axisX(minutesFromLive: 60))
-
-            Text(plusTwoHoursLabel)
-                .font(.system(size: 22, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.65))
-                .monospacedDigit()
-                .fixedSize()
-                .frame(height: timelineHeaderHeight, alignment: .center)
-                .offset(x: axisX(minutesFromLive: 120))
+            timelineHeaderLabel(plusOneHourLabel, at: axisX(minutesFromLive: 60), width: width)
+            timelineHeaderLabel(plusTwoHoursLabel, at: axisX(minutesFromLive: 120), width: width)
         }
         .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
+    }
+
+    /// Labels are centered on their exact temporal coordinate; clipping keeps
+    /// partially-visible labels from expanding the canvas or the banner column.
+    private func timelineHeaderLabel(_ label: String, at centerX: CGFloat, width: CGFloat) -> some View {
+        Text(label)
+            .font(.system(size: 22, weight: .medium, design: .rounded))
+            .foregroundStyle(.white.opacity(0.58))
+            .monospacedDigit()
+            .fixedSize()
+            .frame(height: timelineHeaderHeight, alignment: .center)
+            .offset(x: centerX)
+            .frame(width: width, alignment: .leading)
+            .clipped()
     }
 
     // MARK: - Toolbar Liquid Glass
@@ -610,8 +593,8 @@ struct EPGGridView: View {
         }
     }
 
-    /// Barra di ricerca: il suo inset orizzontale (`fixedLeadingInset`) e' il
-    /// riferimento di allineamento per "Oggi" e per ogni banner canale.
+    /// Stesso inset della griglia: ricerca, “Oggi” e banner iniziano tutti
+    /// alla medesima coordinata x (`gridLeadingInset`).
     private var searchHeader: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
@@ -639,7 +622,7 @@ struct EPGGridView: View {
         .overlay {
             Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
         }
-        .padding(.horizontal, fixedLeadingInset)
+        .padding(.horizontal, gridLeadingInset)
         .padding(.top, 10)
         .padding(.bottom, 18)
     }
@@ -662,8 +645,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Nessun contenitore, sfondo o padding attorno al banner oltre
-    /// all'inset di allineamento: e' l'unico elemento visibile nella cella.
+    /// No wrapper, no internal padding, no gap: only the 86×76 banner itself.
     private func channelBanner(_ stream: XtreamStream) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -693,7 +675,6 @@ struct EPGGridView: View {
             }
         }
         .frame(width: channelBannerWidth, height: bannerHeight)
-        .padding(.leading, fixedLeadingInset)
         .contentShape(Rectangle())
         .onTapGesture {
             onPlayLive(stream)
@@ -776,8 +757,9 @@ struct EPGGridView: View {
     }
 
     /// Nessun blur gaussiano ne' overlay scuro: la zona futura e' lo stesso
-    /// colore a opacita' ridotta. Il confine acceso/trasparente e'
-    /// `liveAxisX`, la stessa coordinata x della freccia dell'header.
+    /// colore a opacita' ridotta. `brightWidth` e `liveAxisX` sono la stessa
+    /// coordinata dell'arrow center nell'header, quindi il confine colore e
+    /// la freccia restano in asse in modo effettivo.
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
