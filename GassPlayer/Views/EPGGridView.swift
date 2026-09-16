@@ -1,12 +1,11 @@
 import SwiftUI
 
-/// EPG touch-first con geometria a colonna esplicita e coordinata unica:
+/// EPG touch-first con geometria a colonna rigorosa:
 /// - colonna banner = inset sinistro + banner + stesso inset sinistro;
-/// - la sezione ora e le tile iniziano esattamente al bordo destro della
-///   colonna, senza padding esterno, gap HStack o frame intermedi;
-/// - nella sezione ora i ':' delle due ore future sono distanti 80pt esatti;
-/// - il centro della freccia "▼" e il confine acceso/trasparente delle tile
-///   condividono l'identica coordinata `liveAxisX` nel medesimo canvas.
+/// - il banner e' contenuto DENTRO la colonna, quindi non la puo' superare;
+/// - sezione ora e tile sono il child immediatamente successivo dell'HStack,
+///   senza padding/gap nascosti e iniziano al bordo destro della colonna;
+/// - gli orari futuri hanno i rispettivi ':' distanti 80pt effettivi.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -42,8 +41,8 @@ struct EPGGridView: View {
 
     // MARK: - Fixed EPG geometry
 
-    /// Formula richiesta: `inset sinistro + banner + inset sinistro`.
-    /// Entrambi gli inset usano la stessa costante, senza valori distinti.
+    /// Formula richiesta: `inset sinistro + BANNER + inset sinistro`.
+    /// Non viene applicato nessun padding esterno alla griglia.
     private let bannerInset: CGFloat = 12
     private let channelBannerWidth: CGFloat = 86
     private let rowHeight: CGFloat = 96
@@ -55,13 +54,18 @@ struct EPGGridView: View {
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Distanza effettiva richiesta tra i due caratteri ':' degli orari futuri.
+    /// Distanza effettiva fra i caratteri ':' degli orari futuri.
     private let futureTimeColonSpacing: CGFloat = 80
+    private let timeLabelWidth: CGFloat = 56
 
-    /// Larghezza ufficiale e unica della colonna fissa: 12 + 86 + 12 = 110pt.
-    /// Tutto cio' che segue nell'HStack (orari e tile) parte a x = 110pt.
+    /// Larghezza ufficiale e unica della colonna banner: 12 + 86 + 12 = 110.
     private var bannerColumnWidth: CGFloat {
         bannerInset + channelBannerWidth + bannerInset
+    }
+
+    /// Larghezza dell'unico contenuto visibile interno alla colonna.
+    private var bannerContentWidth: CGFloat {
+        bannerColumnWidth - (bannerInset * 2)
     }
 
     /// Finestra visuale: 30 minuti passati, 2 ore future.
@@ -239,7 +243,8 @@ struct EPGGridView: View {
         CGFloat(windowDuration / 60) * pixelsPerMinute
     }
 
-    /// Unica coordinata del live nel canvas di orari e tile.
+    /// Unica coordinata del live sul canvas. Il centro geometrico della
+    /// freccia e il bordo esatto della zona accesa usano questo valore.
     private var liveAxisX: CGFloat {
         CGFloat(windowCenter.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
@@ -386,12 +391,13 @@ struct EPGGridView: View {
         }
     }
 
-    /// Il primo child dell'HStack e' sempre la colonna da 110pt; il secondo
-    /// child e' sempre il canvas orario/tile. Nessun padding esterno viene
-    /// applicato qui, quindi inizio canvas = `bannerColumnWidth` effettivo.
+    /// Nessun padding esterno. L'HStack ha esattamente due figli: colonna
+    /// fissa (110pt) e timeline. Il secondo figlio inizia quindi esattamente
+    /// dove finisce `bannerColumnWidth`, senza spazio superfluo.
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
             fixedDayAndChannelColumn
+                .frame(width: bannerColumnWidth, alignment: .leading)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 let canvasWidth = max(timelineWidth, 380)
@@ -410,7 +416,9 @@ struct EPGGridView: View {
         }
     }
 
-    /// Colonna fissa esatta: 12pt + banner 86pt + 12pt.
+    /// La colonna fisica e' 110pt. “Oggi” e banner hanno entrambi margine
+    /// sinistro 12pt; il banner e' contenuto in un frame interno da 86pt, con
+    /// 12pt rimanenti a destra: non puo' ampliare la colonna.
     private var fixedDayAndChannelColumn: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             Button {
@@ -420,8 +428,8 @@ struct EPGGridView: View {
                 Text(dayTitle)
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
-                    .padding(.leading, bannerInset)
-                    .frame(width: bannerColumnWidth, height: timelineHeaderHeight, alignment: .leading)
+                    .frame(width: bannerContentWidth, height: timelineHeaderHeight, alignment: .leading)
+                    .padding(.horizontal, bannerInset)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Giorno: \(dayTitle)")
@@ -431,56 +439,52 @@ struct EPGGridView: View {
             } else {
                 ForEach(pagedStreams) { stream in
                     channelBanner(stream)
-                        .frame(width: bannerColumnWidth, height: rowHeight, alignment: .leading)
                 }
             }
         }
     }
 
-    /// -30 min -> ▼ -> +1 h -> +2 h. Le due ore future sono posizionate
-    /// tramite `futureTimeColonAnchor`, che vincola la distanza fra i loro ':'
-    /// a 80pt esatti. Gli elementi vivono direttamente nel canvas, senza un
-    /// secondo frame dopo `.position` che possa alterarne la coordinata.
+    /// -30 min -> ▼ -> +1 h -> +2 h. Tutte le x derivano da `liveAxisX`;
+    /// non esistono offset arbitrari che possano disallineare header e tile.
     private func scrollingTimelineHeader(width: CGFloat) -> some View {
-        let firstFutureColonX = axisX(minutesFromLive: 60)
-        let secondFutureColonX = firstFutureColonX + futureTimeColonSpacing
+        let futureColonX = axisX(minutesFromLive: 60)
+        let secondFutureColonX = futureColonX + futureTimeColonSpacing
 
         return ZStack(alignment: .topLeading) {
-            clockLabel(
-                minus30MinutesLabel,
-                colonX: axisX(minutesFromLive: -30),
-                opacity: 0.42
-            )
+            timeLabel(minus30MinutesLabel, colonX: axisX(minutesFromLive: -30), width: width, opacity: 0.42)
 
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 20, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(width: arrowGlyphWidth, height: timelineHeaderHeight, alignment: .center)
-                .position(x: liveAxisX, y: timelineHeaderHeight / 2)
+                .offset(x: liveAxisX - arrowGlyphWidth / 2)
                 .accessibilityLabel("Ora corrente: \(displayedTimeLabel)")
 
-            clockLabel(plusOneHourLabel, colonX: firstFutureColonX, opacity: 0.65)
-            clockLabel(plusTwoHoursLabel, colonX: secondFutureColonX, opacity: 0.65)
+            timeLabel(plusOneHourLabel, colonX: futureColonX, width: width, opacity: 0.65)
+            timeLabel(plusTwoHoursLabel, colonX: secondFutureColonX, width: width, opacity: 0.65)
         }
         .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
-        .clipped()
     }
 
-    /// Label HH:mm con punto ':' disposto esattamente in `colonX`.
-    /// La stringa usa cifre monospaziate; un contenitore di 56pt rende la
-    /// posizione del ':' deterministica, e `position` lavora nel canvas
-    /// originale, senza frame successivi che ne modifichino il centro.
-    private func clockLabel(
+    /// Posiziona un orario HH:mm con il carattere ':' sulla coordinata
+    /// colonX. In particolare le due ore future usano colonX distanti 80pt.
+    private func timeLabel(
         _ label: String,
         colonX: CGFloat,
+        width: CGFloat,
         opacity: Double
     ) -> some View {
         Text(label)
             .font(.system(size: 22, weight: .medium, design: .rounded))
             .foregroundStyle(.white.opacity(opacity))
             .monospacedDigit()
-            .frame(width: 56, height: timelineHeaderHeight, alignment: .center)
-            .position(x: colonX + 5.6, y: timelineHeaderHeight / 2)
+            .frame(width: timeLabelWidth, height: timelineHeaderHeight, alignment: .center)
+            .position(
+                x: colonX + timeLabelWidth / 2 - timeLabelWidth * 0.6,
+                y: timelineHeaderHeight / 2
+            )
+            .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
+            .clipped()
     }
 
     // MARK: - Toolbar Liquid Glass
@@ -612,7 +616,7 @@ struct EPGGridView: View {
         }
     }
 
-    /// Ricerca, “Oggi” e banner usano tutti lo stesso inset sinistro.
+    /// Ricerca, “Oggi” e banner usano lo stesso inset sinistro (12pt).
     private var searchHeader: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
@@ -663,9 +667,8 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Il banner e' l'unico elemento della sua area: nessun wrapper visibile,
-    /// nessun gap dopo di esso. L'inset destro esiste solo come parte della
-    /// colonna richiesta, non come padding della tile.
+    /// Il banner non possiede wrapper visibili, padding aggiuntivi o spazio a
+    /// destra: il padding e' gestito dal solo frame della colonna padre.
     private func channelBanner(_ stream: XtreamStream) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -694,8 +697,8 @@ struct EPGGridView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
         }
-        .frame(width: channelBannerWidth, height: bannerHeight)
-        .padding(.leading, bannerInset)
+        .frame(width: bannerContentWidth, height: bannerHeight)
+        .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
         .contentShape(Rectangle())
         .onTapGesture {
             onPlayLive(stream)
@@ -777,9 +780,8 @@ struct EPGGridView: View {
     }
 
     /// Nessun blur o overlay scuro. Il bordo fra pieno e trasparente e'
-    /// letteralmente `liveAxisX`: nessuna rampa oltre il punto, quindi la fine
-    /// del colore acceso e l'inizio dell'area trasparente coincidono al pixel
-    /// con il centro della freccia dell'header.
+    /// letteralmente `liveAxisX`: la fine del colore acceso e l'inizio
+    /// dell'area trasparente coincidono al pixel con il centro della freccia.
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
