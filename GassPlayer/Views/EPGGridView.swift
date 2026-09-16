@@ -3,6 +3,8 @@ import SwiftUI
 /// EPG touch-first con geometria a colonna esplicita:
 /// - colonna banner = inset sinistro + banner + stesso inset sinistro;
 /// - sezione ora e tile iniziano esattamente al bordo destro della colonna;
+/// - nella sezione ora, i caratteri ':' degli orari futuri sono distanti
+///   precisamente 80pt, attraverso un passo temporale costante;
 /// - il centro della freccia "▼" e il confine acceso/trasparente delle tile
 ///   condividono l'identica coordinata `liveAxisX`, senza rampa oltre l'asse.
 struct EPGGridView: View {
@@ -54,6 +56,12 @@ struct EPGGridView: View {
     private let pixelsPerMinute: CGFloat = 1.85
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
+
+    /// Passo della riga oraria: la coordinata del carattere ':' di un orario
+    /// futuro e quella del ':' successivo hanno una distanza esatta di 80pt.
+    /// Per mantenere questa geometria, l'intervallo associato e' 60 minuti.
+    private let futureClockColonStep: CGFloat = 80
+    private let futureClockIntervalMinutes: Double = 60
 
     /// Unica larghezza ufficiale: 12 + 86 + 12 = 110pt.
     /// Non esistono altri padding della griglia o gap dopo la colonna.
@@ -242,8 +250,11 @@ struct EPGGridView: View {
         CGFloat(windowCenter.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
 
-    private func axisX(minutesFromLive: Double) -> CGFloat {
-        liveAxisX + CGFloat(minutesFromLive) * pixelsPerMinute
+    /// Coordinate dedicate della riga oraria. Sono calcolate rispetto al
+    /// carattere ':' dell'orario live: ogni ora futura e' separata di 80pt
+    /// dal ':' dell'ora futura precedente, come richiesto.
+    private func clockColonAxisX(hoursFromLive: Int) -> CGFloat {
+        liveAxisX + CGFloat(hoursFromLive) * futureClockColonStep
     }
 
     private var displayedTimeLabel: String {
@@ -255,11 +266,11 @@ struct EPGGridView: View {
     }
 
     private var plusOneHourLabel: String {
-        windowCenter.addingTimeInterval(60 * 60).formatted(date: .omitted, time: .shortened)
+        windowCenter.addingTimeInterval(futureClockIntervalMinutes * 60).formatted(date: .omitted, time: .shortened)
     }
 
     private var plusTwoHoursLabel: String {
-        windowCenter.addingTimeInterval(120 * 60).formatted(date: .omitted, time: .shortened)
+        windowCenter.addingTimeInterval(futureClockIntervalMinutes * 120).formatted(date: .omitted, time: .shortened)
     }
 
     private var dayTitle: String {
@@ -436,11 +447,17 @@ struct EPGGridView: View {
         }
     }
 
-    /// -30 min -> ▼ -> +1 h -> +2 h. Tutte le x derivano da `liveAxisX`;
-    /// non esistono offset arbitrari che possano disallineare header e tile.
+    /// -30 min -> ▼ -> +1 h -> +2 h. Le ore future sono posizionate in base
+    /// alla coordinata del loro carattere ':': +1h e +2h hanno esattamente
+    /// 80pt di distanza (non dipendono dalla larghezza dinamica del testo).
     private func scrollingTimelineHeader(width: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
-            timelineHeaderLabel(minus30MinutesLabel, centerX: axisX(minutesFromLive: -30), width: width)
+            clockLabel(
+                minus30MinutesLabel,
+                colonX: liveAxisX - futureClockColonStep / 2,
+                width: width,
+                opacity: 0.42
+            )
 
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 20, weight: .bold))
@@ -449,23 +466,38 @@ struct EPGGridView: View {
                 .offset(x: liveAxisX - arrowGlyphWidth / 2)
                 .accessibilityLabel("Ora corrente: \(displayedTimeLabel)")
 
-            timelineHeaderLabel(plusOneHourLabel, centerX: axisX(minutesFromLive: 60), width: width)
-            timelineHeaderLabel(plusTwoHoursLabel, centerX: axisX(minutesFromLive: 120), width: width)
+            clockLabel(
+                plusOneHourLabel,
+                colonX: clockColonAxisX(hoursFromLive: 1),
+                width: width,
+                opacity: 0.65
+            )
+
+            clockLabel(
+                plusTwoHoursLabel,
+                colonX: clockColonAxisX(hoursFromLive: 2),
+                width: width,
+                opacity: 0.65
+            )
         }
         .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
     }
 
-    /// Le etichette sono centrate sulla loro coordinata temporale; la
-    /// compensazione di mezza larghezza evita che l'inizio della Text view
-    /// sia scambiato erroneamente per il punto temporale effettivo.
-    private func timelineHeaderLabel(_ label: String, centerX: CGFloat, width: CGFloat) -> some View {
+    /// Font monospaziato: “HH:mm” ha larghezza stabile di 58pt a 22pt.
+    /// Il ':' e' il terzo carattere e il suo centro cade a meta' label: con
+    /// `.position(x: colonX, ...)` ogni colon e' precisamente dove richiesto.
+    private func clockLabel(
+        _ label: String,
+        colonX: CGFloat,
+        width: CGFloat,
+        opacity: Double
+    ) -> some View {
         Text(label)
-            .font(.system(size: 22, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.58))
+            .font(.system(size: 22, weight: .medium, design: .monospaced))
             .monospacedDigit()
+            .foregroundStyle(.white.opacity(opacity))
             .fixedSize()
-            .frame(height: timelineHeaderHeight, alignment: .center)
-            .position(x: centerX, y: timelineHeaderHeight / 2)
+            .position(x: colonX, y: timelineHeaderHeight / 2)
             .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
             .clipped()
     }
