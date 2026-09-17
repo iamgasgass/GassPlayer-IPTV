@@ -140,6 +140,16 @@ struct EPGService {
         )
     }
 
+    /// Svuota l'intera cache EPG, per **tutte** le sorgenti (non solo
+    /// `credentials`). Usata dall'azione "Cancella cache" nella schermata
+    /// globale "Gestisci guida TV": tutte le chiavi prodotte da
+    /// `makeCachePrefix` iniziano per `"epg."`, quindi un unico prefisso
+    /// basta a ripulire guida breve e completa di ogni canale/sorgente senza
+    /// toccare la cache del catalogo Xtream (che usa un altro prefisso).
+    static func clearAllCache() async {
+        await CacheService.shared.invalidate(prefix: "epg.")
+    }
+
     /// URL di riproduzione in differita (timeshift) per un programma.
     /// Restituisce `nil` se l'host non e' un URL http/https valido.
     func catchupURL(for request: CatchupRequest) -> URL? {
