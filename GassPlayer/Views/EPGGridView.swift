@@ -2,13 +2,12 @@ import SwiftUI
 
 /// EPG touch-first con geometria a colonna rigorosa:
 /// - colonna banner = inset sinistro + banner + stesso inset sinistro;
-/// - sezione ora e tile condividono la STESSA scala pixel/minuto e la stessa
-///   origine (`windowStart`): sono quindi sempre sincronizzate scorrendo;
-/// - la sezione ora mostra solo tacche a orario pieno/mezzo (es. 8:00, 8:30,
-///   9:00...), mai un istante minuto-per-minuto, e la distanza fra i ':' di
-///   due tacche consecutive e' sempre di 80pt esatti, perche' e' la scala
-///   stessa (pixelsPerMinute) a essere calibrata per produrre 80pt ogni 30
-///   minuti — la stessa scala usata per posizionare le tile;
+/// - sezione ora e tile condividono la STESSA `canvasWidth` e la stessa
+///   origine (`windowStart`): sono sempre sincronizzate durante lo scroll;
+/// - la sezione ora usa un HStack con larghezze e spaziatura FISSE (non piu'
+///   offset calcolati per singola tacca): questo rende gli 80pt fra i ':'
+///   di due tacche consecutive un fatto strutturale del layout, non una
+///   stima soggetta ad arrotondamenti o quirk di posizionamento;
 /// - la tile non supera mai l'inizio del programma successivo (niente
 ///   sovrapposizioni) ed e' verticalmente centrata come il banner canale;
 /// - ogni tile mostra il nome del canale prima dell'orario del programma.
@@ -56,13 +55,25 @@ struct EPGGridView: View {
     private let timelineHeaderHeight: CGFloat = 44
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
+
+    /// Segmenti a larghezza fissa di ogni tacca oraria: "HH" allineato a
+    /// destra, ":mm" allineato a sinistra subito dopo. Essendo entrambi
+    /// FISSI, il carattere ':' cade sempre alla stessa distanza relativa
+    /// dall'inizio della tacca, per ogni tacca, senza calcoli per-etichetta.
     private let hourSegmentWidth: CGFloat = 34
+    private let minuteSegmentWidth: CGFloat = 40
 
     /// La scala pixel/minuto e' calibrata per produrre ESATTAMENTE 80pt ogni
-    /// 30 minuti: questa e' l'unica scala usata sia dalla sezione ora sia
-    /// dalle tile, quindi le due sezioni restano sempre sincronizzate.
+    /// 30 minuti: e' l'unica scala usata sia dalla sezione ora sia dalle
+    /// tile, quindi le due sezioni restano sempre sincronizzate.
     private let halfHourPixelSpacing: CGFloat = 80
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
+
+    /// Spaziatura nativa dell'HStack fra una tacca e la successiva: la somma
+    /// di questo valore con la larghezza fissa di una tacca da' sempre
+    /// esattamente `halfHourPixelSpacing` di distanza fra i ':' consecutivi.
+    private var tickLabelWidth: CGFloat { hourSegmentWidth + minuteSegmentWidth }
+    private var tickSpacing: CGFloat { halfHourPixelSpacing - tickLabelWidth }
 
     /// Larghezza ufficiale e unica della colonna banner: 12 + 86 + 12 = 110.
     private var bannerColumnWidth: CGFloat {
@@ -261,8 +272,10 @@ struct EPGGridView: View {
         windowEnd.timeIntervalSince(windowStart)
     }
 
-    private var timelineWidth: CGFloat {
-        CGFloat(windowDuration / 60) * pixelsPerMinute
+    /// Larghezza unica del canvas orizzontale, condivisa da sezione ora e
+    /// tile: e' l'unica fonte di verita' per la sincronizzazione fra le due.
+    private var canvasWidth: CGFloat {
+        max(CGFloat(windowDuration / 60) * pixelsPerMinute, 380)
     }
 
     /// Unica funzione di conversione tempo -> coordinata x, condivisa da
@@ -421,7 +434,7 @@ struct EPGGridView: View {
     }
 
     /// Nessun padding esterno. L'HStack ha esattamente due figli: colonna
-    /// fissa (110pt) e timeline. Sezione ora e tile condividono lo stesso
+    /// fissa (110pt) e timeline. Sezione ora e tile leggono entrambe
     /// `canvasWidth`, quindi restano sincronizzate durante lo scroll.
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -429,13 +442,11 @@ struct EPGGridView: View {
                 .frame(width: bannerColumnWidth, alignment: .leading)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                let canvasWidth = max(timelineWidth, 380)
-
                 LazyVStack(spacing: 0) {
-                    scrollingTimelineHeader(width: canvasWidth)
+                    scrollingTimelineHeader
 
                     ForEach(pagedStreams) { stream in
-                        timelineRow(for: stream, width: canvasWidth)
+                        timelineRow(for: stream)
                             .task(id: stream.streamId) {
                                 await loadProgramsIfNeeded(for: stream)
                             }
@@ -472,15 +483,24 @@ struct EPGGridView: View {
         }
     }
 
-    /// Sequenza di tacche a orario pieno/mezzo (mai minuto-per-minuto),
-    /// posizionate con la stessa `xCoordinate(for:)` usata dalle tile: la
-    /// distanza fra i ':' di due tacche consecutive e' sempre esattamente
-    /// `halfHourPixelSpacing` (80pt), perche' deriva dalla stessa scala.
-    private func scrollingTimelineHeader(width: CGFloat) -> some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(halfHourTicks, id: \.self) { tick in
-                timeLabel(tick, colonX: xCoordinate(for: tick), width: width)
+    /// La riga oraria e' un unico HStack con spaziatura fissa `tickSpacing`
+    /// fra tacche di larghezza fissa `tickLabelWidth`: la distanza fra i ':'
+    /// di due tacche consecutive e' quindi sempre `tickLabelWidth + tickSpacing
+    /// = halfHourPixelSpacing` (80pt) per costruzione del layout, non per
+    /// approssimazione. L'intero HStack viene ancorato una sola volta alla
+    /// coordinata reale della prima tacca, poi il resto segue nativamente.
+    private var scrollingTimelineHeader: some View {
+        let ticks = halfHourTicks
+        let anchorX = (ticks.first.map { xCoordinate(for: $0) } ?? 0) - hourSegmentWidth
+
+        return ZStack(alignment: .topLeading) {
+            HStack(spacing: tickSpacing) {
+                ForEach(ticks, id: \.self) { tick in
+                    tickLabel(tick)
+                }
             }
+            .offset(x: anchorX)
+            .frame(height: timelineHeaderHeight, alignment: .center)
 
             if isToday {
                 Image(systemName: "arrowtriangle.down.fill")
@@ -493,29 +513,26 @@ struct EPGGridView: View {
                     )
             }
         }
-        .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
+        .frame(width: canvasWidth, height: timelineHeaderHeight, alignment: .topLeading)
+        .clipped()
     }
 
-    /// "HH" e' allineato a destra in uno slot a larghezza fissa che termina
-    /// esattamente a `colonX`; ":mm" segue subito dopo, senza alcuno spazio
-    /// intermedio. Il carattere ':' cade quindi esattamente su `colonX`.
-    private func timeLabel(_ date: Date, colonX: CGFloat, width: CGFloat) -> some View {
-        let hourString = Self.hourFormatter.string(from: date)
-        let minuteString = Self.minuteFormatter.string(from: date)
-
-        return HStack(spacing: 0) {
-            Text(hourString)
+    /// "HH" occupa uno slot a larghezza fissa allineato a destra; ":mm"
+    /// occupa uno slot a larghezza fissa allineato a sinistra subito dopo.
+    /// Entrambe le larghezze sono costanti indipendentemente dal contenuto,
+    /// quindi il ':' cade sempre alla stessa distanza relativa dall'inizio
+    /// della tacca, per ogni tacca generata.
+    private func tickLabel(_ date: Date) -> some View {
+        HStack(spacing: 0) {
+            Text(Self.hourFormatter.string(from: date))
                 .frame(width: hourSegmentWidth, alignment: .trailing)
-            Text(":\(minuteString)")
-                .fixedSize()
+            Text(":\(Self.minuteFormatter.string(from: date))")
+                .frame(width: minuteSegmentWidth, alignment: .leading)
         }
         .font(.system(size: 22, weight: .medium, design: .rounded))
         .foregroundStyle(.white.opacity(0.58))
         .monospacedDigit()
-        .frame(height: timelineHeaderHeight, alignment: .center)
-        .offset(x: colonX - hourSegmentWidth)
-        .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
-        .clipped()
+        .lineLimit(1)
     }
 
     // MARK: - Toolbar Liquid Glass
@@ -684,12 +701,12 @@ struct EPGGridView: View {
 
     /// Passa al blocco successivo l'orario di inizio del programma seguente,
     /// cosi' la larghezza puo' essere limitata per non sovrapporsi mai.
-    private func timelineRow(for stream: XtreamStream, width: CGFloat) -> some View {
+    private func timelineRow(for stream: XtreamStream) -> some View {
         let programs = visiblePrograms(for: stream)
 
         return ZStack(alignment: .leading) {
             if programs.isEmpty {
-                unavailableBlock(for: stream, width: width)
+                unavailableBlock(for: stream)
             } else {
                 ForEach(Array(programs.enumerated()), id: \.element.id) { index, program in
                     programBlock(
@@ -700,7 +717,7 @@ struct EPGGridView: View {
                 }
             }
         }
-        .frame(width: width, height: rowHeight, alignment: .leading)
+        .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
         .clipped()
     }
 
@@ -743,7 +760,7 @@ struct EPGGridView: View {
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
-    private func unavailableBlock(for stream: XtreamStream, width: CGFloat) -> some View {
+    private func unavailableBlock(for stream: XtreamStream) -> some View {
         let loading = loadingStreamIDs.contains(stream.streamId)
         let failed = failedStreamIDs.contains(stream.streamId)
 
@@ -764,7 +781,7 @@ struct EPGGridView: View {
         .font(.system(size: 15, weight: .medium))
         .foregroundStyle(.white.opacity(0.85))
         .padding(.horizontal, 18)
-        .frame(width: width, height: rowHeight, alignment: .leading)
+        .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
     /// La larghezza desiderata (durata reale, o spazio minimo per il testo)
