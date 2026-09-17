@@ -4,12 +4,12 @@ import SwiftUI
 /// - colonna banner = inset sinistro + banner + stesso inset sinistro;
 /// - sezione ora e tile condividono la STESSA `canvasWidth` e la stessa
 ///   origine (`windowStart`): sono sempre sincronizzate durante lo scroll;
-/// - la sezione ora usa un HStack con larghezze e spaziatura FISSE: la
-///   distanza fra i ':' di due tacche consecutive e' sempre esattamente 80pt
-///   per costruzione del layout. Vengono mostrate SOLO le tacche il cui
-///   testo (sia "HH" sia ":mm") rientra interamente nel canvas: questo
-///   elimina le etichette parzialmente tagliate ai bordi, che rendevano la
-///   spaziatura visivamente incoerente pur essendo matematicamente corretta;
+/// - ogni tacca oraria e' UN SOLO `Text` "HH:mm" dentro UN SOLO frame a
+///   larghezza fissa pari a 80pt, allineato a sinistra, dentro un HStack a
+///   spacing zero: la distanza fra un'etichetta e la successiva e' quindi
+///   sempre e solo la larghezza del frame (80pt), un fatto strutturale del
+///   layout e non una somma di piu' segmenti indipendenti che potevano
+///   accumulare imprecisioni di rendering;
 /// - la tile non supera mai l'inizio del programma successivo (niente
 ///   sovrapposizioni) ed e' verticalmente centrata come il banner canale;
 /// - ogni tile mostra il nome del canale prima dell'orario del programma.
@@ -58,24 +58,16 @@ struct EPGGridView: View {
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Segmenti a larghezza fissa di ogni tacca oraria: "HH" allineato a
-    /// destra, ":mm" allineato a sinistra subito dopo. Essendo entrambi
-    /// FISSI, il carattere ':' cade sempre alla stessa distanza relativa
-    /// dall'inizio della tacca, per ogni tacca, senza calcoli per-etichetta.
-    private let hourSegmentWidth: CGFloat = 34
-    private let minuteSegmentWidth: CGFloat = 40
-
-    /// La scala pixel/minuto e' calibrata per produrre ESATTAMENTE 80pt ogni
-    /// 30 minuti: e' l'unica scala usata sia dalla sezione ora sia dalle
-    /// tile, quindi le due sezioni restano sempre sincronizzate.
+    /// Distanza esatta fra una tacca oraria (ogni 30 minuti) e la
+    /// successiva: e' anche la larghezza del singolo frame di ogni tacca,
+    /// quindi lo spazio fra due ':' consecutivi e' garantito dal layout
+    /// stesso, non da una somma di piu' misure indipendenti.
     private let halfHourPixelSpacing: CGFloat = 80
-    private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
-    /// Spaziatura nativa dell'HStack fra una tacca e la successiva: la somma
-    /// di questo valore con la larghezza fissa di una tacca da' sempre
-    /// esattamente `halfHourPixelSpacing` di distanza fra i ':' consecutivi.
-    private var tickLabelWidth: CGFloat { hourSegmentWidth + minuteSegmentWidth }
-    private var tickSpacing: CGFloat { halfHourPixelSpacing - tickLabelWidth }
+    /// La scala pixel/minuto e' calibrata sulla stessa costante: 30 minuti
+    /// producono sempre `halfHourPixelSpacing`, sia per le tacche orarie sia
+    /// per il posizionamento delle tile, che restano quindi sincronizzate.
+    private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
     /// Larghezza ufficiale e unica della colonna banner: 12 + 86 + 12 = 110.
     private var bannerColumnWidth: CGFloat {
@@ -91,19 +83,12 @@ struct EPGGridView: View {
     private let pastWindow: TimeInterval = 30 * 60
     private let futureWindow: TimeInterval = 120 * 60
 
-    /// Formattazione deterministica "HH" / "mm", senza spazi o simboli
+    /// Formattazione deterministica "HH:mm", senza spazi o simboli
     /// aggiuntivi dipendenti dal locale corrente del dispositivo.
-    private static let hourFormatter: DateFormatter = {
+    private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "HH"
-        return formatter
-    }()
-
-    private static let minuteFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "mm"
+        formatter.dateFormat = "HH:mm"
         return formatter
     }()
 
@@ -291,12 +276,9 @@ struct EPGGridView: View {
         xCoordinate(for: windowCenter)
     }
 
-    /// Tacche a orario pieno/mezzo (es. 8:00, 8:30, 9:00...) il cui testo
-    /// rientra INTERAMENTE nel canvas (sia "HH" sia ":mm"): una tacca il cui
-    /// testo verrebbe tagliato ai bordi non viene generata affatto, cosi'
-    /// la spaziatura di 80pt resta sempre visivamente integra fra tacche
-    /// realmente visibili, invece di apparire incoerente per un'etichetta
-    /// parzialmente clippata.
+    /// Tacche a orario pieno/mezzo (es. 8:00, 8:30, 9:00...) che ricadono
+    /// nella finestra visibile. Non mostra mai l'istante minuto-per-minuto:
+    /// cambia solo quando si attraversa un taglio di mezz'ora.
     private var halfHourTicks: [Date] {
         let calendar = Calendar.autoupdatingCurrent
         let startMinute = calendar.component(.minute, from: windowStart)
@@ -313,12 +295,7 @@ struct EPGGridView: View {
             ticks.append(cursor)
             cursor = cursor.addingTimeInterval(30 * 60)
         }
-
-        let canvas = canvasWidth
-        return ticks.filter { tick in
-            let colonX = xCoordinate(for: tick)
-            return colonX - hourSegmentWidth >= 0 && colonX + minuteSegmentWidth <= canvas
-        }
+        return ticks
     }
 
     private var dayTitle: String {
@@ -493,19 +470,19 @@ struct EPGGridView: View {
         }
     }
 
-    /// La riga oraria e' un unico HStack con spaziatura fissa `tickSpacing`
-    /// fra tacche di larghezza fissa `tickLabelWidth`: la distanza fra i ':'
-    /// di due tacche consecutive e' quindi sempre `tickLabelWidth + tickSpacing
-    /// = halfHourPixelSpacing` (80pt) per costruzione del layout. Solo le
-    /// tacche interamente visibili vengono generate (vedi `halfHourTicks`),
-    /// quindi il primo elemento della lista determina un `anchorX` sempre
-    /// non-negativo e l'ultimo non eccede mai `canvasWidth`.
+    /// La riga oraria e' un unico HStack a spacing zero: ogni tacca e' un
+    /// singolo `Text` "HH:mm" racchiuso in un frame di larghezza ESATTA
+    /// `halfHourPixelSpacing`. Poiche' il frame di ciascuna tacca ha sempre
+    /// la stessa identica larghezza e lo stesso allineamento, il carattere
+    /// ':' si trova sempre alla stessa distanza relativa dal bordo sinistro
+    /// della propria tacca: la distanza fra due ':' consecutivi e' quindi
+    /// SEMPRE `halfHourPixelSpacing`, per costruzione del layout.
     private var scrollingTimelineHeader: some View {
         let ticks = halfHourTicks
-        let anchorX = (ticks.first.map { xCoordinate(for: $0) } ?? 0) - hourSegmentWidth
+        let anchorX = ticks.first.map { xCoordinate(for: $0) } ?? 0
 
         return ZStack(alignment: .topLeading) {
-            HStack(spacing: tickSpacing) {
+            HStack(spacing: 0) {
                 ForEach(ticks, id: \.self) { tick in
                     tickLabel(tick)
                 }
@@ -519,31 +496,24 @@ struct EPGGridView: View {
                     .foregroundStyle(.white)
                     .frame(width: arrowGlyphWidth, height: timelineHeaderHeight, alignment: .center)
                     .offset(x: liveAxisX - arrowGlyphWidth / 2)
-                    .accessibilityLabel(
-                        "Ora corrente: \(Self.hourFormatter.string(from: windowCenter)):\(Self.minuteFormatter.string(from: windowCenter))"
-                    )
+                    .accessibilityLabel("Ora corrente: \(Self.timeFormatter.string(from: windowCenter))")
             }
         }
         .frame(width: canvasWidth, height: timelineHeaderHeight, alignment: .topLeading)
         .clipped()
     }
 
-    /// "HH" occupa uno slot a larghezza fissa allineato a destra; ":mm"
-    /// occupa uno slot a larghezza fissa allineato a sinistra subito dopo.
-    /// Entrambe le larghezze sono costanti indipendentemente dal contenuto,
-    /// quindi il ':' cade sempre alla stessa distanza relativa dall'inizio
-    /// della tacca, per ogni tacca generata.
+    /// Un solo `Text` "HH:mm" in un frame a larghezza fissa e allineamento
+    /// sinistro: nessuna somma di piu' misure indipendenti che potrebbe
+    /// accumulare imprecisioni. Font invariato rispetto alla versione
+    /// precedente (22pt), nessun orario rimosso.
     private func tickLabel(_ date: Date) -> some View {
-        HStack(spacing: 0) {
-            Text(Self.hourFormatter.string(from: date))
-                .frame(width: hourSegmentWidth, alignment: .trailing)
-            Text(":\(Self.minuteFormatter.string(from: date))")
-                .frame(width: minuteSegmentWidth, alignment: .leading)
-        }
-        .font(.system(size: 22, weight: .medium, design: .rounded))
-        .foregroundStyle(.white.opacity(0.58))
-        .monospacedDigit()
-        .lineLimit(1)
+        Text(Self.timeFormatter.string(from: date))
+            .font(.system(size: 22, weight: .medium, design: .rounded))
+            .foregroundStyle(.white.opacity(0.58))
+            .monospacedDigit()
+            .lineLimit(1)
+            .frame(width: halfHourPixelSpacing, height: timelineHeaderHeight, alignment: .leading)
     }
 
     // MARK: - Toolbar Liquid Glass
