@@ -2,14 +2,16 @@ import SwiftUI
 
 /// EPG touch-first con geometria a colonna rigorosa:
 /// - colonna banner = inset sinistro + banner + stesso inset sinistro;
-/// - sezione ora e tile iniziano esattamente al bordo destro della colonna,
-///   condividono lo stesso canvas orizzontale e la stessa scala temporale
-///   (`pixelsPerMinute` da `windowStart`), quindi restano sincronizzate
-///   navigando/scorrendo l'EPG;
-/// - la sezione ora mostra SOLO orari di clock reali (":00" e ":30"), non
-///   l'orario live minuto per minuto;
-/// - banner e tile sono centrati verticalmente con la stessa tecnica di
-///   layout, eliminando il disallineamento verticale fra le due righe.
+/// - sezione ora e tile condividono la STESSA scala pixel/minuto e la stessa
+///   origine (`windowStart`): sono quindi sempre sincronizzate scorrendo;
+/// - la sezione ora mostra solo tacche a orario pieno/mezzo (es. 8:00, 8:30,
+///   9:00...), mai un istante minuto-per-minuto, e la distanza fra i ':' di
+///   due tacche consecutive e' sempre di 80pt esatti, perche' e' la scala
+///   stessa (pixelsPerMinute) a essere calibrata per produrre 80pt ogni 30
+///   minuti — la stessa scala usata per posizionare le tile;
+/// - la tile non supera mai l'inizio del programma successivo (niente
+///   sovrapposizioni) ed e' verticalmente centrata come il banner canale;
+/// - ogni tile mostra il nome del canale prima dell'orario del programma.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -52,10 +54,15 @@ struct EPGGridView: View {
     private let bannerHeight: CGFloat = 76
     private let blockHeight: CGFloat = 82
     private let timelineHeaderHeight: CGFloat = 44
-    private let pixelsPerMinute: CGFloat = 1.85
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
     private let hourSegmentWidth: CGFloat = 34
+
+    /// La scala pixel/minuto e' calibrata per produrre ESATTAMENTE 80pt ogni
+    /// 30 minuti: questa e' l'unica scala usata sia dalla sezione ora sia
+    /// dalle tile, quindi le due sezioni restano sempre sincronizzate.
+    private let halfHourPixelSpacing: CGFloat = 80
+    private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
     /// Larghezza ufficiale e unica della colonna banner: 12 + 86 + 12 = 110.
     private var bannerColumnWidth: CGFloat {
@@ -71,7 +78,8 @@ struct EPGGridView: View {
     private let pastWindow: TimeInterval = 30 * 60
     private let futureWindow: TimeInterval = 120 * 60
 
-    /// Formattazione deterministica "HH" / "mm", indipendente dal locale.
+    /// Formattazione deterministica "HH" / "mm", senza spazi o simboli
+    /// aggiuntivi dipendenti dal locale corrente del dispositivo.
     private static let hourFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -257,43 +265,37 @@ struct EPGGridView: View {
         CGFloat(windowDuration / 60) * pixelsPerMinute
     }
 
-    /// Unica coordinata del live sul canvas. Il centro geometrico della
-    /// freccia e il bordo esatto della zona accesa usano questo valore.
-    private var liveAxisX: CGFloat {
-        CGFloat(windowCenter.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
+    /// Unica funzione di conversione tempo -> coordinata x, condivisa da
+    /// tacche orarie, freccia live e tile: garantisce la sincronizzazione.
+    private func xCoordinate(for date: Date) -> CGFloat {
+        CGFloat(date.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
 
-    /// Prima tacca di mezz'ora (":00" o ":30") a partire da `windowStart`,
-    /// arrotondata per eccesso: garantisce che la sezione ora mostri solo
-    /// orari di clock reali, mai il minuto esatto del live.
-    private var firstHalfHourTick: Date {
+    /// Posizione della freccia live sul canvas condiviso.
+    private var liveAxisX: CGFloat {
+        xCoordinate(for: windowCenter)
+    }
+
+    /// Tacche a orario pieno/mezzo (es. 8:00, 8:30, 9:00...) che ricadono
+    /// nella finestra visibile. Non mostra mai l'istante minuto-per-minuto:
+    /// cambia solo quando si attraversa un taglio di mezz'ora.
+    private var halfHourTicks: [Date] {
         let calendar = Calendar.autoupdatingCurrent
-        let minute = calendar.component(.minute, from: windowStart)
-        let roundedMinute = minute <= 30 ? 30 : 60
-        let base = calendar.date(
+        let startMinute = calendar.component(.minute, from: windowStart)
+        let flooredMinute = startMinute < 30 ? 0 : 30
+        var cursor = calendar.date(
             bySettingHour: calendar.component(.hour, from: windowStart),
-            minute: 0,
+            minute: flooredMinute,
             second: 0,
             of: windowStart
         ) ?? windowStart
-        return base.addingTimeInterval(TimeInterval(roundedMinute) * 60)
-    }
 
-    /// Tutte le tacche di mezz'ora visibili nel canvas, calcolate sulla
-    /// STESSA scala (`windowStart`, `pixelsPerMinute`) usata dalle tile: la
-    /// sincronizzazione e' quindi strutturale, non un valore stimato.
-    private var halfHourTicks: [Date] {
         var ticks: [Date] = []
-        var cursor = firstHalfHourTick
         while cursor <= windowEnd {
             ticks.append(cursor)
             cursor = cursor.addingTimeInterval(30 * 60)
         }
         return ticks
-    }
-
-    private func xCoordinate(for date: Date) -> CGFloat {
-        CGFloat(date.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
 
     private var dayTitle: String {
@@ -419,9 +421,8 @@ struct EPGGridView: View {
     }
 
     /// Nessun padding esterno. L'HStack ha esattamente due figli: colonna
-    /// fissa (110pt) e timeline. Il secondo figlio inizia quindi esattamente
-    /// dove finisce `bannerColumnWidth`. Sezione ora e righe programma
-    /// condividono lo stesso `canvasWidth`, quindi scorrono insieme.
+    /// fissa (110pt) e timeline. Sezione ora e tile condividono lo stesso
+    /// `canvasWidth`, quindi restano sincronizzate durante lo scroll.
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
             fixedDayAndChannelColumn
@@ -471,32 +472,33 @@ struct EPGGridView: View {
         }
     }
 
-    /// Righello continuo di orari di clock reali (":00"/":30"), calcolato
-    /// sulla STESSA scala (`windowStart`, `pixelsPerMinute`) usata dalle
-    /// tile: e' quindi impossibile che si disallinei scorrendo o cambiando
-    /// giorno. La freccia "▼" resta l'UNICO indicatore live, posizionata a
-    /// `liveAxisX` senza alcun testo duplicato sopra o sotto di essa.
+    /// Sequenza di tacche a orario pieno/mezzo (mai minuto-per-minuto),
+    /// posizionate con la stessa `xCoordinate(for:)` usata dalle tile: la
+    /// distanza fra i ':' di due tacche consecutive e' sempre esattamente
+    /// `halfHourPixelSpacing` (80pt), perche' deriva dalla stessa scala.
     private func scrollingTimelineHeader(width: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(halfHourTicks, id: \.self) { tick in
                 timeLabel(tick, colonX: xCoordinate(for: tick), width: width)
             }
 
-            Image(systemName: "arrowtriangle.down.fill")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: arrowGlyphWidth, height: timelineHeaderHeight, alignment: .center)
-                .offset(x: liveAxisX - arrowGlyphWidth / 2)
-                .accessibilityLabel(
-                    "Ora corrente: \(Self.hourFormatter.string(from: windowCenter)):\(Self.minuteFormatter.string(from: windowCenter))"
-                )
+            if isToday {
+                Image(systemName: "arrowtriangle.down.fill")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: arrowGlyphWidth, height: timelineHeaderHeight, alignment: .center)
+                    .offset(x: liveAxisX - arrowGlyphWidth / 2)
+                    .accessibilityLabel(
+                        "Ora corrente: \(Self.hourFormatter.string(from: windowCenter)):\(Self.minuteFormatter.string(from: windowCenter))"
+                    )
+            }
         }
         .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
     }
 
     /// "HH" e' allineato a destra in uno slot a larghezza fissa che termina
-    /// esattamente a `colonX`; ":mm" segue subito dopo senza alcuno spazio
-    /// intermedio: il carattere ':' cade quindi esattamente su `colonX`.
+    /// esattamente a `colonX`; ":mm" segue subito dopo, senza alcuno spazio
+    /// intermedio. Il carattere ':' cade quindi esattamente su `colonX`.
     private func timeLabel(_ date: Date, colonX: CGFloat, width: CGFloat) -> some View {
         let hourString = Self.hourFormatter.string(from: date)
         let minuteString = Self.minuteFormatter.string(from: date)
@@ -507,8 +509,8 @@ struct EPGGridView: View {
             Text(":\(minuteString)")
                 .fixedSize()
         }
-        .font(.system(size: 15, weight: .medium, design: .rounded))
-        .foregroundStyle(.white.opacity(0.5))
+        .font(.system(size: 22, weight: .medium, design: .rounded))
+        .foregroundStyle(.white.opacity(0.58))
         .monospacedDigit()
         .frame(height: timelineHeaderHeight, alignment: .center)
         .offset(x: colonX - hourSegmentWidth)
@@ -685,7 +687,7 @@ struct EPGGridView: View {
     private func timelineRow(for stream: XtreamStream, width: CGFloat) -> some View {
         let programs = visiblePrograms(for: stream)
 
-        return ZStack(alignment: .topLeading) {
+        return ZStack(alignment: .leading) {
             if programs.isEmpty {
                 unavailableBlock(for: stream, width: width)
             } else {
@@ -698,13 +700,12 @@ struct EPGGridView: View {
                 }
             }
         }
-        .frame(width: width, height: rowHeight, alignment: .topLeading)
+        .frame(width: width, height: rowHeight, alignment: .leading)
         .clipped()
     }
 
-    /// Il banner e' centrato verticalmente nella riga con una singola
-    /// tecnica di layout (frame + alignment .center): la stessa usata dalla
-    /// tile, cosi' i loro centri verticali coincidono sempre esattamente.
+    /// Il banner non possiede wrapper visibili, padding aggiuntivi o spazio a
+    /// destra: il padding e' gestito dal solo frame della colonna padre.
     private func channelBanner(_ stream: XtreamStream) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -766,10 +767,11 @@ struct EPGGridView: View {
         .frame(width: width, height: rowHeight, alignment: .leading)
     }
 
-    /// La larghezza desiderata non puo' MAI superare la distanza fino
-    /// all'inizio del programma successivo: elimina le sovrapposizioni.
-    /// La tile e' centrata verticalmente con la STESSA tecnica del banner
-    /// (frame + alignment .center), cosi' i due centri coincidono sempre.
+    /// La larghezza desiderata (durata reale, o spazio minimo per il testo)
+    /// non puo' MAI superare la distanza fino all'inizio del programma
+    /// successivo: elimina strutturalmente le sovrapposizioni fra tile.
+    /// La tile e' centrata verticalmente dallo ZStack padre (nessun offset
+    /// verticale aggiuntivo): questo la allinea esattamente al banner canale.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -797,7 +799,12 @@ struct EPGGridView: View {
         return Button {
             selectedProgram = SelectedProgram(program: program, stream: stream)
         } label: {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(stream.name)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.60))
+                    .lineLimit(1)
+
                 Text(program.start.formatted(date: .omitted, time: .shortened))
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.52))
@@ -813,7 +820,7 @@ struct EPGGridView: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 13)
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
             .frame(width: width, height: blockHeight, alignment: .topLeading)
         }
         .buttonStyle(.plain)
@@ -825,10 +832,9 @@ struct EPGGridView: View {
                 tileWidth: width
             )
         }
-        .frame(height: rowHeight, alignment: .center)
         .offset(x: startX)
         .accessibilityLabel(
-            "\(program.title), dalle \(program.start.formatted(date: .omitted, time: .shortened)) alle \(program.end.formatted(date: .omitted, time: .shortened))"
+            "\(stream.name), \(program.title), dalle \(program.start.formatted(date: .omitted, time: .shortened)) alle \(program.end.formatted(date: .omitted, time: .shortened))"
         )
     }
 
