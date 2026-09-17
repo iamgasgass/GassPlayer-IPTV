@@ -2,10 +2,13 @@ import SwiftUI
 
 /// EPG touch-first con geometria a colonna rigorosa:
 /// - colonna banner = inset sinistro + banner + stesso inset sinistro;
-/// - il banner e' contenuto DENTRO la colonna, quindi non la puo' superare;
-/// - sezione ora e tile sono il child immediatamente successivo dell'HStack,
-///   senza padding/gap nascosti e iniziano al bordo destro della colonna;
-/// - gli orari futuri hanno i rispettivi ':' distanti 80pt effettivi.
+/// - sezione ora e tile iniziano esattamente al bordo destro della colonna;
+/// - le tile non superano MAI l'inizio del programma successivo: la
+///   larghezza reale e' sempre limitata dallo slot temporale disponibile,
+///   eliminando le sovrapposizioni;
+/// - gli orari (sezione ora) sono composti da "HH" + ":" + "mm" senza alcuno
+///   spazio superfluo, e i due orari futuri hanno il rispettivo carattere
+///   ':' posizionato geometricamente a 80pt esatti di distanza.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -42,7 +45,6 @@ struct EPGGridView: View {
     // MARK: - Fixed EPG geometry
 
     /// Formula richiesta: `inset sinistro + BANNER + inset sinistro`.
-    /// Non viene applicato nessun padding esterno alla griglia.
     private let bannerInset: CGFloat = 12
     private let channelBannerWidth: CGFloat = 86
     private let rowHeight: CGFloat = 96
@@ -54,9 +56,10 @@ struct EPGGridView: View {
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Distanza effettiva fra i caratteri ':' degli orari futuri.
+    /// Distanza geometrica esatta fra i ':' degli orari futuri e larghezza
+    /// fissa riservata alla parte "HH" di ogni orario (per allineare i ':').
     private let futureTimeColonSpacing: CGFloat = 80
-    private let timeLabelWidth: CGFloat = 56
+    private let hourSegmentWidth: CGFloat = 34
 
     /// Larghezza ufficiale e unica della colonna banner: 12 + 86 + 12 = 110.
     private var bannerColumnWidth: CGFloat {
@@ -71,6 +74,22 @@ struct EPGGridView: View {
     /// Finestra visuale: 30 minuti passati, 2 ore future.
     private let pastWindow: TimeInterval = 30 * 60
     private let futureWindow: TimeInterval = 120 * 60
+
+    /// Formattazione deterministica "HH" / "mm", senza spazi o simboli
+    /// aggiuntivi dipendenti dal locale corrente del dispositivo.
+    private static let hourFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH"
+        return formatter
+    }()
+
+    private static let minuteFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "mm"
+        return formatter
+    }()
 
     init(
         credentials: XtreamCredentials,
@@ -253,20 +272,10 @@ struct EPGGridView: View {
         liveAxisX + CGFloat(minutesFromLive) * pixelsPerMinute
     }
 
-    private var displayedTimeLabel: String {
-        windowCenter.formatted(date: .omitted, time: .shortened)
-    }
-
-    private var minus30MinutesLabel: String {
-        windowCenter.addingTimeInterval(-30 * 60).formatted(date: .omitted, time: .shortened)
-    }
-
-    private var plusOneHourLabel: String {
-        windowCenter.addingTimeInterval(60 * 60).formatted(date: .omitted, time: .shortened)
-    }
-
-    private var plusTwoHoursLabel: String {
-        windowCenter.addingTimeInterval(120 * 60).formatted(date: .omitted, time: .shortened)
+    /// Converte una data assoluta nella coordinata x sul canvas condiviso
+    /// dalla stessa origine (`windowStart`) usata dalle tile.
+    private func xCoordinate(for date: Date) -> CGFloat {
+        CGFloat(date.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
     }
 
     private var dayTitle: String {
@@ -393,7 +402,7 @@ struct EPGGridView: View {
 
     /// Nessun padding esterno. L'HStack ha esattamente due figli: colonna
     /// fissa (110pt) e timeline. Il secondo figlio inizia quindi esattamente
-    /// dove finisce `bannerColumnWidth`, senza spazio superfluo.
+    /// dove finisce `bannerColumnWidth`.
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
             fixedDayAndChannelColumn
@@ -417,8 +426,7 @@ struct EPGGridView: View {
     }
 
     /// La colonna fisica e' 110pt. “Oggi” e banner hanno entrambi margine
-    /// sinistro 12pt; il banner e' contenuto in un frame interno da 86pt, con
-    /// 12pt rimanenti a destra: non puo' ampliare la colonna.
+    /// sinistro 12pt; il banner e' contenuto in un frame interno da 86pt.
     private var fixedDayAndChannelColumn: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             Button {
@@ -444,47 +452,53 @@ struct EPGGridView: View {
         }
     }
 
-    /// -30 min -> ▼ -> +1 h -> +2 h. Tutte le x derivano da `liveAxisX`;
-    /// non esistono offset arbitrari che possano disallineare header e tile.
+    /// -30 min -> ▼ -> +1 h -> +2 h. Ogni orario e' composto da un segmento
+    /// "HH" a larghezza fissa e un segmento ":mm" che parte esattamente alla
+    /// coordinata richiesta: questo rende la posizione del ':' geometrica e
+    /// indipendente dal font, garantendo gli 80pt esatti fra le due ore future.
     private func scrollingTimelineHeader(width: CGFloat) -> some View {
+        let minus30Date = windowCenter.addingTimeInterval(-30 * 60)
+        let plusOneHourDate = windowCenter.addingTimeInterval(60 * 60)
         let futureColonX = axisX(minutesFromLive: 60)
         let secondFutureColonX = futureColonX + futureTimeColonSpacing
+        let plusTwoHoursDate = windowCenter.addingTimeInterval(120 * 60)
 
         return ZStack(alignment: .topLeading) {
-            timeLabel(minus30MinutesLabel, colonX: axisX(minutesFromLive: -30), width: width, opacity: 0.42)
+            timeLabel(minus30Date, colonX: axisX(minutesFromLive: -30), width: width, opacity: 0.42)
 
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 20, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(width: arrowGlyphWidth, height: timelineHeaderHeight, alignment: .center)
                 .offset(x: liveAxisX - arrowGlyphWidth / 2)
-                .accessibilityLabel("Ora corrente: \(displayedTimeLabel)")
+                .accessibilityLabel("Ora corrente: \(Self.hourFormatter.string(from: windowCenter)):\(Self.minuteFormatter.string(from: windowCenter))")
 
-            timeLabel(plusOneHourLabel, colonX: futureColonX, width: width, opacity: 0.65)
-            timeLabel(plusTwoHoursLabel, colonX: secondFutureColonX, width: width, opacity: 0.65)
+            timeLabel(plusOneHourDate, colonX: futureColonX, width: width, opacity: 0.65)
+            timeLabel(plusTwoHoursDate, colonX: secondFutureColonX, width: width, opacity: 0.65)
         }
         .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
     }
 
-    /// Posiziona un orario HH:mm con il carattere ':' sulla coordinata
-    /// colonX. In particolare le due ore future usano colonX distanti 80pt.
-    private func timeLabel(
-        _ label: String,
-        colonX: CGFloat,
-        width: CGFloat,
-        opacity: Double
-    ) -> some View {
-        Text(label)
-            .font(.system(size: 22, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(opacity))
-            .monospacedDigit()
-            .frame(width: timeLabelWidth, height: timelineHeaderHeight, alignment: .center)
-            .position(
-                x: colonX + timeLabelWidth / 2 - timeLabelWidth * 0.6,
-                y: timelineHeaderHeight / 2
-            )
-            .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
-            .clipped()
+    /// "HH" e' allineato a destra in uno slot a larghezza fissa che termina
+    /// esattamente a `colonX`; ":mm" segue subito dopo, senza alcuno spazio
+    /// intermedio. Il carattere ':' cade quindi esattamente su `colonX`.
+    private func timeLabel(_ date: Date, colonX: CGFloat, width: CGFloat, opacity: Double) -> some View {
+        let hourString = Self.hourFormatter.string(from: date)
+        let minuteString = Self.minuteFormatter.string(from: date)
+
+        return HStack(spacing: 0) {
+            Text(hourString)
+                .frame(width: hourSegmentWidth, alignment: .trailing)
+            Text(":\(minuteString)")
+                .fixedSize()
+        }
+        .font(.system(size: 22, weight: .medium, design: .rounded))
+        .foregroundStyle(.white.opacity(opacity))
+        .monospacedDigit()
+        .frame(height: timelineHeaderHeight, alignment: .center)
+        .offset(x: colonX - hourSegmentWidth)
+        .frame(width: width, height: timelineHeaderHeight, alignment: .topLeading)
+        .clipped()
     }
 
     // MARK: - Toolbar Liquid Glass
@@ -651,6 +665,8 @@ struct EPGGridView: View {
 
     // MARK: - EPG rows
 
+    /// Passa al blocco successivo l'orario di inizio del programma seguente,
+    /// cosi' la larghezza puo' essere limitata per non sovrapporsi mai.
     private func timelineRow(for stream: XtreamStream, width: CGFloat) -> some View {
         let programs = visiblePrograms(for: stream)
 
@@ -658,8 +674,12 @@ struct EPGGridView: View {
             if programs.isEmpty {
                 unavailableBlock(for: stream, width: width)
             } else {
-                ForEach(programs) { program in
-                    programBlock(program, stream: stream)
+                ForEach(Array(programs.enumerated()), id: \.element.id) { index, program in
+                    programBlock(
+                        program,
+                        stream: stream,
+                        nextProgramStart: index + 1 < programs.count ? programs[index + 1].start : nil
+                    )
                 }
             }
         }
@@ -730,17 +750,33 @@ struct EPGGridView: View {
         .frame(width: width, height: rowHeight, alignment: .leading)
     }
 
-    /// Larghezza tile temporale; l'origine x e il confine di colore sono sul
-    /// medesimo canvas dell'indicatore live dell'header.
-    private func programBlock(_ program: EPGProgram, stream: XtreamStream) -> some View {
+    /// La larghezza desiderata (durata reale, o spazio minimo per il testo)
+    /// non puo' MAI superare la distanza fino all'inizio del programma
+    /// successivo: questo elimina strutturalmente le sovrapposizioni fra
+    /// tile consecutive, indipendentemente da quanto sia corto uno slot.
+    private func programBlock(
+        _ program: EPGProgram,
+        stream: XtreamStream,
+        nextProgramStart: Date?
+    ) -> some View {
         let clippedStart = max(program.start, windowStart)
         let clippedEnd = min(program.end, windowEnd)
         let startMinutes = max(0, clippedStart.timeIntervalSince(windowStart) / 60)
         let durationMinutes = max(1, clippedEnd.timeIntervalSince(clippedStart) / 60)
+        let startX = CGFloat(startMinutes) * pixelsPerMinute
+
         let timeWidth = CGFloat(durationMinutes) * pixelsPerMinute
         let textWidth = estimatedTitleWidth(for: program.title) + 26
-        let width = max(minimumProgramBlockWidth, timeWidth, textWidth)
-        let startX = CGFloat(startMinutes) * pixelsPerMinute
+        let desiredWidth = max(minimumProgramBlockWidth, timeWidth, textWidth)
+
+        let maxAvailableWidth: CGFloat
+        if let nextProgramStart {
+            let nextStartX = CGFloat(max(0, nextProgramStart.timeIntervalSince(windowStart) / 60)) * pixelsPerMinute
+            maxAvailableWidth = max(20, nextStartX - startX)
+        } else {
+            maxAvailableWidth = desiredWidth
+        }
+        let width = min(desiredWidth, maxAvailableWidth)
 
         return Button {
             selectedProgram = SelectedProgram(program: program, stream: stream)
