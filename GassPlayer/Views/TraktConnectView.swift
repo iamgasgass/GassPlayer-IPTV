@@ -7,7 +7,6 @@ import UIKit
 /// schermate custom Liquid Glass (`SourceManageView`, `EPGManageView`).
 struct TraktConnectView: View {
     @ObservedObject private var account = TraktAccountManager.shared
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -45,20 +44,6 @@ struct TraktConnectView: View {
             .background(background)
             .navigationTitle("Trakt.tv")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 16, weight: .semibold))
-                            .frame(width: 36, height: 36)
-                            .contentShape(Circle())
-                    }
-                    .modifier(GlassCardBackground(cornerRadius: 18))
-                    .accessibilityLabel("Indietro")
-                }
-            }
             .onDisappear {
                 if account.deviceCode != nil {
                     account.cancelConnecting()

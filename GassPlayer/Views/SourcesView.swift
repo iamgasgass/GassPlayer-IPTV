@@ -19,6 +19,7 @@ private struct ConnectionCheckResult: Identifiable {
 struct SourcesView: View {
     @EnvironmentObject private var sourceManager: SourceManager
     @EnvironmentObject private var contentManagement: ContentManagementService
+    @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
 
     @State private var showAddSheet = false
     @State private var renamingSource: MediaSourceConfig?
@@ -33,6 +34,7 @@ struct SourcesView: View {
     @State private var showImportSheet = false
     @State private var importText = ""
     @State private var importFeedback: ImportFeedback?
+    @State private var managingListSource: MediaSourceConfig?
 
     private struct ImportFeedback: Identifiable {
         let id = UUID()
@@ -95,6 +97,12 @@ struct SourcesView: View {
         return count == 1 ? "1 sorgente" : "\(count) sorgenti"
     }
 
+    /// Sorgente su cui agisce "Gestisci lista": quella attiva, o la prima
+    /// disponibile se nessuna è attualmente selezionata come attiva.
+    private var manageListTargetSource: MediaSourceConfig? {
+        sourceManager.activeSource ?? sourceManager.sources.first
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -104,15 +112,23 @@ struct SourcesView: View {
                 favoritesSection
                 backupSection
             }
+            .scrollContentBackground(.hidden)
+            .glassScreenBackground()
             .navigationTitle("Sorgenti")
             .searchable(text: $searchQuery, prompt: "Cerca sorgenti")
             .toolbar {
                 toolbarContent
             }
             .sheet(isPresented: $showAddSheet) {
-                AddSourceView { configuration in
+                AddPlaylistView { configuration in
                     sourceManager.add(configuration)
                 }
+            }
+            .sheet(item: $managingListSource) { source in
+                SourceManageView(source: source)
+                    .environmentObject(sourceManager)
+                    .environmentObject(contentManagement)
+                    .environmentObject(xtreamCatalog)
             }
             .sheet(isPresented: $showMergeSheet) {
                 MergePlaylistView(sources: sourceManager.sources) { name, sourceIDs in
@@ -253,15 +269,16 @@ struct SourcesView: View {
 
     private var liveAggregationSection: some View {
         Section {
-            Button {
+            GlassSettingsRow(
+                icon: "square.stack.3d.up.fill",
+                title: "Guarda tutte le liste insieme",
+                tint: .red,
+                showChevron: false,
+                isDisabled: !canOpenAllSourcesLive
+            ) {
                 showAllSourcesLive = true
-            } label: {
-                Label(
-                    "Guarda tutte le liste insieme",
-                    systemImage: "square.stack.3d.up.fill"
-                )
             }
-            .disabled(!canOpenAllSourcesLive)
+            .glassListRow()
         } header: {
             Text("Live TV")
         } footer: {
@@ -273,6 +290,15 @@ struct SourcesView: View {
 
     private var sourcesSection: some View {
         Section {
+            manageListRow
+                .glassListRow()
+
+            addPlaylistRow
+                .glassListRow()
+
+            manageSourcesRow
+                .glassListRow()
+
             if displayedSources.isEmpty {
                 ContentUnavailableView(
                     searchQuery.isEmpty
@@ -283,7 +309,7 @@ struct SourcesView: View {
                         : "magnifyingglass",
                     description: Text(
                         searchQuery.isEmpty
-                            ? "Tocca + per aggiungere una playlist M3U o un account supportato."
+                            ? "Tocca “Aggiungi playlist” per collegare una playlist M3U o un account supportato."
                             : "Prova a cercare con un altro nome, host o tipo."
                     )
                 )
@@ -291,6 +317,7 @@ struct SourcesView: View {
             } else {
                 ForEach(displayedSources) { source in
                     sourceRow(source)
+                        .glassListRow()
                 }
                 .onDelete(perform: deleteSources)
                 .onMove(perform: moveSources)
@@ -309,21 +336,68 @@ struct SourcesView: View {
         }
     }
 
+    /// Voce "Gestisci lista": subito dopo l'intestazione "Le mie sorgenti",
+    /// apre direttamente `SourceManageView` sulla sorgente attiva (o sulla
+    /// prima disponibile), senza passare dall'hub "Gestisci sorgenti".
+    private var manageListRow: some View {
+        GlassSettingsRow(
+            icon: "slider.horizontal.3",
+            title: "Gestisci lista",
+            subtitle: manageListTargetSource?.name,
+            tint: .teal,
+            isDisabled: manageListTargetSource == nil
+        ) {
+            managingListSource = manageListTargetSource
+        }
+    }
+
+    /// Voce "Aggiungi playlist": stessa azione del pulsante "+" in toolbar,
+    /// ma come riga esplicita della sezione Sorgenti (richiesta esplicita:
+    /// deve comparire come voce dell'elenco, non solo come pulsante).
+    private var addPlaylistRow: some View {
+        GlassSettingsRow(
+            icon: "plus.circle.fill",
+            title: "Aggiungi playlist",
+            tint: .blue
+        ) {
+            showAddSheet = true
+        }
+    }
+
+    /// Voce "Gestisci sorgenti": apre l'hub dedicato che elenca tutte le
+    /// sorgenti e permette di entrare direttamente nella scheda di gestione
+    /// (`SourceManageView`) di ciascuna.
+    private var manageSourcesRow: some View {
+        NavigationLink {
+            SourceManagerView()
+        } label: {
+            GlassSourceRowLabel(icon: "gearshape.2.fill", title: "Gestisci sorgenti", tint: .indigo)
+        }
+        .disabled(sourceManager.sources.isEmpty)
+    }
+
     private var mergedPlaylistsSection: some View {
         Section {
             if contentManagement.mergedPlaylists.isEmpty {
                 Text("Unisci più sorgenti in una sola playlist.")
                     .foregroundStyle(.secondary)
+                    .glassListRow()
             } else {
                 ForEach(contentManagement.mergedPlaylists) { mergedPlaylist in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(mergedPlaylist.name)
-                            .font(.headline)
+                    HStack(spacing: 12) {
+                        GlassSourceIcon(systemImage: "square.stack.3d.up.fill", tint: .purple, size: 36)
 
-                        Text("\(mergedPlaylist.memberSourceIds.count) sorgenti unite")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(mergedPlaylist.name)
+                                .font(.headline)
+
+                            Text("\(mergedPlaylist.memberSourceIds.count) sorgenti unite")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .padding(.vertical, 6)
+                    .glassListRow()
                 }
                 .onDelete { offsets in
                     let playlistsToDelete = offsets.map {
@@ -340,10 +414,16 @@ struct SourcesView: View {
                 }
             }
 
-            Button("Crea playlist unita") {
+            GlassSettingsRow(
+                icon: "plus.square.on.square",
+                title: "Crea playlist unita",
+                tint: .purple,
+                showChevron: false,
+                isDisabled: sourceManager.sources.count < 2
+            ) {
                 showMergeSheet = true
             }
-            .disabled(sourceManager.sources.count < 2)
+            .glassListRow()
         } header: {
             Text("Playlist unite")
         } footer: {
@@ -356,10 +436,16 @@ struct SourcesView: View {
             if contentManagement.favorites.isEmpty {
                 Text("I tuoi contenuti preferiti appariranno qui.")
                     .foregroundStyle(.secondary)
+                    .glassListRow()
             } else {
                 ForEach(contentManagement.favorites) { favorite in
-                    Label(favorite.title, systemImage: "star.fill")
-                        .foregroundStyle(.yellow)
+                    HStack(spacing: 12) {
+                        GlassSourceIcon(systemImage: "star.fill", tint: .yellow, size: 36)
+                        Text(favorite.title)
+                            .font(.body.weight(.medium))
+                    }
+                    .padding(.vertical, 6)
+                    .glassListRow()
                 }
             }
         } header: {
@@ -376,32 +462,37 @@ struct SourcesView: View {
                     item: payload,
                     preview: SharePreview("Backup sorgenti GassPlayer")
                 ) {
-                    Label(
-                        "Esporta sorgenti (JSON)",
-                        systemImage: "square.and.arrow.up"
+                    GlassSourceRowLabel(
+                        icon: "square.and.arrow.up",
+                        title: "Esporta sorgenti (JSON)",
+                        tint: .blue
                     )
                 }
+                .glassListRow()
             }
 
-            Button {
+            GlassSettingsRow(
+                icon: "square.and.arrow.down",
+                title: "Importa sorgenti (JSON)",
+                tint: .blue,
+                showChevron: false
+            ) {
                 importText = ""
                 showImportSheet = true
-            } label: {
-                Label("Importa sorgenti (JSON)", systemImage: "square.and.arrow.down")
             }
+            .glassListRow()
 
-            Button {
+            GlassSettingsRow(
+                icon: "checkmark.shield",
+                title: "Verifica tutte le sorgenti Xtream",
+                tint: .green,
+                showChevron: false,
+                showsProgress: isCheckingAll,
+                isDisabled: verifiableSourceCount == 0
+            ) {
                 Task { await verifyAllSources() }
-            } label: {
-                HStack {
-                    Label("Verifica tutte le sorgenti Xtream", systemImage: "checkmark.shield")
-                    if isCheckingAll {
-                        Spacer()
-                        ProgressView().controlSize(.small)
-                    }
-                }
             }
-            .disabled(isCheckingAll || verifiableSourceCount == 0)
+            .glassListRow()
         } header: {
             Text("Backup")
         } footer: {
@@ -412,10 +503,11 @@ struct SourcesView: View {
     @ViewBuilder
     private func sourceRow(_ source: MediaSourceConfig) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: source.type.systemImage)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.tint)
-                .frame(width: 28)
+            GlassSourceIcon(
+                systemImage: source.iconName ?? source.type.systemImage,
+                tint: source.type.glassTint,
+                size: 40
+            )
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
@@ -702,113 +794,290 @@ struct SourcesView: View {
     }
 }
 
-struct AddSourceView: View {
+// MARK: - Aggiungi playlist
+
+/// Schermata "Aggiungi playlist", riproduce esattamente il riferimento
+/// fornito: prima si sceglie il tipo di playlist da un elenco a scelta
+/// singola (M3U8 / Xtream / Plex / Jellyfin / Emby, con indicatore radio),
+/// poi — una volta scelto — l'elenco si richiude su un'unica riga con il
+/// tipo selezionato e sotto compaiono nome, icona identificativa (carosello
+/// Liquid Glass) e i campi di connessione specifici del tipo.
+/// Toccando di nuovo la riga del tipo selezionato l'elenco si riapre per
+/// cambiare scelta, prima di premere "Salva".
+struct AddPlaylistView: View {
+    let onSave: (MediaSourceConfig) -> Void
+
     @Environment(\.dismiss) private var dismiss
 
+    @State private var type: MediaSourceType?
+    @State private var isTypeListExpanded = true
     @State private var name = ""
-    @State private var type: MediaSourceType = .xtream
+    @State private var iconName: String?
     @State private var host = ""
     @State private var username = ""
     @State private var password = ""
 
-    let onSave: (MediaSourceConfig) -> Void
+    /// Stesso set di icone mostrato nel riferimento per "Aggiungi playlist"
+    /// (schermo, mezzaluna, fumetto, pellicola, tornado, eject, biglietto,
+    /// pace, chiave): identificativo, non incide sulla logica della sorgente.
+    static let iconChoices = [
+        "laptopcomputer", "circle.lefthalf.filled", "bubble.left.fill",
+        "film.fill", "tornado", "eject.fill", "ticket.fill",
+        "peacesign", "key.fill"
+    ]
 
-    private var trimmedName: String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    /// Ordine dei tipi esattamente come nel riferimento: M3U8, Xtream, Plex,
+    /// Jellyfin, Emby (diverso dall'ordine di dichiarazione dell'enum, che
+    /// resta invariato altrove per non alterare l'ordinamento già in uso
+    /// in `MediaSourceType.allCases`).
+    private static let orderedTypes: [MediaSourceType] = [.m3u8, .xtream, .plex, .jellyfin, .emby]
 
-    private var trimmedHost: String {
-        host.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var trimmedHost: String { host.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var trimmedUsername: String { username.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var requiresCredentials: Bool {
-        type != .m3u8
+        type != nil && type != .m3u8
     }
 
     private var canSave: Bool {
-        guard !trimmedName.isEmpty, !trimmedHost.isEmpty else {
-            return false
-        }
-
-        guard requiresCredentials else {
-            return true
-        }
-
-        return !trimmedUsername.isEmpty && !trimmedPassword.isEmpty
+        guard type != nil, !trimmedName.isEmpty, !trimmedHost.isEmpty else { return false }
+        guard requiresCredentials else { return true }
+        return !trimmedUsername.isEmpty && !password.isEmpty
     }
 
-    private var trimmedUsername: String {
-        username.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var trimmedPassword: String {
-        password.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var hostFieldLabel: String {
+        switch type {
+        case .xtream: return "URL al server Xtream"
+        case .m3u8: return "URL della playlist M3U"
+        case .plex: return "URL al server Plex"
+        case .jellyfin: return "URL al server Jellyfin"
+        case .emby: return "URL al server Emby"
+        case nil: return "URL del server"
+        }
     }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    TextField("Nome sorgente", text: $name)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    typeSection
 
-                    Picker("Tipo", selection: $type) {
-                        ForEach(MediaSourceType.allCases) { sourceType in
-                            Text(sourceType.rawValue).tag(sourceType)
+                    if let type {
+                        fieldBlock(title: "Dai un nome a questa playlist") {
+                            TextField("es. La mia playlist", text: $name)
+                                .textInputAutocapitalization(.words)
                         }
+
+                        iconPicker
+
+                        fieldBlock(title: hostFieldLabel) {
+                            TextField("es. http://il-tuo-dominio:porta/percorso/file", text: $host)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.URL)
+                        }
+
+                        if requiresCredentials {
+                            fieldBlock(title: "Il tuo username") {
+                                TextField("es. mio-username", text: $username)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                            }
+
+                            fieldBlock(title: "La tua password") {
+                                SecureField("es. la-mia-password", text: $password)
+                            }
+                        }
+
+                        GlassPrimaryButton(title: "Salva", systemImage: "checkmark") {
+                            save()
+                        }
+                        .disabled(!canSave)
+                        .opacity(canSave ? 1 : 0.5)
                     }
-                } header: {
-                    Text("Informazioni")
                 }
-
-                Section {
-                    TextField("Host / URL", text: $host)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-
-                    if requiresCredentials {
-                        TextField("Username", text: $username)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-
-                        SecureField("Password / Token", text: $password)
-                    }
-                } header: {
-                    Text("Connessione")
-                } footer: {
-                    if type == .m3u8 {
-                        Text("Inserisci un URL completo http:// o https:// della playlist M3U/M3U8.")
-                    } else {
-                        Text("Inserisci l’host completo, username e password o token del servizio.")
-                    }
-                }
+                .padding(20)
+                .animation(.snappy, value: type)
+                .animation(.snappy, value: isTypeListExpanded)
             }
-            .navigationTitle("Nuova sorgente")
+            .navigationTitle("Aggiungi playlist")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Annulla") {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
                         dismiss()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 16, weight: .semibold))
+                            .frame(width: 36, height: 36)
+                            .contentShape(Circle())
                     }
-                }
-
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Salva") {
-                        onSave(
-                            MediaSourceConfig(
-                                name: trimmedName,
-                                type: type,
-                                host: trimmedHost,
-                                username: requiresCredentials ? trimmedUsername : nil,
-                                password: requiresCredentials ? trimmedPassword : nil
-                            )
-                        )
-                        dismiss()
-                    }
-                    .disabled(!canSave)
+                    .modifier(GlassCardBackground(cornerRadius: 18))
+                    .accessibilityLabel("Indietro")
                 }
             }
         }
+    }
+
+    // MARK: - Selezione del tipo
+
+    private var typeSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Seleziona il tipo di playlist")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            GlassCard(padding: 6) {
+                VStack(spacing: 0) {
+                    if let type, !isTypeListExpanded {
+                        typeRow(type, isSelected: true) {
+                            isTypeListExpanded = true
+                        }
+                    } else {
+                        ForEach(Array(Self.orderedTypes.enumerated()), id: \.element.id) { index, candidate in
+                            if index > 0 {
+                                GlassRowDivider(leading: 20)
+                            }
+
+                            typeRow(candidate, isSelected: candidate == type) {
+                                selectType(candidate)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 6)
+            }
+        }
+    }
+
+    private func typeRow(_ candidate: MediaSourceType, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(candidateTitle(candidate))
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary.opacity(0.5))
+            }
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    /// Nome breve del tipo (senza la parte tra parentesi di
+    /// `MediaSourceType.rawValue`), per restare fedele al riferimento
+    /// ("Xtream", non "Xtream Codes").
+    private func candidateTitle(_ candidate: MediaSourceType) -> String {
+        switch candidate {
+        case .xtream: return "Xtream"
+        case .m3u8: return "M3U8"
+        case .plex: return "Plex"
+        case .jellyfin: return "Jellyfin"
+        case .emby: return "Emby"
+        }
+    }
+
+    private func selectType(_ candidate: MediaSourceType) {
+        let isChangingType = type != candidate
+        type = candidate
+        isTypeListExpanded = false
+
+        if isChangingType {
+            iconName = defaultIcon(for: candidate)
+        }
+    }
+
+    private func defaultIcon(for candidate: MediaSourceType) -> String {
+        switch candidate {
+        case .xtream: return "tornado"
+        case .m3u8: return "laptopcomputer"
+        case .plex: return "ticket.fill"
+        case .jellyfin: return "bubble.left.fill"
+        case .emby: return "key.fill"
+        }
+    }
+
+    // MARK: - Icona e campi
+
+    private var iconPicker: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Identifica con un'icona")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) {
+                    ForEach(Self.iconChoices, id: \.self) { icon in
+                        Button {
+                            iconName = icon
+                        } label: {
+                            Image(systemName: icon)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(iconName == icon ? .white : .secondary)
+                                .frame(width: 46, height: 46)
+                                .background(
+                                    iconName == icon
+                                        ? AnyShapeStyle(
+                                            LinearGradient(
+                                                colors: [.orange, .red],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            )
+                                        )
+                                        : AnyShapeStyle(Color.secondary.opacity(0.12)),
+                                    in: Circle()
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Icona \(icon)")
+                        .accessibilityAddTraits(iconName == icon ? [.isSelected] : [])
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func fieldBlock<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            content()
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(
+                    Color.secondary.opacity(0.1),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                )
+        }
+    }
+
+    private func save() {
+        guard let type else { return }
+
+        onSave(
+            MediaSourceConfig(
+                name: trimmedName,
+                type: type,
+                host: trimmedHost,
+                username: requiresCredentials ? trimmedUsername : nil,
+                password: requiresCredentials ? password : nil,
+                iconName: iconName
+            )
+        )
+        dismiss()
     }
 }
 

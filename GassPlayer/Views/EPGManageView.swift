@@ -11,7 +11,6 @@ import SwiftUI
 struct EPGManageView: View {
     @EnvironmentObject private var sourceManager: SourceManager
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
-    @Environment(\.dismiss) private var dismiss
 
     @ObservedObject private var epgManager = EPGManager.shared
 
@@ -47,20 +46,6 @@ struct EPGManageView: View {
             .background(background)
             .navigationTitle("Gestisci guida TV")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 16, weight: .semibold))
-                            .frame(width: 36, height: 36)
-                            .contentShape(Circle())
-                    }
-                    .modifier(GlassCardBackground(cornerRadius: 18))
-                    .accessibilityLabel("Indietro")
-                }
-            }
             .sheet(isPresented: $showAddEPGSource) {
                 AddEPGSourceView { name, urlString in
                     if epgManager.addExternalSource(name: name, urlString: urlString) {
@@ -252,7 +237,7 @@ struct EPGManageView: View {
                                 icon: source.iconName ?? source.type.systemImage,
                                 title: source.name,
                                 subtitle: source.host,
-                                tint: .pink
+                                tint: source.type.glassTint
                             ) {
                                 openEPG(for: source)
                             }

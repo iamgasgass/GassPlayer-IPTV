@@ -67,11 +67,10 @@ struct SourceManagerView: View {
             managingSource = source
         } label: {
             HStack(spacing: 14) {
-                Image(systemName: source.iconName ?? source.type.systemImage)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(rowTint(for: source))
-                    .frame(width: 44, height: 44)
-                    .background(rowTint(for: source).opacity(0.16), in: Circle())
+                GlassSourceIcon(
+                    systemImage: source.iconName ?? source.type.systemImage,
+                    tint: source.type.glassTint
+                )
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 4) {
@@ -117,16 +116,6 @@ struct SourceManagerView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(source.name)
         .accessibilityHint("Apri la gestione di questa sorgente")
-    }
-
-    private func rowTint(for source: MediaSourceConfig) -> Color {
-        switch source.type {
-        case .xtream: return .orange
-        case .m3u8: return .blue
-        case .plex: return .yellow
-        case .jellyfin: return .purple
-        case .emby: return .green
-        }
     }
 
     private var background: some View {
