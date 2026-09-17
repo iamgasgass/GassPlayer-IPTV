@@ -5,16 +5,15 @@ import SwiftUI
 /// - sezione ora e tile condividono LO STESSO ORIGINE PIXEL (`gridOrigin`)
 ///   e la stessa `canvasWidth`: sono strutturalmente sincronizzate, non solo
 ///   per formula ma per identico punto di riferimento geometrico;
-/// - le tacche orarie sono disegnate con `Canvas`, che posiziona ogni
-///   stringa "HH:mm" a una coordinata x ESATTA e assoluta (nessun frame,
-///   nessuna alignment guide, nessun HStack): questo elimina qualunque
-///   ambiguita' del motore di layout che poteva introdurre scarti sub-pixel
-///   fra tacche consecutive. La distanza fra due tacche e' quindi la
-///   differenza matematica pura fra le due coordinate x, sempre 80pt esatti
-///   per ogni intervallo di 30 minuti;
+/// - le tacche orarie sono disegnate con `Canvas` a coordinate x assolute:
+///   la distanza fra i ':' di due tacche consecutive e' sempre
+///   `halfHourPixelSpacing` (160pt, il doppio della versione precedente),
+///   un fatto matematico puro, non soggetto ad ambiguita' di layout;
 /// - la tile non supera mai l'inizio del programma successivo (niente
 ///   sovrapposizioni) ed e' verticalmente centrata come il banner canale;
-/// - ogni tile mostra il nome del canale prima dell'orario del programma.
+/// - ogni tile mostra il nome del canale prima dell'orario del programma;
+/// - avvio ottimizzato: nessuna idratazione cache duplicata, nessun calcolo
+///   ripetuto di gruppi/contatori nello stesso render del toolbar.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -60,8 +59,9 @@ struct EPGGridView: View {
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Distanza esatta fra due tacche orarie consecutive (ogni 30 minuti).
-    private let halfHourPixelSpacing: CGFloat = 80
+    /// Distanza esatta fra due tacche orarie consecutive (ogni 30 minuti):
+    /// raddoppiata rispetto alla versione precedente (80 -> 160pt).
+    private let halfHourPixelSpacing: CGFloat = 160
 
     /// La scala pixel/minuto e' calibrata sulla stessa costante: 30 minuti
     /// producono sempre `halfHourPixelSpacing`, sia per le tacche orarie sia
@@ -141,7 +141,9 @@ struct EPGGridView: View {
         return normalized.isEmpty ? nil : normalized
     }
 
-    /// Preserva l'ordine di prima comparsa della playlist/provider.
+    /// Preserva l'ordine di prima comparsa della playlist/provider. Calcolata
+    /// una sola volta per render del toolbar e riutilizzata per nome/icona
+    /// del gruppo selezionato, evitando scansioni ripetute di `streams`.
     private var groupsWithCounts: (groups: [XtreamCategory], counts: [String: Int]) {
         var counts: [String: Int] = [:]
         var seenIDs = Set<String>()
@@ -161,19 +163,6 @@ struct EPGGridView: View {
             uniqueKeysWithValues: liveCategories.map { ($0.categoryId, $0) }
         )
         return (orderedIDs.compactMap { categoryByID[$0] }, counts)
-    }
-
-    private var selectedGroupName: String {
-        guard let groupID = normalizedSelectedGroupID else { return "Tutti" }
-        return groupsWithCounts.groups.first(where: { $0.categoryId == groupID })?.categoryName ?? "Gruppo"
-    }
-
-    private var selectedGroupSystemImage: String {
-        guard let groupID = normalizedSelectedGroupID,
-              let group = groupsWithCounts.groups.first(where: { $0.categoryId == groupID }) else {
-            return "square.grid.2x2"
-        }
-        return Self.groupIcon(for: group.categoryName)
     }
 
     private var groupSelectionBinding: Binding<String?> {
@@ -356,28 +345,25 @@ struct EPGGridView: View {
         .onAppear {
             guard !didAppear else { return }
             didAppear = true
-            hydrateVisibleProgramsFromCache()
+            // reloadEPG idrata subito dalla cache internamente: nessuna
+            // chiamata duplicata qui, per un avvio piu' fluido.
             scheduleReload()
         }
         .onChange(of: streams.map(\.streamId)) { _, _ in
             if pagedStreams.isEmpty {
                 renderLimit = min(renderPageSize, max(streams.count, 1))
             }
-            hydrateVisibleProgramsFromCache()
             scheduleReload()
         }
         .onChange(of: streamIdentity) { _, _ in
-            hydrateVisibleProgramsFromCache()
             scheduleReload()
         }
         .onChange(of: searchQuery) { _, _ in
             renderLimit = renderPageSize
-            hydrateVisibleProgramsFromCache()
             scheduleReload(debounced: true)
         }
         .onChange(of: showFavoritesOnly) { _, _ in
             renderLimit = renderPageSize
-            hydrateVisibleProgramsFromCache()
             scheduleReload()
         }
         .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
@@ -480,9 +466,9 @@ struct EPGGridView: View {
     /// Le tacche orarie sono disegnate con `Canvas`: ogni stringa "HH:mm"
     /// viene posizionata dal motore di disegno a una coordinata x ASSOLUTA
     /// ed ESATTA (`context.draw(text, at:, anchor: .leading)`), senza
-    /// passare per frame/HStack/alignment guide che potrebbero introdurre
-    /// scarti di layout. La distanza fra due tacche e' quindi la differenza
-    /// matematica pura fra le rispettive `xCoordinate`, sempre 80pt esatti.
+    /// passare per frame/HStack/alignment guide. La distanza fra due tacche
+    /// e' la differenza matematica pura fra le rispettive `xCoordinate`,
+    /// sempre `halfHourPixelSpacing` (160pt) esatti.
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, size in
@@ -527,9 +513,13 @@ struct EPGGridView: View {
         }
 
         ToolbarItem(placement: .principal) {
-            Menu {
-                let data = groupsWithCounts
+            let data = groupsWithCounts
+            let selectedGroupID = normalizedSelectedGroupID
+            let selectedGroup = selectedGroupID.flatMap { id in data.groups.first(where: { $0.categoryId == id }) }
+            let groupName = selectedGroup?.categoryName ?? "Tutti"
+            let groupIcon = selectedGroup.map { Self.groupIcon(for: $0.categoryName) } ?? "square.grid.2x2"
 
+            Menu {
                 Picker("Gruppo playlist", selection: groupSelectionBinding) {
                     Label("Tutti i canali", systemImage: "square.grid.2x2")
                         .tag(String?.none)
@@ -548,11 +538,11 @@ struct EPGGridView: View {
                 }
                 .pickerStyle(.inline)
             } label: {
-                groupPillLabel
+                groupPillLabel(name: groupName, systemImage: groupIcon)
             }
             .menuStyle(.button)
             .buttonStyle(.plain)
-            .accessibilityLabel("Gruppo playlist: \(selectedGroupName)")
+            .accessibilityLabel("Gruppo playlist: \(groupName)")
             .accessibilityHint("Tocca per scegliere il gruppo da visualizzare")
         }
 
@@ -610,12 +600,12 @@ struct EPGGridView: View {
     }
 
     @ViewBuilder
-    private var groupPillLabel: some View {
+    private func groupPillLabel(name: String, systemImage: String) -> some View {
         let pill = HStack(spacing: 8) {
-            Image(systemName: selectedGroupSystemImage)
+            Image(systemName: systemImage)
                 .font(.system(size: 16, weight: .semibold))
 
-            Text(selectedGroupName)
+            Text(name)
                 .font(.system(size: 17, weight: .semibold, design: .rounded))
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
@@ -1027,6 +1017,9 @@ struct EPGGridView: View {
         }
     }
 
+    /// Idrata sempre dalla cache PRIMA di eventuali richieste di rete: e'
+    /// l'unico punto che chiama `hydrateVisibleProgramsFromCache`, cosi'
+    /// l'avvio non esegue mai una doppia scansione della cache in memoria.
     @MainActor
     private func reloadEPG(forceRefresh: Bool = false) async {
         loadingIndicatorTask?.cancel()
