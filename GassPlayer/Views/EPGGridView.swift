@@ -4,10 +4,12 @@ import SwiftUI
 /// - colonna banner = inset sinistro + banner + stesso inset sinistro;
 /// - sezione ora e tile condividono la STESSA `canvasWidth` e la stessa
 ///   origine (`windowStart`): sono sempre sincronizzate durante lo scroll;
-/// - la sezione ora usa un HStack con larghezze e spaziatura FISSE (non piu'
-///   offset calcolati per singola tacca): questo rende gli 80pt fra i ':'
-///   di due tacche consecutive un fatto strutturale del layout, non una
-///   stima soggetta ad arrotondamenti o quirk di posizionamento;
+/// - la sezione ora usa un HStack con larghezze e spaziatura FISSE: la
+///   distanza fra i ':' di due tacche consecutive e' sempre esattamente 80pt
+///   per costruzione del layout. Vengono mostrate SOLO le tacche il cui
+///   testo (sia "HH" sia ":mm") rientra interamente nel canvas: questo
+///   elimina le etichette parzialmente tagliate ai bordi, che rendevano la
+///   spaziatura visivamente incoerente pur essendo matematicamente corretta;
 /// - la tile non supera mai l'inizio del programma successivo (niente
 ///   sovrapposizioni) ed e' verticalmente centrata come il banner canale;
 /// - ogni tile mostra il nome del canale prima dell'orario del programma.
@@ -289,9 +291,12 @@ struct EPGGridView: View {
         xCoordinate(for: windowCenter)
     }
 
-    /// Tacche a orario pieno/mezzo (es. 8:00, 8:30, 9:00...) che ricadono
-    /// nella finestra visibile. Non mostra mai l'istante minuto-per-minuto:
-    /// cambia solo quando si attraversa un taglio di mezz'ora.
+    /// Tacche a orario pieno/mezzo (es. 8:00, 8:30, 9:00...) il cui testo
+    /// rientra INTERAMENTE nel canvas (sia "HH" sia ":mm"): una tacca il cui
+    /// testo verrebbe tagliato ai bordi non viene generata affatto, cosi'
+    /// la spaziatura di 80pt resta sempre visivamente integra fra tacche
+    /// realmente visibili, invece di apparire incoerente per un'etichetta
+    /// parzialmente clippata.
     private var halfHourTicks: [Date] {
         let calendar = Calendar.autoupdatingCurrent
         let startMinute = calendar.component(.minute, from: windowStart)
@@ -308,7 +313,12 @@ struct EPGGridView: View {
             ticks.append(cursor)
             cursor = cursor.addingTimeInterval(30 * 60)
         }
-        return ticks
+
+        let canvas = canvasWidth
+        return ticks.filter { tick in
+            let colonX = xCoordinate(for: tick)
+            return colonX - hourSegmentWidth >= 0 && colonX + minuteSegmentWidth <= canvas
+        }
     }
 
     private var dayTitle: String {
@@ -486,9 +496,10 @@ struct EPGGridView: View {
     /// La riga oraria e' un unico HStack con spaziatura fissa `tickSpacing`
     /// fra tacche di larghezza fissa `tickLabelWidth`: la distanza fra i ':'
     /// di due tacche consecutive e' quindi sempre `tickLabelWidth + tickSpacing
-    /// = halfHourPixelSpacing` (80pt) per costruzione del layout, non per
-    /// approssimazione. L'intero HStack viene ancorato una sola volta alla
-    /// coordinata reale della prima tacca, poi il resto segue nativamente.
+    /// = halfHourPixelSpacing` (80pt) per costruzione del layout. Solo le
+    /// tacche interamente visibili vengono generate (vedi `halfHourTicks`),
+    /// quindi il primo elemento della lista determina un `anchorX` sempre
+    /// non-negativo e l'ultimo non eccede mai `canvasWidth`.
     private var scrollingTimelineHeader: some View {
         let ticks = halfHourTicks
         let anchorX = (ticks.first.map { xCoordinate(for: $0) } ?? 0) - hourSegmentWidth
