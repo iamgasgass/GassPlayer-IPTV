@@ -895,7 +895,6 @@ struct EPGGridView: View {
 
     // MARK: - Data and actions
 
-    private var blockHeight: CGFloat { 82 }
 
     private func visiblePrograms(for stream: XtreamStream) -> [EPGProgram] {
         (programsByStream[stream.streamId] ?? []).filter {
