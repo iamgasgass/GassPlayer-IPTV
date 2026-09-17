@@ -2,19 +2,18 @@ import SwiftUI
 
 /// EPG touch-first con geometria a colonna rigorosa:
 /// - colonna banner = inset sinistro + banner + stesso inset sinistro;
-/// - sezione ora e tile condividono LO STESSO ORIGINE PIXEL (`gridOrigin`)
-///   e la stessa `canvasWidth`: sono strutturalmente sincronizzate, non
-///   solo per formula ma per identico punto di riferimento geometrico;
-/// - ogni tacca oraria e' un solo `Text` "HH:mm" in un frame di larghezza
-///   ESATTA 80pt: la distanza fra i ':' di due tacche consecutive e' quindi
-///   sempre 80pt per costruzione del layout, non per stima;
-/// - LA LARGHEZZA DI OGNI TILE E' ORA PURAMENTE PROPORZIONALE ALLA DURATA
-///   REALE DEL PROGRAMMA (stessa scala della riga oraria): un programma di
-///   30 minuti occupa esattamente 80pt, come la distanza fra due tacche.
-///   Prima la larghezza veniva "gonfiata" per far spazio al testo del
-///   titolo, rompendo la corrispondenza visiva 1:1 con il righello orario;
-///   ora la tile e' visivamente sincronizzata alla sezione ora, e il testo
-///   si tronca (gia' previsto) quando lo spazio reale non basta;
+/// - sezione ora e tile condividono LO STESSO ORIGINE PIXEL (`gridOrigin`,
+///   il primo taglio di mezz'ora della finestra) e la stessa `canvasWidth`,
+///   derivata direttamente dal numero di tacche orarie: le tile sono quindi
+///   sincronizzate alla sezione ora per identico punto di riferimento, non
+///   solo per formula;
+/// - ogni tacca oraria usa uno SLOT geometrico esplicito (`Color.clear`
+///   dimensionato a 80pt esatti) su cui il testo "HH:mm" e' semplicemente
+///   sovrapposto: la larghezza dello slot non dipende in alcun modo dalla
+///   dimensione reale del testo renderizzato, quindi la distanza fra i ':'
+///   di due tacche consecutive e' garantita a 80pt dalla forma dello slot,
+///   non dal comportamento di `Text` con un frame piu' piccolo del suo
+///   contenuto (possibile causa di scarti non deterministici in precedenza);
 /// - la tile non supera mai l'inizio del programma successivo (niente
 ///   sovrapposizioni) ed e' verticalmente centrata come il banner canale;
 /// - ogni tile mostra il nome del canale prima dell'orario del programma.
@@ -60,23 +59,18 @@ struct EPGGridView: View {
     private let bannerHeight: CGFloat = 76
     private let blockHeight: CGFloat = 82
     private let timelineHeaderHeight: CGFloat = 44
+    private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Larghezza minima assoluta di una tile, SOLO per garantire un'area di
-    /// tocco utilizzabile su programmi estremamente brevi: non e' piu'
-    /// legata al testo del titolo, che ora si tronca invece di forzare
-    /// la tile a espandersi oltre la sua reale durata.
-    private let minimumTapTargetWidth: CGFloat = 24
-
-    /// Larghezza esatta di ogni tacca oraria (ogni 30 minuti): e' anche la
-    /// distanza fra i ':' di due tacche consecutive, garantita dal layout.
+    /// Larghezza esatta di ogni SLOT orario (ogni 30 minuti): e' anche la
+    /// distanza fra i ':' di due tacche consecutive, garantita dalla forma
+    /// dello slot (`Color.clear`), non dal contenuto testuale al suo interno.
     private let halfHourPixelSpacing: CGFloat = 80
 
     /// La scala pixel/minuto e' calibrata sulla stessa costante: 30 minuti
     /// producono sempre `halfHourPixelSpacing`, sia per le tacche orarie sia
-    /// per il posizionamento E LA LARGHEZZA delle tile, che condividono
-    /// anche lo stesso `gridOrigin`: sono quindi sincronizzate in scala,
-    /// origine e proporzione visiva.
+    /// per il posizionamento delle tile, che condividono anche lo stesso
+    /// `gridOrigin`: sono quindi sincronizzate sia in scala sia in origine.
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
     /// Larghezza ufficiale e unica della colonna banner: 12 + 86 + 12 = 110.
@@ -488,10 +482,10 @@ struct EPGGridView: View {
     }
 
     /// La riga oraria e' un unico HStack a spacing zero, ancorato a
-    /// `gridOrigin` (il primo tick parte esattamente a x = 0). Ogni tacca e'
-    /// un singolo `Text` "HH:mm" in un frame di larghezza ESATTA
-    /// `halfHourPixelSpacing`: la distanza fra i ':' di due tacche
-    /// consecutive e' quindi sempre 80pt per costruzione.
+    /// `gridOrigin` (il primo slot parte a x = 0). Ogni slot e' largo
+    /// esattamente `halfHourPixelSpacing`: la distanza fra i ':' di due
+    /// tacche consecutive e' quindi sempre 80pt, garantita dalla forma
+    /// dello slot stesso.
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             HStack(spacing: 0) {
@@ -513,16 +507,26 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Un solo `Text` "HH:mm" in un frame a larghezza fissa e allineamento
-    /// sinistro: nessuna somma di piu' misure indipendenti. Font invariato
-    /// (22pt), nessun orario rimosso.
+    /// Lo slot e' un `Color.clear` dimensionato ESATTAMENTE a
+    /// `halfHourPixelSpacing`: la sua larghezza NON dipende dal testo che
+    /// contiene. Il testo "HH:mm" e' sovrapposto con `.fixedSize()`, cosi'
+    /// si renderizza alla propria dimensione naturale senza influenzare la
+    /// larghezza riportata dello slot all'HStack padre. Risultato: ogni
+    /// slot occupa sempre e solo 80pt, quindi il ':' di ogni tacca cade alla
+    /// stessa distanza relativa dal proprio slot, per ogni tacca. Font
+    /// invariato (22pt), nessun orario rimosso.
     private func tickLabel(_ date: Date) -> some View {
-        Text(Self.timeFormatter.string(from: date))
-            .font(.system(size: 22, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.58))
-            .monospacedDigit()
-            .lineLimit(1)
-            .frame(width: halfHourPixelSpacing, height: timelineHeaderHeight, alignment: .leading)
+        ZStack(alignment: .leading) {
+            Color.clear
+
+            Text(Self.timeFormatter.string(from: date))
+                .font(.system(size: 22, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.58))
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .frame(width: halfHourPixelSpacing, height: timelineHeaderHeight, alignment: .leading)
     }
 
     // MARK: - Toolbar Liquid Glass
@@ -774,13 +778,12 @@ struct EPGGridView: View {
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// La larghezza e' ora PURAMENTE proporzionale alla durata reale del
-    /// programma, sulla stessa scala della sezione ora: un programma di 30
-    /// minuti occupa esattamente `halfHourPixelSpacing` (80pt), esattamente
-    /// come la distanza fra due tacche orarie. Non supera mai l'inizio del
-    /// programma successivo (niente sovrapposizioni). Il testo si tronca
-    /// (gia' gestito da `.lineLimit`/`.truncationMode`) invece di forzare
-    /// la tile a espandersi oltre la sua reale durata.
+    /// La larghezza desiderata (durata reale, o spazio minimo per il testo)
+    /// non puo' MAI superare la distanza fino all'inizio del programma
+    /// successivo: elimina strutturalmente le sovrapposizioni fra tile. La
+    /// posizione x deriva da `gridOrigin`, lo STESSO punto di riferimento
+    /// della sezione ora: le tile sono cosi' sincronizzate strutturalmente,
+    /// non solo per scala ma per identica origine geometrica.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -791,12 +794,14 @@ struct EPGGridView: View {
         let startX = xCoordinate(for: clippedStart)
         let durationMinutes = max(1, clippedEnd.timeIntervalSince(clippedStart) / 60)
 
-        let desiredWidth = max(minimumTapTargetWidth, CGFloat(durationMinutes) * pixelsPerMinute)
+        let timeWidth = CGFloat(durationMinutes) * pixelsPerMinute
+        let textWidth = estimatedTitleWidth(for: program.title) + 26
+        let desiredWidth = max(minimumProgramBlockWidth, timeWidth, textWidth)
 
         let maxAvailableWidth: CGFloat
         if let nextProgramStart {
             let nextStartX = xCoordinate(for: max(nextProgramStart, windowStart))
-            maxAvailableWidth = max(minimumTapTargetWidth, nextStartX - startX)
+            maxAvailableWidth = max(20, nextStartX - startX)
         } else {
             maxAvailableWidth = desiredWidth
         }
@@ -870,6 +875,12 @@ struct EPGGridView: View {
         .clipShape(shape)
     }
 
+    private func estimatedTitleWidth(for title: String) -> CGFloat {
+        let averageGlyphWidth: CGFloat = 8.2
+        let raw = CGFloat(title.count) * averageGlyphWidth
+        return min(max(raw, 62), 260)
+    }
+
     private var loadMoreButton: some View {
         Button {
             let newLimit = min(
@@ -894,7 +905,6 @@ struct EPGGridView: View {
     }
 
     // MARK: - Data and actions
-
 
     private func visiblePrograms(for stream: XtreamStream) -> [EPGProgram] {
         (programsByStream[stream.streamId] ?? []).filter {
