@@ -2,14 +2,14 @@ import SwiftUI
 
 /// EPG touch-first con geometria a colonna rigorosa:
 /// - colonna banner = inset sinistro + banner + stesso inset sinistro;
-/// - sezione ora e tile condividono la STESSA `canvasWidth` e la stessa
-///   origine (`windowStart`): sono sempre sincronizzate durante lo scroll;
-/// - ogni tacca oraria e' UN SOLO `Text` "HH:mm" dentro UN SOLO frame a
-///   larghezza fissa pari a 80pt, allineato a sinistra, dentro un HStack a
-///   spacing zero: la distanza fra un'etichetta e la successiva e' quindi
-///   sempre e solo la larghezza del frame (80pt), un fatto strutturale del
-///   layout e non una somma di piu' segmenti indipendenti che potevano
-///   accumulare imprecisioni di rendering;
+/// - sezione ora e tile condividono LO STESSO ORIGINE PIXEL (`gridOrigin`,
+///   il primo taglio di mezz'ora della finestra) e la stessa `canvasWidth`,
+///   derivata direttamente dal numero di tacche orarie: questo rende le tile
+///   strutturalmente sincronizzate alla sezione ora, non solo per formula ma
+///   per identico punto di riferimento geometrico;
+/// - ogni tacca oraria e' un solo `Text` "HH:mm" in un frame di larghezza
+///   ESATTA 80pt: la distanza fra i ':' di due tacche consecutive e' quindi
+///   sempre 80pt per costruzione del layout;
 /// - la tile non supera mai l'inizio del programma successivo (niente
 ///   sovrapposizioni) ed e' verticalmente centrata come il banner canale;
 /// - ogni tile mostra il nome del canale prima dell'orario del programma.
@@ -58,15 +58,14 @@ struct EPGGridView: View {
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Distanza esatta fra una tacca oraria (ogni 30 minuti) e la
-    /// successiva: e' anche la larghezza del singolo frame di ogni tacca,
-    /// quindi lo spazio fra due ':' consecutivi e' garantito dal layout
-    /// stesso, non da una somma di piu' misure indipendenti.
+    /// Larghezza esatta di ogni tacca oraria (ogni 30 minuti): e' anche la
+    /// distanza fra i ':' di due tacche consecutive, garantita dal layout.
     private let halfHourPixelSpacing: CGFloat = 80
 
     /// La scala pixel/minuto e' calibrata sulla stessa costante: 30 minuti
     /// producono sempre `halfHourPixelSpacing`, sia per le tacche orarie sia
-    /// per il posizionamento delle tile, che restano quindi sincronizzate.
+    /// per il posizionamento delle tile, che condividono anche lo stesso
+    /// `gridOrigin`: sono quindi sincronizzate sia in scala sia in origine.
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
     /// Larghezza ufficiale e unica della colonna banner: 12 + 86 + 12 = 110.
@@ -247,6 +246,8 @@ struct EPGGridView: View {
         ) ?? selectedDate
     }
 
+    /// Confini semantici della finestra: determinano QUALI programmi sono
+    /// visibili (filtro), non la loro posizione in pixel.
     private var windowStart: Date {
         windowCenter.addingTimeInterval(-pastWindow)
     }
@@ -255,47 +256,52 @@ struct EPGGridView: View {
         windowCenter.addingTimeInterval(futureWindow)
     }
 
-    private var windowDuration: TimeInterval {
-        windowEnd.timeIntervalSince(windowStart)
-    }
-
-    /// Larghezza unica del canvas orizzontale, condivisa da sezione ora e
-    /// tile: e' l'unica fonte di verita' per la sincronizzazione fra le due.
-    private var canvasWidth: CGFloat {
-        max(CGFloat(windowDuration / 60) * pixelsPerMinute, 380)
-    }
-
-    /// Unica funzione di conversione tempo -> coordinata x, condivisa da
-    /// tacche orarie, freccia live e tile: garantisce la sincronizzazione.
-    private func xCoordinate(for date: Date) -> CGFloat {
-        CGFloat(date.timeIntervalSince(windowStart) / 60) * pixelsPerMinute
-    }
-
-    /// Posizione della freccia live sul canvas condiviso.
-    private var liveAxisX: CGFloat {
-        xCoordinate(for: windowCenter)
-    }
-
-    /// Tacche a orario pieno/mezzo (es. 8:00, 8:30, 9:00...) che ricadono
-    /// nella finestra visibile. Non mostra mai l'istante minuto-per-minuto:
-    /// cambia solo quando si attraversa un taglio di mezz'ora.
-    private var halfHourTicks: [Date] {
+    /// Origine unica di TUTTI i calcoli in pixel: il primo taglio di
+    /// mezz'ora a partire da `windowStart` (o prima). Sezione ora, freccia
+    /// live e tile derivano la propria posizione orizzontale esclusivamente
+    /// da questo singolo punto di riferimento: e' cio' che le rende
+    /// strutturalmente sincronizzate, non solo per formula ma per origine.
+    private var gridOrigin: Date {
         let calendar = Calendar.autoupdatingCurrent
         let startMinute = calendar.component(.minute, from: windowStart)
         let flooredMinute = startMinute < 30 ? 0 : 30
-        var cursor = calendar.date(
+        return calendar.date(
             bySettingHour: calendar.component(.hour, from: windowStart),
             minute: flooredMinute,
             second: 0,
             of: windowStart
         ) ?? windowStart
+    }
 
+    /// Tacche a orario pieno/mezzo (es. 8:00, 8:30, 9:00...) a partire da
+    /// `gridOrigin` fino a coprire l'intera finestra visibile. Non mostra
+    /// mai l'istante minuto-per-minuto: cambia solo attraversando i 30 min.
+    private var halfHourTicks: [Date] {
         var ticks: [Date] = []
+        var cursor = gridOrigin
         while cursor <= windowEnd {
             ticks.append(cursor)
             cursor = cursor.addingTimeInterval(30 * 60)
         }
         return ticks
+    }
+
+    /// Larghezza del canvas derivata DIRETTAMENTE dal numero di tacche: e'
+    /// la stessa identica base geometrica usata per posizionare le tacche,
+    /// quindi sezione ora e tile hanno sempre la stessa estensione totale.
+    private var canvasWidth: CGFloat {
+        max(CGFloat(halfHourTicks.count) * halfHourPixelSpacing, 380)
+    }
+
+    /// Unica funzione di conversione tempo -> coordinata x, ancorata a
+    /// `gridOrigin` e condivisa da tacche orarie, freccia live e tile.
+    private func xCoordinate(for date: Date) -> CGFloat {
+        CGFloat(date.timeIntervalSince(gridOrigin) / 60) * pixelsPerMinute
+    }
+
+    /// Posizione della freccia live sul canvas condiviso.
+    private var liveAxisX: CGFloat {
+        xCoordinate(for: windowCenter)
     }
 
     private var dayTitle: String {
@@ -422,7 +428,8 @@ struct EPGGridView: View {
 
     /// Nessun padding esterno. L'HStack ha esattamente due figli: colonna
     /// fissa (110pt) e timeline. Sezione ora e tile leggono entrambe
-    /// `canvasWidth`, quindi restano sincronizzate durante lo scroll.
+    /// `canvasWidth` e `gridOrigin`, quindi restano sincronizzate durante
+    /// lo scroll, non solo per larghezza ma per identico punto di partenza.
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
             fixedDayAndChannelColumn
@@ -470,25 +477,18 @@ struct EPGGridView: View {
         }
     }
 
-    /// La riga oraria e' un unico HStack a spacing zero: ogni tacca e' un
-    /// singolo `Text` "HH:mm" racchiuso in un frame di larghezza ESATTA
-    /// `halfHourPixelSpacing`. Poiche' il frame di ciascuna tacca ha sempre
-    /// la stessa identica larghezza e lo stesso allineamento, il carattere
-    /// ':' si trova sempre alla stessa distanza relativa dal bordo sinistro
-    /// della propria tacca: la distanza fra due ':' consecutivi e' quindi
-    /// SEMPRE `halfHourPixelSpacing`, per costruzione del layout.
+    /// La riga oraria e' un unico HStack a spacing zero, ancorato a
+    /// `gridOrigin` (quindi il primo tick parte esattamente a x = 0, senza
+    /// offset aggiuntivi). Ogni tacca e' un singolo `Text` "HH:mm" in un
+    /// frame di larghezza ESATTA `halfHourPixelSpacing`: la distanza fra i
+    /// ':' di due tacche consecutive e' quindi sempre 80pt per costruzione.
     private var scrollingTimelineHeader: some View {
-        let ticks = halfHourTicks
-        let anchorX = ticks.first.map { xCoordinate(for: $0) } ?? 0
-
-        return ZStack(alignment: .topLeading) {
+        ZStack(alignment: .topLeading) {
             HStack(spacing: 0) {
-                ForEach(ticks, id: \.self) { tick in
+                ForEach(halfHourTicks, id: \.self) { tick in
                     tickLabel(tick)
                 }
             }
-            .offset(x: anchorX)
-            .frame(height: timelineHeaderHeight, alignment: .center)
 
             if isToday {
                 Image(systemName: "arrowtriangle.down.fill")
@@ -505,8 +505,7 @@ struct EPGGridView: View {
 
     /// Un solo `Text` "HH:mm" in un frame a larghezza fissa e allineamento
     /// sinistro: nessuna somma di piu' misure indipendenti che potrebbe
-    /// accumulare imprecisioni. Font invariato rispetto alla versione
-    /// precedente (22pt), nessun orario rimosso.
+    /// accumulare imprecisioni. Font invariato (22pt), nessun orario rimosso.
     private func tickLabel(_ date: Date) -> some View {
         Text(Self.timeFormatter.string(from: date))
             .font(.system(size: 22, weight: .medium, design: .rounded))
@@ -767,9 +766,10 @@ struct EPGGridView: View {
 
     /// La larghezza desiderata (durata reale, o spazio minimo per il testo)
     /// non puo' MAI superare la distanza fino all'inizio del programma
-    /// successivo: elimina strutturalmente le sovrapposizioni fra tile.
-    /// La tile e' centrata verticalmente dallo ZStack padre (nessun offset
-    /// verticale aggiuntivo): questo la allinea esattamente al banner canale.
+    /// successivo: elimina strutturalmente le sovrapposizioni fra tile. La
+    /// posizione x deriva da `gridOrigin`, lo STESSO punto di riferimento
+    /// della sezione ora: le tile sono cosi' sincronizzate strutturalmente,
+    /// non solo per scala ma per identica origine geometrica.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -777,9 +777,8 @@ struct EPGGridView: View {
     ) -> some View {
         let clippedStart = max(program.start, windowStart)
         let clippedEnd = min(program.end, windowEnd)
-        let startMinutes = max(0, clippedStart.timeIntervalSince(windowStart) / 60)
+        let startX = xCoordinate(for: clippedStart)
         let durationMinutes = max(1, clippedEnd.timeIntervalSince(clippedStart) / 60)
-        let startX = CGFloat(startMinutes) * pixelsPerMinute
 
         let timeWidth = CGFloat(durationMinutes) * pixelsPerMinute
         let textWidth = estimatedTitleWidth(for: program.title) + 26
@@ -787,7 +786,7 @@ struct EPGGridView: View {
 
         let maxAvailableWidth: CGFloat
         if let nextProgramStart {
-            let nextStartX = CGFloat(max(0, nextProgramStart.timeIntervalSince(windowStart) / 60)) * pixelsPerMinute
+            let nextStartX = xCoordinate(for: max(nextProgramStart, windowStart))
             maxAvailableWidth = max(20, nextStartX - startX)
         } else {
             maxAvailableWidth = desiredWidth
