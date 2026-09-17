@@ -57,6 +57,8 @@ struct HomeView: View {
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
     @EnvironmentObject private var recentlyWatched: RecentlyWatchedStore
 
+    @ObservedObject private var epgManager = EPGManager.shared
+
     @State private var homeMenuSelection: HomeMenuSelection = .overview
     @State private var showGuidaTV = false
     @State private var showGuidaTVUnavailableAlert = false
@@ -485,6 +487,22 @@ struct HomeView: View {
 
                 Spacer()
 
+                if sourceManager.sources.count > 1 {
+                    Menu {
+                        Picker("Sorgente attiva", selection: activeSourceSelection) {
+                            ForEach(sourceManager.sources) { source in
+                                Label(source.name, systemImage: source.type.systemImage)
+                                    .tag(source.id as UUID?)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(width: 32, height: 32)
+                    }
+                    .accessibilityLabel("Cambia sorgente attiva")
+                }
+
                 Button("Gestisci") {
                     if sourceManager.activeSource != nil {
                         showManageActiveSource = true
@@ -495,6 +513,22 @@ struct HomeView: View {
                 .font(.subheadline.weight(.semibold))
             }
         }
+    }
+
+    /// Binding usato dal menu "Cambia sorgente attiva": aggiorna
+    /// direttamente `SourceManager` così l'utente non deve passare da
+    /// Impostazioni per cambiare la sorgente in uso.
+    private var activeSourceSelection: Binding<UUID?> {
+        Binding(
+            get: { sourceManager.activeSourceId },
+            set: { newValue in
+                guard let newValue,
+                      let source = sourceManager.sources.first(where: { $0.id == newValue }) else {
+                    return
+                }
+                sourceManager.setActive(source)
+            }
+        )
     }
 
     private func libraryDestination(
@@ -605,9 +639,12 @@ struct HomeView: View {
 
     private var guidaTVSubtitle: String {
         guard hasActiveSource else { return "Disponibile con una sorgente Xtream" }
-        return sourceManager.activeSource?.xtreamCredentials != nil
-            ? "Programmi e orari dei canali Live TV"
-            : "Richiede una sorgente Xtream attiva"
+        guard sourceManager.activeSource?.xtreamCredentials != nil else {
+            return "Richiede una sorgente Xtream attiva"
+        }
+        return epgManager.autoUpdateEnabled
+            ? "Programmi e orari · Aggiornamento automatico attivo"
+            : "Programmi e orari dei canali Live TV"
     }
 
     private func openGuidaTV() {
@@ -684,36 +721,43 @@ struct HomeView: View {
     }
 
     private var sourceSummary: some View {
-        GlassCard {
-            HStack(spacing: 12) {
-                Image(systemName: "square.stack.3d.up.fill")
-                    .foregroundStyle(.blue)
-                    .frame(width: 38, height: 38)
-                    .background(
-                        Color.blue.opacity(0.15),
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    )
+        Button {
+            overlayState.showSources = true
+        } label: {
+            GlassCard {
+                HStack(spacing: 12) {
+                    Image(systemName: "square.stack.3d.up.fill")
+                        .foregroundStyle(.blue)
+                        .frame(width: 38, height: 38)
+                        .background(
+                            Color.blue.opacity(0.15),
+                            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        )
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Sorgenti")
-                        .font(.subheadline.weight(.medium))
-                    Text(
-                        sourceManager.sources.isEmpty
-                            ? "Nessuna sorgente configurata"
-                            : "\(sourceManager.sources.count) sorgenti configurate"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Sorgenti")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.primary)
+                        Text(
+                            sourceManager.sources.isEmpty
+                                ? "Nessuna sorgente configurata"
+                                : "\(sourceManager.sources.count) sorgenti configurate"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    Image(systemName: "chevron.right")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.tertiary)
                 }
-
-                Spacer()
-
-                Button("Gestisci") {
-                    overlayState.showSettings = true
-                }
-                .font(.subheadline.weight(.semibold))
             }
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Sorgenti")
+        .accessibilityHint("Apre l'elenco delle sorgenti configurate")
     }
 
     private var background: some View {

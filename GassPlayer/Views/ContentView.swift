@@ -81,6 +81,9 @@ struct ContentView: View {
         .sheet(isPresented: $overlayState.showSettings) {
             SettingsView()
         }
+        .sheet(isPresented: $overlayState.showSources) {
+            SourcesView()
+        }
         .onChange(of: sourceManager.activeSourceId) { _, _ in
             loadActiveSource()
         }

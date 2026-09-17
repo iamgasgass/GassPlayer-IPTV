@@ -171,78 +171,37 @@ struct SourceManageView: View {
 
             GlassCard(padding: 6) {
                 VStack(spacing: 0) {
-                    settingsRow(icon: "arrow.clockwise", title: "Ricarica", showsProgress: isReloading) {
+                    GlassSettingsRow(icon: "arrow.clockwise", title: "Ricarica", showsProgress: isReloading) {
                         Task { await reload() }
                     }
 
-                    rowDivider
+                    GlassRowDivider()
 
-                    settingsRow(icon: "pencil", title: "Modifica dettagli") {
+                    GlassSettingsRow(icon: "pencil", title: "Modifica dettagli") {
                         showEditDetails = true
                     }
 
-                    rowDivider
+                    GlassRowDivider()
 
-                    settingsRow(icon: "square.stack.3d.up", title: "Gestisci contenuto") {
+                    GlassSettingsRow(icon: "square.stack.3d.up", title: "Gestisci contenuto") {
                         showManageContent = true
                     }
 
-                    rowDivider
+                    GlassRowDivider()
 
-                    settingsRow(icon: "text.book.closed.fill", title: "Gestisci EPG") {
+                    GlassSettingsRow(icon: "text.book.closed.fill", title: "Gestisci EPG") {
                         openManageEPG()
                     }
 
-                    rowDivider
+                    GlassRowDivider()
 
-                    settingsRow(icon: "trash", title: "Cancella", tint: .red, showChevron: false) {
+                    GlassSettingsRow(icon: "trash", title: "Cancella", tint: .red, showChevron: false) {
                         showDeleteConfirm = true
                     }
                 }
                 .padding(.horizontal, 6)
             }
         }
-    }
-
-    private var rowDivider: some View {
-        Divider().padding(.leading, 58)
-    }
-
-    private func settingsRow(
-        icon: String,
-        title: String,
-        tint: Color = .primary,
-        showChevron: Bool = true,
-        showsProgress: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 14) {
-                Image(systemName: icon)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 36, height: 36)
-                    .background(tint.opacity(0.14), in: Circle())
-
-                Text(title)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(tint == .red ? .red : .primary)
-
-                Spacer()
-
-                if showsProgress {
-                    ProgressView().controlSize(.small)
-                } else if showChevron {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.vertical, 13)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(showsProgress)
     }
 
     // MARK: - Azioni

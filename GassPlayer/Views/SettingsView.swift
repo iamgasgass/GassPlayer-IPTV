@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -11,13 +12,24 @@ struct SettingsView: View {
     @StateObject private var cloudSync = CloudSyncService()
     @StateObject private var downloadManager = DownloadManager()
     @ObservedObject private var catalogSettings = CatalogSettings.shared
+    @ObservedObject private var epgManager = EPGManager.shared
+    @ObservedObject private var traktAccount = TraktAccountManager.shared
 
-    @State private var subtitleLanguage = "it"
-    @State private var traktConnected = false
-    @State private var preferredDNS = "1.1.1.1"
+    @AppStorage("gassplayer.subtitles.language")
+    private var subtitleLanguage = "it"
+
+    @AppStorage("gassplayer.network.preferredDNS")
+    private var preferredDNS = "1.1.1.1"
+
     @State private var showResetConfirmation = false
     @State private var isRefreshingCatalog = false
     @State private var catalogActionFeedback: String?
+    @State private var systemCacheCount: Int?
+    @State private var isLoadingSystemCacheCount = false
+    @State private var isClearingSystemCache = false
+    @State private var showImportPreferencesSheet = false
+    @State private var importPreferencesText = ""
+    @State private var importPreferencesFeedback: String?
 
     @AppStorage("gassplayer.playback.autoplayNextEpisode")
     private var autoplayNextEpisode = true
@@ -86,11 +98,57 @@ struct SettingsView: View {
         sourceManager.activeSource?.xtreamCredentials
     }
 
+    /// Binding usato dal Menu "Sorgente attiva": legge/imposta l'id della
+    /// sorgente attiva traducendolo automaticamente in una chiamata a
+    /// `SourceManager.setActive(_:)`, così il picker resta una semplice
+    /// scelta dichiarativa senza logica duplicata altrove.
+    private var activeSourceSelection: Binding<UUID?> {
+        Binding(
+            get: { sourceManager.activeSourceId },
+            set: { newValue in
+                guard let newValue,
+                      let source = sourceManager.sources.first(where: { $0.id == newValue }) else {
+                    return
+                }
+                sourceManager.setActive(source)
+            }
+        )
+    }
+
     private var lastRefreshDescription: String {
         guard let date = xtreamCatalog.lastRefreshDate else {
             return "Mai aggiornato"
         }
         return "Aggiornato \(date.formatted(.relative(presentation: .named)))"
+    }
+
+    private var epgManagerDescription: String {
+        let epgCapableCount = sourceManager.sources.filter { $0.xtreamCredentials != nil }.count
+
+        if epgCapableCount == 0 {
+            return "Nessuna playlist con guida disponibile"
+        }
+
+        let autoUpdateText = epgManager.autoUpdateEnabled ? "automatico" : "manuale"
+        return "\(epgCapableCount) playlist con guida · Aggiornamento \(autoUpdateText)"
+    }
+
+    private var systemCacheDescription: String {
+        guard let systemCacheCount else {
+            return "Tocca per calcolare"
+        }
+        return systemCacheCount == 0
+            ? "Vuota"
+            : "\(systemCacheCount) element\(systemCacheCount == 1 ? "o" : "i") in memoria"
+    }
+
+    private var preferencesSnapshot: AppPreferencesBackup {
+        AppPreferencesBackupCodec.currentSnapshot(
+            themeManager: themeManager,
+            catalogSettings: catalogSettings,
+            epgManager: epgManager,
+            downloadManager: downloadManager
+        )
     }
 
     private var historyDetailDescription: String {
@@ -146,7 +204,7 @@ struct SettingsView: View {
                 )
             }
             .alert(
-                "Catalogo",
+                "Impostazioni",
                 isPresented: Binding(
                     get: { catalogActionFeedback != nil },
                     set: { isPresented in if !isPresented { catalogActionFeedback = nil } }
@@ -155,6 +213,20 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(catalogActionFeedback ?? "")
+            }
+            .sheet(isPresented: $showImportPreferencesSheet) {
+                ImportPreferencesSheet(text: $importPreferencesText, onImport: importPreferences)
+            }
+            .alert(
+                "Preferenze",
+                isPresented: Binding(
+                    get: { importPreferencesFeedback != nil },
+                    set: { isPresented in if !isPresented { importPreferencesFeedback = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(importPreferencesFeedback ?? "")
             }
         }
     }
@@ -182,6 +254,43 @@ struct SettingsView: View {
             SettingsDivider()
 
             NavigationLink {
+                EPGManageView()
+            } label: {
+                SettingsRow(
+                    title: "Gestisci EPG",
+                    detail: epgManagerDescription,
+                    symbol: "text.book.closed.fill",
+                    tint: .teal,
+                    showsChevron: true
+                )
+            }
+            .buttonStyle(.plain)
+
+            SettingsDivider()
+
+            if sourceManager.sources.count > 1 {
+                Menu {
+                    Picker("Sorgente attiva", selection: activeSourceSelection) {
+                        ForEach(sourceManager.sources) { source in
+                            Label(source.name, systemImage: source.type.systemImage)
+                                .tag(source.id as UUID?)
+                        }
+                    }
+                } label: {
+                    SettingsRow(
+                        title: "Sorgente attiva",
+                        detail: sourceManager.activeSource?.name ?? "Nessuna",
+                        symbol: "checkmark.circle.fill",
+                        tint: .green,
+                        showsChevron: true
+                    )
+                }
+                .buttonStyle(.plain)
+
+                SettingsDivider()
+            }
+
+            NavigationLink {
                 PersonalVPNView()
             } label: {
                 SettingsRow(
@@ -198,7 +307,7 @@ struct SettingsView: View {
                 SettingsDivider()
 
                 Text(
-                    "Per configurare Live TV, VOD e Serie TV, apri Sorgenti e tocca il pulsante +."
+                    "Per configurare Live TV, VOD e Serie TV, apri Sorgenti e tocca “Aggiungi playlist”."
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -527,13 +636,18 @@ struct SettingsView: View {
 
             SettingsDivider()
 
-            SettingsRow(
-                title: "Trakt.tv",
-                detail: traktConnected ? "Connesso" : "Non connesso",
-                symbol: "checkmark.seal.fill",
-                tint: .orange,
-                showsChevron: false
-            )
+            NavigationLink {
+                TraktConnectView()
+            } label: {
+                SettingsRow(
+                    title: "Trakt.tv",
+                    detail: traktAccount.isConnected ? "Connesso" : "Non connesso",
+                    symbol: "checkmark.seal.fill",
+                    tint: .orange,
+                    showsChevron: true
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -593,6 +707,54 @@ struct SettingsView: View {
                 )
             }
             .buttonStyle(.plain)
+
+            SettingsDivider()
+
+            Button {
+                Task { await refreshSystemCacheCount() }
+            } label: {
+                HStack {
+                    SettingsRow(
+                        title: "Cache di sistema",
+                        detail: systemCacheDescription,
+                        symbol: "memorychip.fill",
+                        tint: .purple,
+                        showsChevron: false
+                    )
+
+                    if isLoadingSystemCacheCount {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isLoadingSystemCacheCount)
+
+            SettingsDivider()
+
+            Button(role: .destructive) {
+                Task { await clearSystemCache() }
+            } label: {
+                HStack {
+                    SettingsRow(
+                        title: "Svuota cache di sistema",
+                        detail: "Rimuove guida TV e dati temporanei dalla memoria",
+                        symbol: "trash",
+                        tint: .red,
+                        showsChevron: false,
+                        destructive: true
+                    )
+
+                    if isClearingSystemCache {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isClearingSystemCache)
+        }
+        .task {
+            await refreshSystemCacheCount()
         }
     }
 
@@ -622,6 +784,40 @@ struct SettingsView: View {
 
                 SettingsDivider()
             }
+
+            if let payload = try? AppPreferencesBackupCodec.encodeAsString(preferencesSnapshot) {
+                ShareLink(
+                    item: payload,
+                    preview: SharePreview("Backup preferenze GassPlayer")
+                ) {
+                    SettingsRow(
+                        title: "Esporta preferenze",
+                        detail: "Riproduzione, griglia, tema, catalogo e guida TV",
+                        symbol: "slider.horizontal.3",
+                        tint: .purple,
+                        showsChevron: false
+                    )
+                }
+                .buttonStyle(.plain)
+
+                SettingsDivider()
+            }
+
+            Button {
+                importPreferencesText = ""
+                showImportPreferencesSheet = true
+            } label: {
+                SettingsRow(
+                    title: "Importa preferenze",
+                    detail: "Ripristina un backup preferenze incollato",
+                    symbol: "square.and.arrow.down",
+                    tint: .purple,
+                    showsChevron: false
+                )
+            }
+            .buttonStyle(.plain)
+
+            SettingsDivider()
 
             Button(role: .destructive) {
                 showResetConfirmation = true
@@ -722,6 +918,45 @@ struct SettingsView: View {
         xtreamCatalog.reset()
         catalogActionFeedback = "Cache del catalogo svuotata. Verrà ricostruita al prossimo aggiornamento."
     }
+
+    // MARK: - Cache di sistema
+
+    @MainActor
+    private func refreshSystemCacheCount() async {
+        guard !isLoadingSystemCacheCount else { return }
+        isLoadingSystemCacheCount = true
+        defer { isLoadingSystemCacheCount = false }
+        systemCacheCount = await CacheService.shared.count()
+    }
+
+    @MainActor
+    private func clearSystemCache() async {
+        guard !isClearingSystemCache else { return }
+        isClearingSystemCache = true
+        defer { isClearingSystemCache = false }
+        await CacheService.shared.clearAll()
+        systemCacheCount = 0
+        catalogActionFeedback = "Cache di sistema svuotata (guida TV e dati temporanei)."
+    }
+
+    // MARK: - Import preferenze
+
+    private func importPreferences() {
+        do {
+            let backup = try AppPreferencesBackupCodec.decode(fromString: importPreferencesText)
+            AppPreferencesBackupCodec.apply(
+                backup,
+                themeManager: themeManager,
+                catalogSettings: catalogSettings,
+                epgManager: epgManager,
+                downloadManager: downloadManager
+            )
+            importPreferencesFeedback = "Preferenze importate correttamente."
+            showImportPreferencesSheet = false
+        } catch {
+            importPreferencesFeedback = "Il testo incollato non è un backup preferenze GassPlayer valido."
+        }
+    }
 }
 
 private struct SettingsSection<Content: View>: View {
@@ -752,6 +987,58 @@ private struct SettingsSection<Content: View>: View {
             GlassCard {
                 VStack(spacing: 0) {
                     content
+                }
+            }
+        }
+    }
+}
+
+/// Foglio "Importa preferenze": incolla un backup JSON prodotto da
+/// "Esporta preferenze" e lo applica. Stessa struttura di
+/// `ImportSourcesSheet` in `SourcesView`, per coerenza tra le due funzioni
+/// di import dell'app.
+private struct ImportPreferencesSheet: View {
+    @Binding var text: String
+    let onImport: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var canImport: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $text)
+                        .font(.caption.monospaced())
+                        .frame(minHeight: 220)
+                } header: {
+                    Text("Backup JSON")
+                } footer: {
+                    Text("Incolla qui il contenuto JSON esportato in precedenza con \u{201C}Esporta preferenze\u{201D}. Sorgenti e preferiti non vengono modificati.")
+                }
+
+                Section {
+                    Button {
+                        if let clipboardText = UIPasteboard.general.string {
+                            text = clipboardText
+                        }
+                    } label: {
+                        Label("Incolla dagli appunti", systemImage: "doc.on.clipboard")
+                    }
+                }
+            }
+            .navigationTitle("Importa preferenze")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annulla") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Importa", action: onImport)
+                        .disabled(!canImport)
                 }
             }
         }
