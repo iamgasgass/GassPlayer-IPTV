@@ -4,12 +4,16 @@ import SwiftUI
 /// - colonna banner = inset sinistro + banner + stesso inset sinistro;
 /// - sezione ora e tile condividono LO STESSO ORIGINE PIXEL (`gridOrigin`,
 ///   il primo taglio di mezz'ora della finestra) e la stessa `canvasWidth`,
-///   derivata direttamente dal numero di tacche orarie: questo rende le tile
-///   strutturalmente sincronizzate alla sezione ora, non solo per formula ma
-///   per identico punto di riferimento geometrico;
-/// - ogni tacca oraria e' un solo `Text` "HH:mm" in un frame di larghezza
-///   ESATTA 80pt: la distanza fra i ':' di due tacche consecutive e' quindi
-///   sempre 80pt per costruzione del layout;
+///   derivata direttamente dal numero di tacche orarie: le tile sono quindi
+///   sincronizzate alla sezione ora per identico punto di riferimento, non
+///   solo per formula;
+/// - ogni tacca oraria usa uno SLOT geometrico esplicito (`Color.clear`
+///   dimensionato a 80pt esatti) su cui il testo "HH:mm" e' semplicemente
+///   sovrapposto: la larghezza dello slot non dipende in alcun modo dalla
+///   dimensione reale del testo renderizzato, quindi la distanza fra i ':'
+///   di due tacche consecutive e' garantita a 80pt dalla forma dello slot,
+///   non dal comportamento di `Text` con un frame piu' piccolo del suo
+///   contenuto (possibile causa di scarti non deterministici in precedenza);
 /// - la tile non supera mai l'inizio del programma successivo (niente
 ///   sovrapposizioni) ed e' verticalmente centrata come il banner canale;
 /// - ogni tile mostra il nome del canale prima dell'orario del programma.
@@ -58,8 +62,9 @@ struct EPGGridView: View {
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Larghezza esatta di ogni tacca oraria (ogni 30 minuti): e' anche la
-    /// distanza fra i ':' di due tacche consecutive, garantita dal layout.
+    /// Larghezza esatta di ogni SLOT orario (ogni 30 minuti): e' anche la
+    /// distanza fra i ':' di due tacche consecutive, garantita dalla forma
+    /// dello slot (`Color.clear`), non dal contenuto testuale al suo interno.
     private let halfHourPixelSpacing: CGFloat = 80
 
     /// La scala pixel/minuto e' calibrata sulla stessa costante: 30 minuti
@@ -259,8 +264,7 @@ struct EPGGridView: View {
     /// Origine unica di TUTTI i calcoli in pixel: il primo taglio di
     /// mezz'ora a partire da `windowStart` (o prima). Sezione ora, freccia
     /// live e tile derivano la propria posizione orizzontale esclusivamente
-    /// da questo singolo punto di riferimento: e' cio' che le rende
-    /// strutturalmente sincronizzate, non solo per formula ma per origine.
+    /// da questo singolo punto di riferimento.
     private var gridOrigin: Date {
         let calendar = Calendar.autoupdatingCurrent
         let startMinute = calendar.component(.minute, from: windowStart)
@@ -478,10 +482,10 @@ struct EPGGridView: View {
     }
 
     /// La riga oraria e' un unico HStack a spacing zero, ancorato a
-    /// `gridOrigin` (quindi il primo tick parte esattamente a x = 0, senza
-    /// offset aggiuntivi). Ogni tacca e' un singolo `Text` "HH:mm" in un
-    /// frame di larghezza ESATTA `halfHourPixelSpacing`: la distanza fra i
-    /// ':' di due tacche consecutive e' quindi sempre 80pt per costruzione.
+    /// `gridOrigin` (il primo slot parte a x = 0). Ogni slot e' largo
+    /// esattamente `halfHourPixelSpacing`: la distanza fra i ':' di due
+    /// tacche consecutive e' quindi sempre 80pt, garantita dalla forma
+    /// dello slot stesso.
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             HStack(spacing: 0) {
@@ -503,16 +507,26 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Un solo `Text` "HH:mm" in un frame a larghezza fissa e allineamento
-    /// sinistro: nessuna somma di piu' misure indipendenti che potrebbe
-    /// accumulare imprecisioni. Font invariato (22pt), nessun orario rimosso.
+    /// Lo slot e' un `Color.clear` dimensionato ESATTAMENTE a
+    /// `halfHourPixelSpacing`: la sua larghezza NON dipende dal testo che
+    /// contiene. Il testo "HH:mm" e' sovrapposto con `.fixedSize()`, cosi'
+    /// si renderizza alla propria dimensione naturale senza influenzare la
+    /// larghezza riportata dello slot all'HStack padre. Risultato: ogni
+    /// slot occupa sempre e solo 80pt, quindi il ':' di ogni tacca cade alla
+    /// stessa distanza relativa dal proprio slot, per ogni tacca. Font
+    /// invariato (22pt), nessun orario rimosso.
     private func tickLabel(_ date: Date) -> some View {
-        Text(Self.timeFormatter.string(from: date))
-            .font(.system(size: 22, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.58))
-            .monospacedDigit()
-            .lineLimit(1)
-            .frame(width: halfHourPixelSpacing, height: timelineHeaderHeight, alignment: .leading)
+        ZStack(alignment: .leading) {
+            Color.clear
+
+            Text(Self.timeFormatter.string(from: date))
+                .font(.system(size: 22, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.58))
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .frame(width: halfHourPixelSpacing, height: timelineHeaderHeight, alignment: .leading)
     }
 
     // MARK: - Toolbar Liquid Glass
