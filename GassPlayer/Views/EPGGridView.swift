@@ -1,13 +1,23 @@
 import SwiftUI
 
-/// EPG View touch-first ad alte prestazioni:
-/// - Colonna fissa a sinistra (110pt) con giorno ("Oggi") e banner dei canali
-/// - Header temporale orizzontale sincronizzato al millimetro con le tile dei programmi
-/// - Spaziatura oraria deterministica (80pt ogni 30 min) e scala pixel/minuto condivisa
-/// - Indicatore live dinamico (freccia a triangolo) sincronizzato con la coordinata temporale corrente
-/// - Tile con layout corretto: HStack in riga superiore (nome canale solo nel primo/in onda + ora inizio) e titolo programma
-/// - Taglio visivo dinamico del background tra porzione passata (colore pieno) e futura (trasparente)
-/// - Geometria priva di sovrapposizioni e animazioni fluide per navigazione e interazioni
+/// EPG touch-first con geometria a colonna rigorosa:
+/// - colonna banner = inset sinistro + banner + stesso inset sinistro;
+/// - sezione ora e tile condividono LO STESSO ORIGINE PIXEL (`gridOrigin`)
+///   e la stessa `canvasWidth`: sono strutturalmente sincronizzate, non
+///   solo per formula ma per identico punto di riferimento geometrico;
+/// - ogni tacca oraria e' un solo `Text` "HH:mm" in un frame di larghezza
+///   ESATTA 80pt: la distanza fra i ':' di due tacche consecutive e' quindi
+///   sempre 80pt per costruzione del layout, non per stima;
+/// - LA LARGHEZZA DI OGNI TILE E' ORA PURAMENTE PROPORZIONALE ALLA DURATA
+///   REALE DEL PROGRAMMA (stessa scala della riga oraria): un programma di
+///   30 minuti occupa esattamente 80pt, come la distanza fra due tacche.
+///   Prima la larghezza veniva "gonfiata" per far spazio al testo del
+///   titolo, rompendo la corrispondenza visiva 1:1 con il righello orario;
+///   ora la tile e' visivamente sincronizzata alla sezione ora, e il testo
+///   si tronca (gia' previsto) quando lo spazio reale non basta;
+/// - la tile non supera mai l'inizio del programma successivo (niente
+///   sovrapposizioni) ed e' verticalmente centrata come il banner canale;
+/// - ogni tile mostra il nome del canale prima dell'orario del programma.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -30,48 +40,61 @@ struct EPGGridView: View {
     @State private var selectedProgram: SelectedProgram?
     @State private var reminderToast: String?
     @State private var catchupPlayback: CatchupPlayback?
-    @State private var renderLimit = 16
+    @State private var renderLimit = 12
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
 
-    private let renderPageSize = 16
-    private let hardRenderCap = 100
+    private let renderPageSize = 12
+    private let hardRenderCap = 72
     private let maxConcurrentRequests = 8
     private let shortEPGLimit = 24
     private let searchDebounceNanoseconds: UInt64 = 250_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 300_000_000
 
-    // MARK: - Fixed EPG Geometry
+    // MARK: - Fixed EPG geometry
 
+    /// Formula richiesta: `inset sinistro + BANNER + inset sinistro`.
     private let bannerInset: CGFloat = 12
     private let channelBannerWidth: CGFloat = 86
     private let rowHeight: CGFloat = 96
     private let bannerHeight: CGFloat = 76
     private let blockHeight: CGFloat = 82
     private let timelineHeaderHeight: CGFloat = 44
-    private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
-    private let tileGap: CGFloat = 2
 
-    /// Distanza esatta tra due tacche da 30 minuti consecutivi (80pt)
+    /// Larghezza minima assoluta di una tile, SOLO per garantire un'area di
+    /// tocco utilizzabile su programmi estremamente brevi: non e' piu'
+    /// legata al testo del titolo, che ora si tronca invece di forzare
+    /// la tile a espandersi oltre la sua reale durata.
+    private let minimumTapTargetWidth: CGFloat = 24
+
+    /// Larghezza esatta di ogni tacca oraria (ogni 30 minuti): e' anche la
+    /// distanza fra i ':' di due tacche consecutive, garantita dal layout.
     private let halfHourPixelSpacing: CGFloat = 80
 
-    /// Scala pixel per minuto sincronizzata
+    /// La scala pixel/minuto e' calibrata sulla stessa costante: 30 minuti
+    /// producono sempre `halfHourPixelSpacing`, sia per le tacche orarie sia
+    /// per il posizionamento E LA LARGHEZZA delle tile, che condividono
+    /// anche lo stesso `gridOrigin`: sono quindi sincronizzate in scala,
+    /// origine e proporzione visiva.
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
-    /// Larghezza fissa della colonna banner sinistra (12 + 86 + 12 = 110pt)
+    /// Larghezza ufficiale e unica della colonna banner: 12 + 86 + 12 = 110.
     private var bannerColumnWidth: CGFloat {
         bannerInset + channelBannerWidth + bannerInset
     }
 
+    /// Larghezza dell'unico contenuto visibile interno alla colonna.
     private var bannerContentWidth: CGFloat {
         bannerColumnWidth - (bannerInset * 2)
     }
 
-    /// Finestra temporale: 30 minuti nel passato, 2.5 ore nel futuro
+    /// Finestra visuale: 30 minuti passati, 2 ore future.
     private let pastWindow: TimeInterval = 30 * 60
-    private let futureWindow: TimeInterval = 150 * 60
+    private let futureWindow: TimeInterval = 120 * 60
 
+    /// Formattazione deterministica "HH:mm", senza spazi o simboli
+    /// aggiuntivi dipendenti dal locale corrente del dispositivo.
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -108,7 +131,7 @@ struct EPGGridView: View {
         var id: String { url.absoluteString }
     }
 
-    // MARK: - Sources & Filtering
+    // MARK: - Sources
 
     private var streams: [XtreamStream] {
         xtreamCatalog.streams(for: kind)
@@ -128,6 +151,7 @@ struct EPGGridView: View {
         return normalized.isEmpty ? nil : normalized
     }
 
+    /// Preserva l'ordine di prima comparsa della playlist/provider.
     private var groupsWithCounts: (groups: [XtreamCategory], counts: [String: Int]) {
         var counts: [String: Int] = [:]
         var seenIDs = Set<String>()
@@ -146,7 +170,6 @@ struct EPGGridView: View {
         let categoryByID = Dictionary(
             uniqueKeysWithValues: liveCategories.map { ($0.categoryId, $0) }
         )
-
         return (orderedIDs.compactMap { categoryByID[$0] }, counts)
     }
 
@@ -169,12 +192,10 @@ struct EPGGridView: View {
 
     private func selectGroup(_ groupID: String?) {
         guard groupID != normalizedSelectedGroupID else { return }
-        withAnimation(.easeInOut(duration: 0.2)) {
-            selectedGroupID = groupID
-            searchQuery = ""
-            showFavoritesOnly = false
-            renderLimit = renderPageSize
-        }
+        selectedGroupID = groupID
+        searchQuery = ""
+        showFavoritesOnly = false
+        renderLimit = renderPageSize
         scheduleReload()
     }
 
@@ -216,7 +237,7 @@ struct EPGGridView: View {
         return "\(normalizedSelectedGroupID ?? "all")|\(selectedDayOffset)|\(ids)"
     }
 
-    // MARK: - Time Geometry
+    // MARK: - Time geometry
 
     private var selectedDate: Date {
         Calendar.autoupdatingCurrent.date(byAdding: .day, value: selectedDayOffset, to: now) ?? now
@@ -236,6 +257,8 @@ struct EPGGridView: View {
         ) ?? selectedDate
     }
 
+    /// Confini semantici della finestra: determinano QUALI programmi sono
+    /// visibili (filtro), non la loro posizione in pixel.
     private var windowStart: Date {
         windowCenter.addingTimeInterval(-pastWindow)
     }
@@ -244,7 +267,10 @@ struct EPGGridView: View {
         windowCenter.addingTimeInterval(futureWindow)
     }
 
-    /// Punto di ancoraggio zero per sezione ore, freccia indicatore e tile
+    /// Origine unica di TUTTI i calcoli in pixel: il primo taglio di
+    /// mezz'ora a partire da `windowStart` (o prima). Sezione ora, freccia
+    /// live e tile derivano la propria posizione orizzontale esclusivamente
+    /// da questo singolo punto di riferimento.
     private var gridOrigin: Date {
         let calendar = Calendar.autoupdatingCurrent
         let startMinute = calendar.component(.minute, from: windowStart)
@@ -257,6 +283,9 @@ struct EPGGridView: View {
         ) ?? windowStart
     }
 
+    /// Tacche a orario pieno/mezzo (es. 8:00, 8:30, 9:00...) a partire da
+    /// `gridOrigin` fino a coprire l'intera finestra visibile. Non mostra
+    /// mai l'istante minuto-per-minuto: cambia solo attraversando i 30 min.
     private var halfHourTicks: [Date] {
         var ticks: [Date] = []
         var cursor = gridOrigin
@@ -267,14 +296,20 @@ struct EPGGridView: View {
         return ticks
     }
 
+    /// Larghezza del canvas derivata DIRETTAMENTE dal numero di tacche: e'
+    /// la stessa identica base geometrica usata per posizionare le tacche,
+    /// quindi sezione ora e tile hanno sempre la stessa estensione totale.
     private var canvasWidth: CGFloat {
-        max(CGFloat(halfHourTicks.count) * halfHourPixelSpacing, 400)
+        max(CGFloat(halfHourTicks.count) * halfHourPixelSpacing, 380)
     }
 
+    /// Unica funzione di conversione tempo -> coordinata x, ancorata a
+    /// `gridOrigin` e condivisa da tacche orarie, freccia live e tile.
     private func xCoordinate(for date: Date) -> CGFloat {
         CGFloat(date.timeIntervalSince(gridOrigin) / 60) * pixelsPerMinute
     }
 
+    /// Posizione della freccia live sul canvas condiviso.
     private var liveAxisX: CGFloat {
         xCoordinate(for: windowCenter)
     }
@@ -288,8 +323,6 @@ struct EPGGridView: View {
             return selectedDate.formatted(.dateTime.weekday(.wide).day().month(.abbreviated))
         }
     }
-
-    // MARK: - Main Body
 
     var body: some View {
         NavigationStack {
@@ -325,50 +358,46 @@ struct EPGGridView: View {
                             .task(id: reminderToast) {
                                 try? await Task.sleep(nanoseconds: 2_200_000_000)
                                 guard !Task.isCancelled else { return }
-                                withAnimation(.easeOut(duration: 0.2)) {
-                                    self.reminderToast = nil
-                                }
+                                self.reminderToast = nil
                             }
                     }
                 }
-                .onAppear {
-                    guard !didAppear else { return }
-                    didAppear = true
-                    hydrateVisibleProgramsFromCache()
-                    scheduleReload()
-                }
-                .onChange(of: streams.map(\.streamId)) { _, _ in
-                    if pagedStreams.isEmpty {
-                        renderLimit = min(renderPageSize, max(streams.count, 1))
-                    }
-                    hydrateVisibleProgramsFromCache()
-                    scheduleReload()
-                }
-                .onChange(of: streamIdentity) { _, _ in
-                    hydrateVisibleProgramsFromCache()
-                    scheduleReload()
-                }
-                .onChange(of: searchQuery) { _, _ in
-                    renderLimit = renderPageSize
-                    hydrateVisibleProgramsFromCache()
-                    scheduleReload(debounced: true)
-                }
-                .onChange(of: showFavoritesOnly) { _, _ in
-                    renderLimit = renderPageSize
-                    hydrateVisibleProgramsFromCache()
-                    scheduleReload()
-                }
-                .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
-                    now = date
-                }
-                .onDisappear {
-                    reloadTaskBox.task?.cancel()
-                    loadingIndicatorTask?.cancel()
-                }
+        }
+        .onAppear {
+            guard !didAppear else { return }
+            didAppear = true
+            hydrateVisibleProgramsFromCache()
+            scheduleReload()
+        }
+        .onChange(of: streams.map(\.streamId)) { _, _ in
+            if pagedStreams.isEmpty {
+                renderLimit = min(renderPageSize, max(streams.count, 1))
+            }
+            hydrateVisibleProgramsFromCache()
+            scheduleReload()
+        }
+        .onChange(of: streamIdentity) { _, _ in
+            hydrateVisibleProgramsFromCache()
+            scheduleReload()
+        }
+        .onChange(of: searchQuery) { _, _ in
+            renderLimit = renderPageSize
+            hydrateVisibleProgramsFromCache()
+            scheduleReload(debounced: true)
+        }
+        .onChange(of: showFavoritesOnly) { _, _ in
+            renderLimit = renderPageSize
+            hydrateVisibleProgramsFromCache()
+            scheduleReload()
+        }
+        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
+            now = date
+        }
+        .onDisappear {
+            reloadTaskBox.task?.cancel()
+            loadingIndicatorTask?.cancel()
         }
     }
-
-    // MARK: - Content Hierarchy
 
     @ViewBuilder
     private var content: some View {
@@ -378,8 +407,8 @@ struct EPGGridView: View {
                 systemImage: isCatalogStillLoading ? "hourglass" : "tv.slash",
                 description: Text(
                     isCatalogStillLoading
-                    ? "Il catalogo si sta ancora caricando."
-                    : "Questa sorgente non contiene canali live."
+                        ? "Il catalogo si sta ancora caricando."
+                        : "Questa sorgente non contiene canali live."
                 )
             )
             .foregroundStyle(.white)
@@ -407,7 +436,10 @@ struct EPGGridView: View {
         }
     }
 
-    /// Struttura HStack principale con Colonna Canali e Timeline scorrevole
+    /// Nessun padding esterno. L'HStack ha esattamente due figli: colonna
+    /// fissa (110pt) e timeline. Sezione ora e tile leggono entrambe
+    /// `canvasWidth` e `gridOrigin`, quindi restano sincronizzate durante
+    /// lo scroll, non solo per larghezza ma per identico punto di partenza.
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
             fixedDayAndChannelColumn
@@ -428,14 +460,12 @@ struct EPGGridView: View {
         }
     }
 
-    // MARK: - Fixed Day & Banner Column
-
+    /// La colonna fisica e' 110pt. “Oggi” e banner hanno entrambi margine
+    /// sinistro 12pt; il banner e' contenuto in un frame interno da 86pt.
     private var fixedDayAndChannelColumn: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                    selectedDayOffset = max(selectedDayOffset - 1, -7)
-                }
+                selectedDayOffset = max(selectedDayOffset - 1, -7)
                 scheduleReload()
             } label: {
                 Text(dayTitle)
@@ -457,8 +487,11 @@ struct EPGGridView: View {
         }
     }
 
-    // MARK: - Scrolling Timeline Header & Dynamic Indicator
-
+    /// La riga oraria e' un unico HStack a spacing zero, ancorato a
+    /// `gridOrigin` (il primo tick parte esattamente a x = 0). Ogni tacca e'
+    /// un singolo `Text` "HH:mm" in un frame di larghezza ESATTA
+    /// `halfHourPixelSpacing`: la distanza fra i ':' di due tacche
+    /// consecutive e' quindi sempre 80pt per costruzione.
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             HStack(spacing: 0) {
@@ -472,8 +505,7 @@ struct EPGGridView: View {
                     .font(.system(size: 20, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: arrowGlyphWidth, height: timelineHeaderHeight, alignment: .center)
-                    .offset(x: liveAxisX - (arrowGlyphWidth / 2))
-                    .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.8), value: liveAxisX)
+                    .offset(x: liveAxisX - arrowGlyphWidth / 2)
                     .accessibilityLabel("Ora corrente: \(Self.timeFormatter.string(from: windowCenter))")
             }
         }
@@ -481,240 +513,19 @@ struct EPGGridView: View {
         .clipped()
     }
 
+    /// Un solo `Text` "HH:mm" in un frame a larghezza fissa e allineamento
+    /// sinistro: nessuna somma di piu' misure indipendenti. Font invariato
+    /// (22pt), nessun orario rimosso.
     private func tickLabel(_ date: Date) -> some View {
-        ZStack(alignment: .leading) {
-            Color.clear
-            Text(Self.timeFormatter.string(from: date))
-                .font(.system(size: 22, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.58))
-                .monospacedDigit()
-                .lineLimit(1)
-                .fixedSize()
-        }
-        .frame(width: halfHourPixelSpacing, height: timelineHeaderHeight, alignment: .leading)
+        Text(Self.timeFormatter.string(from: date))
+            .font(.system(size: 22, weight: .medium, design: .rounded))
+            .foregroundStyle(.white.opacity(0.58))
+            .monospacedDigit()
+            .lineLimit(1)
+            .frame(width: halfHourPixelSpacing, height: timelineHeaderHeight, alignment: .leading)
     }
 
-    // MARK: - Channel Banners
-
-    private func channelBanner(_ stream: XtreamStream) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(logoBackgroundColor(for: stream))
-
-            AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
-                if case .success(let image) = phase {
-                    image
-                        .resizable()
-                        .scaledToFit()
-                        .padding(12)
-                } else {
-                    Image(systemName: "tv")
-                        .font(.title3)
-                        .foregroundStyle(.white.opacity(0.75))
-                }
-            }
-
-            if favorites.isFavorite(stream.streamId) {
-                Image(systemName: "star.fill")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.yellow)
-                    .padding(6)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .padding(6)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            }
-        }
-        .frame(width: bannerContentWidth, height: bannerHeight)
-        .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            onPlayLive(stream)
-        }
-        .accessibilityLabel("Guarda \(stream.name) in diretta")
-    }
-
-    // MARK: - EPG Rows & Tiles
-
-    private func timelineRow(for stream: XtreamStream) -> some View {
-        let programs = visiblePrograms(for: stream)
-
-        return ZStack(alignment: .leading) {
-            if programs.isEmpty {
-                unavailableBlock(for: stream)
-            } else {
-                ForEach(Array(programs.enumerated()), id: \.element.id) { index, program in
-                    programBlock(
-                        program,
-                        stream: stream,
-                        isFirstProgram: index == 0,
-                        nextProgramStart: index + 1 < programs.count ? programs[index + 1].start : nil
-                    )
-                }
-            }
-        }
-        .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
-        .clipped()
-    }
-
-    private func unavailableBlock(for stream: XtreamStream) -> some View {
-        let loading = loadingStreamIDs.contains(stream.streamId)
-        let failed = failedStreamIDs.contains(stream.streamId)
-
-        return HStack(spacing: 7) {
-            if loading {
-                ProgressView()
-                    .tint(.white)
-                    .controlSize(.small)
-                Text("Caricamento EPG")
-            } else if failed {
-                Image(systemName: "exclamationmark.triangle.fill")
-                Text("EPG non disponibile")
-            } else {
-                Image(systemName: "calendar.badge.exclamationmark")
-                Text("Dati non disponibili")
-            }
-        }
-        .font(.system(size: 15, weight: .medium))
-        .foregroundStyle(.white.opacity(0.85))
-        .padding(.horizontal, 18)
-        .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
-    }
-
-    /// Blocco programma con HStack per Nome Canale + Orario, Titolo, Background dinamico e sincronizzazione
-    private func programBlock(
-        _ program: EPGProgram,
-        stream: XtreamStream,
-        isFirstProgram: Bool,
-        nextProgramStart: Date?
-    ) -> some View {
-        let clippedStart = max(program.start, windowStart)
-        let clippedEnd = min(program.end, windowEnd)
-        let startX = xCoordinate(for: clippedStart)
-        let durationMinutes = max(1, clippedEnd.timeIntervalSince(clippedStart) / 60)
-
-        let timeWidth = CGFloat(durationMinutes) * pixelsPerMinute
-        let textWidth = estimatedTitleWidth(for: program.title) + 26
-        let desiredWidth = max(minimumProgramBlockWidth, timeWidth, textWidth)
-
-        let maxAvailableWidth: CGFloat
-        if let nextProgramStart {
-            let nextStartX = xCoordinate(for: max(nextProgramStart, windowStart))
-            maxAvailableWidth = max(20, (nextStartX - startX) - tileGap)
-        } else {
-            maxAvailableWidth = max(desiredWidth, timeWidth)
-        }
-
-        let width = min(desiredWidth, maxAvailableWidth)
-
-        return Button {
-            selectedProgram = SelectedProgram(program: program, stream: stream)
-        } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    if isFirstProgram || program.isCurrent(at: now) {
-                        Text(stream.name)
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.60))
-                            .lineLimit(1)
-                    }
-
-                    Text(program.start.formatted(date: .omitted, time: .shortened))
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.65))
-                        .lineLimit(1)
-                }
-
-                Text(program.title)
-                    .font(.system(size: 16, weight: .regular, design: .rounded))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(width: width, height: blockHeight, alignment: .topLeading)
-        }
-        .buttonStyle(.plain)
-        .background {
-            programTileBackground(
-                stream: stream,
-                program: program,
-                tileStartX: startX,
-                tileWidth: width
-            )
-        }
-        .offset(x: startX)
-        .accessibilityLabel(
-            "\(stream.name), \(program.title), dalle \(program.start.formatted(date: .omitted, time: .shortened)) alle \(program.end.formatted(date: .omitted, time: .shortened))"
-        )
-    }
-
-    /// Sfondo dinamico con suddivisione temporale al pixel esatto dell'asse live
-    @ViewBuilder
-    private func programTileBackground(
-        stream: XtreamStream,
-        program: EPGProgram,
-        tileStartX: CGFloat,
-        tileWidth: CGFloat
-    ) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
-        let base = programColor(for: stream, program: program)
-        let brightWidth = isToday ? min(max(liveAxisX - tileStartX, 0), tileWidth) : 0
-
-        ZStack(alignment: .leading) {
-            shape.fill(base.opacity(0.30))
-
-            if brightWidth > 0 {
-                Rectangle()
-                    .fill(base)
-                    .frame(width: brightWidth)
-            }
-        }
-        .clipShape(shape)
-    }
-
-    private func estimatedTitleWidth(for title: String) -> CGFloat {
-        let averageGlyphWidth: CGFloat = 8.2
-        let raw = CGFloat(title.count) * averageGlyphWidth
-        return min(max(raw, 62), 260)
-    }
-
-    // MARK: - Search Header & Toolbar
-
-    private var searchHeader: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .font(.body)
-                .foregroundStyle(.secondary)
-
-            TextField("Cerca per nome del programma", text: $searchQuery)
-                .font(.body)
-                .foregroundStyle(.white)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-
-            if !searchQuery.isEmpty {
-                Button {
-                    searchQuery = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 16)
-        .frame(height: 50)
-        .background(Color.white.opacity(0.09), in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-        }
-        .padding(.horizontal, bannerInset)
-        .padding(.top, 10)
-        .padding(.bottom, 18)
-    }
+    // MARK: - Toolbar Liquid Glass
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
@@ -783,28 +594,22 @@ struct EPGGridView: View {
                 Divider()
 
                 Button {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                        selectedDayOffset = -1
-                    }
+                    selectedDayOffset = -1
                     scheduleReload()
                 } label: {
                     Label("Ieri", systemImage: "chevron.left")
                 }
 
                 Button {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                        selectedDayOffset = 0
-                        now = Date()
-                    }
+                    selectedDayOffset = 0
+                    now = Date()
                     scheduleReload()
                 } label: {
                     Label("Oggi", systemImage: "calendar")
                 }
 
                 Button {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                        selectedDayOffset = 1
-                    }
+                    selectedDayOffset = 1
                     scheduleReload()
                 } label: {
                     Label("Domani", systemImage: "chevron.right")
@@ -849,6 +654,222 @@ struct EPGGridView: View {
         }
     }
 
+    /// Ricerca, “Oggi” e banner usano lo stesso inset sinistro (12pt).
+    private var searchHeader: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.body)
+                .foregroundStyle(.secondary)
+
+            TextField("Cerca per nome del programma", text: $searchQuery)
+                .font(.body)
+                .foregroundStyle(.white)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+
+            if !searchQuery.isEmpty {
+                Button {
+                    searchQuery = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 50)
+        .background(Color.white.opacity(0.09), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+        }
+        .padding(.horizontal, bannerInset)
+        .padding(.top, 10)
+        .padding(.bottom, 18)
+    }
+
+    // MARK: - EPG rows
+
+    /// Passa al blocco successivo l'orario di inizio del programma seguente,
+    /// cosi' la larghezza puo' essere limitata per non sovrapporsi mai.
+    private func timelineRow(for stream: XtreamStream) -> some View {
+        let programs = visiblePrograms(for: stream)
+
+        return ZStack(alignment: .leading) {
+            if programs.isEmpty {
+                unavailableBlock(for: stream)
+            } else {
+                ForEach(Array(programs.enumerated()), id: \.element.id) { index, program in
+                    programBlock(
+                        program,
+                        stream: stream,
+                        nextProgramStart: index + 1 < programs.count ? programs[index + 1].start : nil
+                    )
+                }
+            }
+        }
+        .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
+        .clipped()
+    }
+
+    /// Il banner non possiede wrapper visibili, padding aggiuntivi o spazio a
+    /// destra: il padding e' gestito dal solo frame della colonna padre.
+    private func channelBanner(_ stream: XtreamStream) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(logoBackgroundColor(for: stream))
+
+            AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
+                if case .success(let image) = phase {
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .padding(12)
+                } else {
+                    Image(systemName: "tv")
+                        .font(.title3)
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+            }
+
+            if favorites.isFavorite(stream.streamId) {
+                Image(systemName: "star.fill")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.yellow)
+                    .padding(6)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .padding(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
+        }
+        .frame(width: bannerContentWidth, height: bannerHeight)
+        .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onPlayLive(stream)
+        }
+        .accessibilityLabel("Guarda \(stream.name) in diretta")
+    }
+
+    private func unavailableBlock(for stream: XtreamStream) -> some View {
+        let loading = loadingStreamIDs.contains(stream.streamId)
+        let failed = failedStreamIDs.contains(stream.streamId)
+
+        return HStack(spacing: 7) {
+            if loading {
+                ProgressView()
+                    .tint(.white)
+                    .controlSize(.small)
+                Text("Caricamento EPG")
+            } else if failed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text("EPG non disponibile")
+            } else {
+                Image(systemName: "calendar.badge.exclamationmark")
+                Text("Dati non disponibili")
+            }
+        }
+        .font(.system(size: 15, weight: .medium))
+        .foregroundStyle(.white.opacity(0.85))
+        .padding(.horizontal, 18)
+        .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
+    }
+
+    /// La larghezza e' ora PURAMENTE proporzionale alla durata reale del
+    /// programma, sulla stessa scala della sezione ora: un programma di 30
+    /// minuti occupa esattamente `halfHourPixelSpacing` (80pt), esattamente
+    /// come la distanza fra due tacche orarie. Non supera mai l'inizio del
+    /// programma successivo (niente sovrapposizioni). Il testo si tronca
+    /// (gia' gestito da `.lineLimit`/`.truncationMode`) invece di forzare
+    /// la tile a espandersi oltre la sua reale durata.
+    private func programBlock(
+        _ program: EPGProgram,
+        stream: XtreamStream,
+        nextProgramStart: Date?
+    ) -> some View {
+        let clippedStart = max(program.start, windowStart)
+        let clippedEnd = min(program.end, windowEnd)
+        let startX = xCoordinate(for: clippedStart)
+        let durationMinutes = max(1, clippedEnd.timeIntervalSince(clippedStart) / 60)
+
+        let desiredWidth = max(minimumTapTargetWidth, CGFloat(durationMinutes) * pixelsPerMinute)
+
+        let maxAvailableWidth: CGFloat
+        if let nextProgramStart {
+            let nextStartX = xCoordinate(for: max(nextProgramStart, windowStart))
+            maxAvailableWidth = max(minimumTapTargetWidth, nextStartX - startX)
+        } else {
+            maxAvailableWidth = desiredWidth
+        }
+        let width = min(desiredWidth, maxAvailableWidth)
+
+        return Button {
+            selectedProgram = SelectedProgram(program: program, stream: stream)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(stream.name)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.60))
+                    .lineLimit(1)
+
+                Text(program.start.formatted(date: .omitted, time: .shortened))
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.52))
+                    .lineLimit(1)
+
+                Text(program.title)
+                    .font(.system(size: 16, weight: .regular, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .minimumScaleFactor(1.0)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 8)
+            .frame(width: width, height: blockHeight, alignment: .topLeading)
+        }
+        .buttonStyle(.plain)
+        .background {
+            programTileBackground(
+                stream: stream,
+                program: program,
+                tileStartX: startX,
+                tileWidth: width
+            )
+        }
+        .offset(x: startX)
+        .accessibilityLabel(
+            "\(stream.name), \(program.title), dalle \(program.start.formatted(date: .omitted, time: .shortened)) alle \(program.end.formatted(date: .omitted, time: .shortened))"
+        )
+    }
+
+    /// Nessun blur o overlay scuro. Il bordo fra pieno e trasparente e'
+    /// letteralmente `liveAxisX`: la fine del colore acceso e l'inizio
+    /// dell'area trasparente coincidono al pixel con il centro della freccia.
+    @ViewBuilder
+    private func programTileBackground(
+        stream: XtreamStream,
+        program: EPGProgram,
+        tileStartX: CGFloat,
+        tileWidth: CGFloat
+    ) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let base = programColor(for: stream, program: program)
+        let brightWidth = isToday ? min(max(liveAxisX - tileStartX, 0), tileWidth) : 0
+
+        ZStack(alignment: .leading) {
+            shape.fill(base.opacity(0.30))
+
+            if brightWidth > 0 {
+                Rectangle()
+                    .fill(base)
+                    .frame(width: brightWidth)
+            }
+        }
+        .clipShape(shape)
+    }
+
     private var loadMoreButton: some View {
         Button {
             let newLimit = min(
@@ -856,9 +877,7 @@ struct EPGGridView: View {
                 min(filteredStreams.count, hardRenderCap)
             )
             guard newLimit != renderLimit else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
-                renderLimit = newLimit
-            }
+            renderLimit = newLimit
             scheduleReload()
         } label: {
             Label(
@@ -874,7 +893,9 @@ struct EPGGridView: View {
         .padding(16)
     }
 
-    // MARK: - Data Loading & Actions
+    // MARK: - Data and actions
+
+    private var blockHeight: CGFloat { 82 }
 
     private func visiblePrograms(for stream: XtreamStream) -> [EPGProgram] {
         (programsByStream[stream.streamId] ?? []).filter {
@@ -953,7 +974,6 @@ struct EPGGridView: View {
                 try? await Task.sleep(nanoseconds: searchDebounceNanoseconds)
                 guard !Task.isCancelled else { return }
             }
-
             await reloadEPG(forceRefresh: forceRefresh)
         }
     }
@@ -1000,7 +1020,6 @@ struct EPGGridView: View {
                 limit: shortEPGLimit,
                 forceRefresh: forceRefresh
             )
-
             programsByStream[stream.streamId] = programs
             EPGMemoryCache.shared.store(scope: scope, streamId: stream.streamId, programs: programs)
 
@@ -1061,6 +1080,7 @@ struct EPGGridView: View {
 
             let end = min(start + maxConcurrentRequests, pending.count)
             let batch = Array(pending[start..<end])
+            loadingStreamIDs.formUnion(batch.map(\.streamId))
 
             await withTaskGroup(of: (Int, Result<[EPGProgram], Error>).self) { group in
                 for stream in batch {
@@ -1132,140 +1152,137 @@ struct EPGGridView: View {
         }
         return String(digest, radix: 16)
     }
+}
 
-    // MARK: - Internal Types & Cache
+@MainActor
+private final class EPGMemoryCache {
+    static let shared = EPGMemoryCache()
 
-    @MainActor
-    private final class EPGMemoryCache {
-        static let shared = EPGMemoryCache()
-
-        private struct Entry {
-            let programs: [EPGProgram]
-        }
-
-        private var storage: [String: Entry] = [:]
-
-        private func key(scope: String, streamId: Int) -> String {
-            "\(scope)#\(streamId)"
-        }
-
-        func programs(scope: String, streamId: Int) -> [EPGProgram]? {
-            storage[key(scope: scope, streamId: streamId)]?.programs
-        }
-
-        func store(scope: String, streamId: Int, programs: [EPGProgram]) {
-            storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs)
-        }
+    private struct Entry {
+        let programs: [EPGProgram]
     }
 
-    @MainActor
-    private final class EPGFavoritesStore: ObservableObject {
-        @Published private(set) var favoriteStreamIDs: Set<Int>
-        private let key: String
+    private var storage: [String: Entry] = [:]
 
-        init(scopeKey: String) {
-            key = "gassplayer.epgFavorites.\(scopeKey)"
-            favoriteStreamIDs = Set(UserDefaults.standard.array(forKey: key) as? [Int] ?? [])
-        }
-
-        func isFavorite(_ streamID: Int) -> Bool {
-            favoriteStreamIDs.contains(streamID)
-        }
-
-        func toggle(_ streamID: Int) {
-            if favoriteStreamIDs.contains(streamID) {
-                favoriteStreamIDs.remove(streamID)
-            } else {
-                favoriteStreamIDs.insert(streamID)
-            }
-            UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
-        }
+    private func key(scope: String, streamId: Int) -> String {
+        "\(scope)#\(streamId)"
     }
 
-    private struct ProgramDetailSheet: View {
-        let program: EPGProgram
-        let stream: XtreamStream
-        let isCurrentlyLive: Bool
-        let onPlayLive: () -> Void
-        let onPlayCatchup: () -> Void
-        let onSetReminder: () -> Void
+    func programs(scope: String, streamId: Int) -> [EPGProgram]? {
+        storage[key(scope: scope, streamId: streamId)]?.programs
+    }
 
-        @Environment(\.dismiss) private var dismiss
+    func store(scope: String, streamId: Int, programs: [EPGProgram]) {
+        storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs)
+    }
+}
 
-        private var isFuture: Bool {
-            program.start > Date()
+@MainActor
+private final class EPGFavoritesStore: ObservableObject {
+    @Published private(set) var favoriteStreamIDs: Set<Int>
+    private let key: String
+
+    init(scopeKey: String) {
+        key = "gassplayer.epgFavorites.\(scopeKey)"
+        favoriteStreamIDs = Set(UserDefaults.standard.array(forKey: key) as? [Int] ?? [])
+    }
+
+    func isFavorite(_ streamID: Int) -> Bool {
+        favoriteStreamIDs.contains(streamID)
+    }
+
+    func toggle(_ streamID: Int) {
+        if favoriteStreamIDs.contains(streamID) {
+            favoriteStreamIDs.remove(streamID)
+        } else {
+            favoriteStreamIDs.insert(streamID)
         }
+        UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
+    }
+}
 
-        var body: some View {
-            NavigationStack {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(stream.name)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+private struct ProgramDetailSheet: View {
+    let program: EPGProgram
+    let stream: XtreamStream
+    let isCurrentlyLive: Bool
+    let onPlayLive: () -> Void
+    let onPlayCatchup: () -> Void
+    let onSetReminder: () -> Void
 
-                            Text(program.title)
-                                .font(.title3.weight(.bold))
+    @Environment(\.dismiss) private var dismiss
 
-                            Label(
-                                "\(program.start.formatted(date: .abbreviated, time: .shortened)) – \(program.end.formatted(date: .omitted, time: .shortened))",
-                                systemImage: "clock"
-                            )
-                            .font(.subheadline)
+    private var isFuture: Bool {
+        program.start > Date()
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(stream.name)
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
 
-                            if isCurrentlyLive {
-                                Label("In onda ora", systemImage: "dot.radiowaves.left.and.right")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.red)
-                            }
+                        Text(program.title)
+                            .font(.title3.weight(.bold))
 
-                            if let description = program.description, !description.isEmpty {
-                                Text(description)
-                                    .font(.body)
-                                    .padding(.top, 4)
-                            }
+                        Label(
+                            "\(program.start.formatted(date: .abbreviated, time: .shortened)) – \(program.end.formatted(date: .omitted, time: .shortened))",
+                            systemImage: "clock"
+                        )
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                        if isCurrentlyLive {
+                            Label("In onda ora", systemImage: "dot.radiowaves.left.and.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.red)
                         }
-                        .padding()
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-                        VStack(spacing: 10) {
-                            if isCurrentlyLive {
-                                Button(action: onPlayLive) {
-                                    Label("Guarda in diretta", systemImage: "play.fill")
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 12)
-                                }
-                                .buttonStyle(.borderedProminent)
-                            } else if program.hasArchive {
-                                Button(action: onPlayCatchup) {
-                                    Label("Riproduci differita", systemImage: "gobackward")
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 12)
-                                }
-                                .buttonStyle(.borderedProminent)
-                            }
-
-                            if isFuture {
-                                Button(action: onSetReminder) {
-                                    Label("Imposta promemoria", systemImage: "bell")
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                }
-                                .buttonStyle(.bordered)
-                            }
+                        if let description = program.description, !description.isEmpty {
+                            Text(description)
+                                .font(.body)
+                                .padding(.top, 4)
                         }
-                        .padding()
                     }
                     .padding()
-                }
-                .navigationTitle("Dettaglio programma")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("Chiudi") { dismiss() }
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                    VStack(spacing: 10) {
+                        if isCurrentlyLive {
+                            Button(action: onPlayLive) {
+                                Label("Guarda in diretta", systemImage: "play.fill")
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        } else if program.hasArchive {
+                            Button(action: onPlayCatchup) {
+                                Label("Riproduci differita", systemImage: "gobackward")
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+
+                        if isFuture {
+                            Button(action: onSetReminder) {
+                                Label("Imposta promemoria", systemImage: "bell")
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                            }
+                            .buttonStyle(.bordered)
+                        }
                     }
+                }
+                .padding()
+            }
+            .navigationTitle("Dettaglio programma")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Chiudi") { dismiss() }
                 }
             }
         }
