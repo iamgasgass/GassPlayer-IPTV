@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// EPG touch-first ultra-ottimizzata, priva di ridondanze e con routing player garantito:
-/// - Apertura riproduzione sia dal tocco sul banner canale (`channelBanner`) sia da "Guarda in diretta" (`ProgramDetailSheet`).
+/// EPG touch-first ultra-ottimizzata, priva di ridondanze e con avvio streaming istantaneo a latenza zero:
+/// - Avvio streaming immediato: eliminato qualsiasi delay artificiale (es. `asyncAfter`) e collisioni tra modali.
+/// - Il tocco sul banner canale (`channelBanner`) e "Guarda in diretta" (`ProgramDetailSheet`) invocano
+///   immediatamente `onPlayLive(stream)` e presentano il player nativo full-screen senza ritardi.
 /// - Calcoli aggregati di stream/gruppi memoizzati in un unico passaggio O(n) per render.
 /// - Sezione ore su Canvas nativo con spaziatura a 160pt/30min e sincronizzazione temporale millimetrica con le tile.
 /// - Sticky content per-tile dinamico durante lo scroll orizzontale.
@@ -301,7 +303,7 @@ struct EPGGridView: View {
                         stream: selection.stream,
                         isCurrentlyLive: selection.program.isCurrent(at: now),
                         onPlayLive: {
-                            playLiveStream(selection.stream)
+                            playLiveStream(selection.stream, dismissSheetFirst: true)
                         },
                         onPlayCatchup: {
                             playCatchup(program: selection.program, stream: selection.stream)
@@ -491,10 +493,10 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner del canale con tocco nativo reattivo per aprire la riproduzione live del canale.
+    /// Banner del canale con tocco reattivo per aprire la riproduzione live del canale a latenza zero.
     private func channelBanner(_ stream: XtreamStream) -> some View {
         Button {
-            playLiveStream(stream)
+            playLiveStream(stream, dismissSheetFirst: false)
         } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -832,21 +834,21 @@ struct EPGGridView: View {
         .padding(.bottom, 18)
     }
 
-    // MARK: - Gestione Dati e Riproduzione Live
+    // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
-    /// Esegue il dispatch della riproduzione live garantendo sia l'invocazione della closure esterna sia l'apertura del player full screen.
-    private func playLiveStream(_ stream: XtreamStream) {
-        selectedProgram = nil
+    /// Avvia la riproduzione live del canale a latenza zero.
+    private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
+        if dismissSheetFirst {
+            selectedProgram = nil
+        }
         onPlayLive(stream)
 
         if let streamURL = makeLiveStreamURL(for: stream) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
-            }
+            self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
         }
     }
 
-    /// Costruisce l'URL HTTP/HTTPS per lo streaming live del canale con le credenziali Xtream.
+    /// Costruisce in modo deterministico l'URL per lo streaming live Xtream.
     private func makeLiveStreamURL(for stream: XtreamStream) -> URL? {
         let rawHost = credentials.host
             .trimmingCharacters(in: .whitespacesAndNewlines)
