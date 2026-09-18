@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// EPG touch-first ultra-ottimizzata, priva di ridondanze e con routing player affidabile:
-/// - "Guarda in diretta" dal dettaglio programma (sheet) ora dismette lo sheet e riproduce lo stream su MainActor in modo deterministico.
-/// - Architettura di caricamento centralizzata ed eliminazione di ogni duplicazione/ricalcolo superfluo O(n).
-/// - Sezione ore su Canvas nativo con spaziatura a 160pt/30min e sincronizzazione temporale al millimetro con le tile.
-/// - Sticky content fluido per-tile durante lo scroll orizzontale.
+/// EPG touch-first ultra-ottimizzata, priva di ridondanze e con routing player immediato:
+/// - "Guarda in diretta" dal menù dettaglio programma (sheet) avvia immediatamente la riproduzione del canale.
+/// - Tocco sul banner del canale (`channelBanner`) con area di tocco interattiva affidabile per l'avvio della diretta.
+/// - Architettura di caricamento asincrona centralizzata ed eliminazione di ogni scansione o computazione ridondante.
+/// - Sezione ore su Canvas nativo con spaziatura a 160pt/30min e sincronizzazione temporale millimetrica con le tile.
+/// - Sticky content per-tile dinamico durante lo scroll orizzontale.
 /// - Preservazione rigorosa di font (22pt ore, 10/12/16pt tile), layout, controlli e colori originali.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
@@ -294,11 +295,7 @@ struct EPGGridView: View {
                         stream: selection.stream,
                         isCurrentlyLive: selection.program.isCurrent(at: now),
                         onPlayLive: {
-                            let streamToPlay = selection.stream
-                            selectedProgram = nil
-                            DispatchQueue.main.async {
-                                onPlayLive(streamToPlay)
-                            }
+                            playLiveStream(selection.stream)
                         },
                         onPlayCatchup: {
                             playCatchup(program: selection.program, stream: selection.stream)
@@ -485,40 +482,43 @@ struct EPGGridView: View {
         .clipped()
     }
 
+    /// Banner del canale con pulsante nativo ad alta reattività per aprire la diretta.
     private func channelBanner(_ stream: XtreamStream) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(logoBackgroundColor(for: stream))
+        Button {
+            playLiveStream(stream)
+        } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(logoBackgroundColor(for: stream))
 
-            AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
-                if case .success(let image) = phase {
-                    image
-                        .resizable()
-                        .scaledToFit()
-                        .padding(12)
-                } else {
-                    Image(systemName: "tv")
-                        .font(.title3)
-                        .foregroundStyle(.white.opacity(0.75))
+                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
+                    if case .success(let image) = phase {
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            .padding(12)
+                    } else {
+                        Image(systemName: "tv")
+                            .font(.title3)
+                            .foregroundStyle(.white.opacity(0.75))
+                    }
+                }
+
+                if favorites.isFavorite(stream.streamId) {
+                    Image(systemName: "star.fill")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.yellow)
+                        .padding(6)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .padding(6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
             }
-
-            if favorites.isFavorite(stream.streamId) {
-                Image(systemName: "star.fill")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.yellow)
-                    .padding(6)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .padding(6)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            }
+            .frame(width: bannerContentWidth, height: bannerHeight)
+            .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
+            .contentShape(Rectangle())
         }
-        .frame(width: bannerContentWidth, height: bannerHeight)
-        .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            onPlayLive(stream)
-        }
+        .buttonStyle(.plain)
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
@@ -823,7 +823,14 @@ struct EPGGridView: View {
         .padding(.bottom, 18)
     }
 
-    // MARK: - Gestione Dati e Cache
+    // MARK: - Gestione Dati e Riproduzione Live
+
+    private func playLiveStream(_ stream: XtreamStream) {
+        selectedProgram = nil
+        DispatchQueue.main.async {
+            self.onPlayLive(stream)
+        }
+    }
 
     private func visiblePrograms(for stream: XtreamStream) -> [EPGProgram] {
         (programsByStream[stream.streamId] ?? []).filter {
