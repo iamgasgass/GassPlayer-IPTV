@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// EPG View ottimizzata e sincronizzata alla perfezione:
-/// - Rigorosa corrispondenza temporale tra le tacche orarie (80pt / 30min) e le tile.
-/// - Sticky content all'interno delle tile durante lo scroll orizzontale.
-/// - Riempimento dinamico e sincronizzato della tile in onda agganciato all'asse live.
-/// - Struttura pulita, fluida e priva di calcoli ridondanti.
+/// EPG touch-first con sincronizzazione millimetrica:
+/// - Sezione ora e tile condividono lo stesso punto di origine pixel (`gridOrigin`) e la stessa scala (80pt / 30min).
+/// - Sticky content interno: durante lo scroll orizzontale il testo del programma rimane ancorato a sinistra
+///   mentre scorrono solo i bordi della tile, con transizione naturale verso il programma successivo.
+/// - Riempimento live della tile sincronizzato al pixel con la posizione della freccia indicatore.
+/// - Rendering fluido a 60/120fps senza calcoli superflui sulla CPU.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -49,13 +50,13 @@ struct EPGGridView: View {
     private let timelineHeaderHeight: CGFloat = 44
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Spaziatura fissa ogni 30 minuti.
+    /// Spaziatura fissa ogni 30 minuti (80pt).
     private let halfHourPixelSpacing: CGFloat = 80
 
-    /// Scala temporale pixel per minuto.
+    /// Scala temporale pixel per minuto: 80 / 30 = 2.666 pt/min.
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
-    /// Larghezza della colonna fissa laterale (110pt).
+    /// Larghezza della colonna fissa laterale (12 + 86 + 12 = 110pt).
     private var bannerColumnWidth: CGFloat {
         bannerInset + channelBannerWidth + bannerInset
     }
@@ -64,7 +65,7 @@ struct EPGGridView: View {
         bannerColumnWidth - (bannerInset * 2)
     }
 
-    /// Finestra visuale: 30 minuti prima dell'ora attuale, 3 ore avanti.
+    /// Finestra temporale: 30 minuti nel passato, 3 ore nel futuro.
     private let pastWindow: TimeInterval = 30 * 60
     private let futureWindow: TimeInterval = 180 * 60
 
@@ -568,7 +569,7 @@ struct EPGGridView: View {
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// Blocco Programma con animazione e bloccaggio del contenuto durante lo scroll (Sticky Content).
+    /// Blocco Programma con calcolo rigido della larghezza temporale e ancoraggio visivo del testo.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -588,10 +589,10 @@ struct EPGGridView: View {
         }
 
         let width = max(24, endX - startX)
-        
-        // Sticky offset per mantenere il testo visibile nel viewport durante lo scroll
+
+        // Effetto Sticky: il contenuto rimane agganciato a sinistra finché la tile non esce completamente.
         let visibleTileLeft = max(0, scrollOffsetX - startX)
-        let maxStickyOffset = max(0, width - 140)
+        let maxStickyOffset = max(0, width - 130)
         let textStickyOffset = min(visibleTileLeft, maxStickyOffset)
 
         return Button {
@@ -1100,7 +1101,7 @@ struct EPGGridView: View {
     }
 }
 
-// MARK: - PreferenceKey per l'offset di scorrimento orizzontale
+// MARK: - PreferenceKey per la propagazione dell'offset di scorrimento
 
 private struct ScrollOffsetPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
