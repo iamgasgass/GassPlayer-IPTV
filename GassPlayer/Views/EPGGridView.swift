@@ -1,12 +1,12 @@
 import SwiftUI
 
-/// EPG touch-first con geometria a colonna rigorosa e animazioni sincronizzate:
-/// - Colonna banner = inset sinistro (12) + banner (86) + inset sinistro (12) = 110pt fissa.
-/// - Sezione ora e tile condividono lo stesso punto di origine pixel (`gridOrigin`) e scala (80pt / 30min).
-/// - Sticky Content per-tile dinamico: scorrendo, i testi rimangono ancorati al bordo sinistro visibile
-///   mentre i bordi della tile scorrono regolarmente.
-/// - Riempimento live della tile in onda sincronizzato al pixel con la posizione della freccia indicatore.
-/// - Nessun codice superfluo o calcoli euristici CPU-heavy.
+/// EPG touch-first ad alte prestazioni:
+/// - Colonna banner fissa (110pt) con allineamento rigoroso.
+/// - Sincronizzazione millimetrica tra scala temporale oraria (80pt / 30min) e inizio/fine delle tile.
+/// - Animazione fluida dello scroll: il nome canale resta ancorato, l'orario e il titolo corrente
+///   rimangono stabili a sinistra, e il nuovo programma subentra sincronizzato al bordo di divisione.
+/// - Riempimento live della tile in onda sincronizzato alla freccia indicatore.
+/// - Avvio istantaneo e rendering a 60/120fps privo di codice superfluo.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -32,6 +32,7 @@ struct EPGGridView: View {
     @State private var renderLimit = 12
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
+    @State private var scrollOffsetX: CGFloat = 0
 
     private let renderPageSize = 12
     private let hardRenderCap = 72
@@ -53,7 +54,7 @@ struct EPGGridView: View {
     /// Spaziatura fissa ogni 30 minuti (80pt).
     private let halfHourPixelSpacing: CGFloat = 80
 
-    /// Scala pixel per minuto: 80pt / 30min.
+    /// Scala pixel per minuto: 80pt / 30min = 2.666 pt/min.
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
     /// Larghezza fissa colonna banner: 12 + 86 + 12 = 110pt.
@@ -382,7 +383,6 @@ struct EPGGridView: View {
                 }
                 .padding(.bottom, 32)
             }
-            .coordinateSpace(name: "epgViewportCoordinateSpace")
             .scrollIndicators(.hidden)
             .overlay(alignment: .topTrailing) {
                 if showLoadingIndicator {
@@ -414,6 +414,18 @@ struct EPGGridView: View {
                             }
                     }
                 }
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: ScrollOffsetPreferenceKey.self,
+                            value: -proxy.frame(in: .named("epgHorizontalScroll")).minX
+                        )
+                    }
+                )
+            }
+            .coordinateSpace(name: "epgHorizontalScroll")
+            .onPreferenceChange(ScrollOffsetPreferenceKey.self) { value in
+                scrollOffsetX = max(0, value)
             }
         }
     }
@@ -558,7 +570,7 @@ struct EPGGridView: View {
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// Tile del programma con rilevamento dinamico della geometria e ancoraggio del testo (Sticky) in tempo reale.
+    /// Blocco Programma con ancoraggio reattivo del testo e sincronizzazione dello scroll.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -579,53 +591,47 @@ struct EPGGridView: View {
 
         let width = max(24, endX - startX)
 
-        return GeometryReader { geo in
-            let frameInViewport = geo.frame(in: .named("epgViewportCoordinateSpace"))
-            // Calcolo offset sticky: quando la tile scorre sotto la colonna banner (110pt)
-            let tileMinX = frameInViewport.minX
-            let overlap = max(0, bannerColumnWidth - tileMinX)
-            let maxSticky = max(0, width - 120)
-            let stickyX = min(overlap, maxSticky)
+        // Calcolo dell'offset per mantenere il testo visibile mentre la tile scorre
+        let tileLeftOffset = scrollOffsetX - startX
+        let textStickyOffset = max(0, min(tileLeftOffset, width - 120))
 
-            Button {
-                selectedProgram = SelectedProgram(program: program, stream: stream)
-            } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(stream.name)
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.60))
-                        .lineLimit(1)
+        return Button {
+            selectedProgram = SelectedProgram(program: program, stream: stream)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(stream.name)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.60))
+                    .lineLimit(1)
 
-                    Text(program.start.formatted(date: .omitted, time: .shortened))
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.52))
-                        .lineLimit(1)
+                Text(program.start.formatted(date: .omitted, time: .shortened))
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.52))
+                    .lineLimit(1)
 
-                    Text(program.title)
-                        .font(.system(size: 16, weight: .regular, design: .rounded))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                Text(program.title)
+                    .font(.system(size: 16, weight: .regular, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 13)
-                .padding(.vertical, 8)
-                .offset(x: stickyX)
-                .frame(width: width, height: blockHeight, alignment: .topLeading)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            .background {
-                programTileBackground(
-                    stream: stream,
-                    program: program,
-                    tileStartX: startX,
-                    tileWidth: width
-                )
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(.horizontal, 13)
+            .padding(.vertical, 8)
+            .offset(x: textStickyOffset)
+            .frame(width: width, height: blockHeight, alignment: .topLeading)
         }
-        .frame(width: width, height: blockHeight)
+        .buttonStyle(.plain)
+        .background {
+            programTileBackground(
+                stream: stream,
+                program: program,
+                tileStartX: startX,
+                tileWidth: width
+            )
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .offset(x: startX)
         .accessibilityLabel(
             "\(stream.name), \(program.title), dalle \(program.start.formatted(date: .omitted, time: .shortened)) alle \(program.end.formatted(date: .omitted, time: .shortened))"
@@ -1091,6 +1097,15 @@ struct EPGGridView: View {
             (partial ^ UInt64(byte)) &* UInt64(1_099_511_628_211)
         }
         return String(digest, radix: 16)
+    }
+}
+
+// MARK: - PreferenceKey per la propagazione dell'offset di scorrimento
+
+private struct ScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
