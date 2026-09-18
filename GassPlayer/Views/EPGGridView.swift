@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// EPG touch-first ultra-ottimizzata, priva di ridondanze e con routing player affidabile:
-/// - Avvio streaming in diretta garantito sia dal tocco sul banner canale (`channelBanner`) sia dal pulsante
-///   "Guarda in diretta" (`ProgramDetailSheet`), con dismissione automatica e propagazione deterministica dell'evento.
+/// EPG touch-first ultra-ottimizzata, priva di ridondanze e con routing player garantito:
+/// - Apertura riproduzione sia dal tocco sul banner canale (`channelBanner`) sia da "Guarda in diretta" (`ProgramDetailSheet`).
 /// - Calcoli aggregati di stream/gruppi memoizzati in un unico passaggio O(n) per render.
 /// - Sezione ore su Canvas nativo con spaziatura a 160pt/30min e sincronizzazione temporale millimetrica con le tile.
 /// - Sticky content per-tile dinamico durante lo scroll orizzontale.
@@ -29,6 +28,7 @@ struct EPGGridView: View {
     @State private var selectedProgram: SelectedProgram?
     @State private var reminderToast: String?
     @State private var catchupPlayback: CatchupPlayback?
+    @State private var livePlayback: LivePlaybackItem?
     @State private var renderLimit = 32
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
@@ -103,6 +103,12 @@ struct EPGGridView: View {
         let url: URL
         let title: String
         var id: String { url.absoluteString }
+    }
+
+    private struct LivePlaybackItem: Identifiable {
+        let stream: XtreamStream
+        let url: URL
+        var id: Int { stream.streamId }
     }
 
     // MARK: - Sorgenti Dati Centralizzate
@@ -307,6 +313,9 @@ struct EPGGridView: View {
                     .presentationDetents([.medium, .large])
                     .presentationBackground(.thinMaterial)
                 }
+                .fullScreenCover(item: $livePlayback) { item in
+                    AdaptivePlayerView(url: item.url, title: item.stream.name)
+                }
                 .fullScreenCover(item: $catchupPlayback) { playback in
                     AdaptivePlayerView(url: playback.url, title: playback.title)
                 }
@@ -482,41 +491,43 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner del canale con tocco garantito per avviare la riproduzione in diretta.
+    /// Banner del canale con tocco nativo reattivo per aprire la riproduzione live del canale.
     private func channelBanner(_ stream: XtreamStream) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(logoBackgroundColor(for: stream))
+        Button {
+            playLiveStream(stream)
+        } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(logoBackgroundColor(for: stream))
 
-            AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
-                if case .success(let image) = phase {
-                    image
-                        .resizable()
-                        .scaledToFit()
-                        .padding(12)
-                } else {
-                    Image(systemName: "tv")
-                        .font(.title3)
-                        .foregroundStyle(.white.opacity(0.75))
+                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
+                    if case .success(let image) = phase {
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            .padding(12)
+                    } else {
+                        Image(systemName: "tv")
+                            .font(.title3)
+                            .foregroundStyle(.white.opacity(0.75))
+                    }
+                }
+
+                if favorites.isFavorite(stream.streamId) {
+                    Image(systemName: "star.fill")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.yellow)
+                        .padding(6)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .padding(6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
             }
-
-            if favorites.isFavorite(stream.streamId) {
-                Image(systemName: "star.fill")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.yellow)
-                    .padding(6)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .padding(6)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            }
+            .frame(width: bannerContentWidth, height: bannerHeight)
+            .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
+            .contentShape(Rectangle())
         }
-        .frame(width: bannerContentWidth, height: bannerHeight)
-        .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            playLiveStream(stream)
-        }
+        .buttonStyle(.plain)
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
@@ -823,13 +834,29 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live
 
-    /// Esegue il dispatch della riproduzione live garantendo la corretta chiusura dello sheet e la propagazione al container genitore.
+    /// Esegue il dispatch della riproduzione live garantendo sia l'invocazione della closure esterna sia l'apertura del player full screen.
     private func playLiveStream(_ stream: XtreamStream) {
-        if selectedProgram != nil {
-            selectedProgram = nil
-            dismiss()
-        }
+        selectedProgram = nil
         onPlayLive(stream)
+
+        if let streamURL = makeLiveStreamURL(for: stream) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
+            }
+        }
+    }
+
+    /// Costruisce l'URL HTTP/HTTPS per lo streaming live del canale con le credenziali Xtream.
+    private func makeLiveStreamURL(for stream: XtreamStream) -> URL? {
+        let rawHost = credentials.host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let scheme = rawHost.lowercased().hasPrefix("http") ? "" : "http://"
+        let fullHost = scheme.isEmpty ? rawHost : "\(scheme)\(rawHost)"
+        let ext = stream.containerExtension?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ts"
+        let validExt = ext.isEmpty ? "ts" : ext
+        let urlString = "\(fullHost)/live/\(credentials.username)/\(credentials.password)/\(stream.streamId).\(validExt)"
+        return URL(string: urlString)
     }
 
     private func visiblePrograms(for stream: XtreamStream) -> [EPGProgram] {
