@@ -19,7 +19,6 @@ private struct ConnectionCheckResult: Identifiable {
 struct SourcesView: View {
     @EnvironmentObject private var sourceManager: SourceManager
     @EnvironmentObject private var contentManagement: ContentManagementService
-    @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
 
     @State private var showAddSheet = false
     @State private var renamingSource: MediaSourceConfig?
@@ -34,7 +33,6 @@ struct SourcesView: View {
     @State private var showImportSheet = false
     @State private var importText = ""
     @State private var importFeedback: ImportFeedback?
-    @State private var managingListSource: MediaSourceConfig?
 
     private struct ImportFeedback: Identifiable {
         let id = UUID()
@@ -97,12 +95,6 @@ struct SourcesView: View {
         return count == 1 ? "1 sorgente" : "\(count) sorgenti"
     }
 
-    /// Sorgente su cui agisce "Gestisci lista": quella attiva, o la prima
-    /// disponibile se nessuna è attualmente selezionata come attiva.
-    private var manageListTargetSource: MediaSourceConfig? {
-        sourceManager.activeSource ?? sourceManager.sources.first
-    }
-
     var body: some View {
         NavigationStack {
             List {
@@ -112,8 +104,7 @@ struct SourcesView: View {
                 favoritesSection
                 backupSection
             }
-            .scrollContentBackground(.hidden)
-            .glassScreenBackground()
+            .glassListContainer()
             .navigationTitle("Sorgenti")
             .searchable(text: $searchQuery, prompt: "Cerca sorgenti")
             .toolbar {
@@ -123,12 +114,6 @@ struct SourcesView: View {
                 AddPlaylistView { configuration in
                     sourceManager.add(configuration)
                 }
-            }
-            .sheet(item: $managingListSource) { source in
-                SourceManageView(source: source)
-                    .environmentObject(sourceManager)
-                    .environmentObject(contentManagement)
-                    .environmentObject(xtreamCatalog)
             }
             .sheet(isPresented: $showMergeSheet) {
                 MergePlaylistView(sources: sourceManager.sources) { name, sourceIDs in
@@ -280,7 +265,7 @@ struct SourcesView: View {
             }
             .glassListRow()
         } header: {
-            Text("Live TV")
+            GlassSectionHeader(title: "Live TV")
         } footer: {
             if !canOpenAllSourcesLive {
                 Text("Aggiungi e abilita almeno una sorgente Xtream per unire i canali Live TV.")
@@ -290,9 +275,6 @@ struct SourcesView: View {
 
     private var sourcesSection: some View {
         Section {
-            manageListRow
-                .glassListRow()
-
             addPlaylistRow
                 .glassListRow()
 
@@ -324,30 +306,16 @@ struct SourcesView: View {
             }
         } header: {
             HStack {
-                Text("Le mie sorgenti")
+                GlassSectionHeader(title: "Le mie sorgenti")
                 Spacer()
                 Text(sourceCountText)
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
         } footer: {
             if !isManualOrderingAvailable && !displayedSources.isEmpty {
                 Text("Per modificare l’ordine, seleziona “Personalizzato” e svuota la ricerca.")
             }
-        }
-    }
-
-    /// Voce "Gestisci lista": subito dopo l'intestazione "Le mie sorgenti",
-    /// apre direttamente `SourceManageView` sulla sorgente attiva (o sulla
-    /// prima disponibile), senza passare dall'hub "Gestisci sorgenti".
-    private var manageListRow: some View {
-        GlassSettingsRow(
-            icon: "slider.horizontal.3",
-            title: "Gestisci lista",
-            subtitle: manageListTargetSource?.name,
-            tint: .teal,
-            isDisabled: manageListTargetSource == nil
-        ) {
-            managingListSource = manageListTargetSource
         }
     }
 
@@ -425,7 +393,7 @@ struct SourcesView: View {
             }
             .glassListRow()
         } header: {
-            Text("Playlist unite")
+            GlassSectionHeader(title: "Playlist unite")
         } footer: {
             Text("Sono necessarie almeno due sorgenti per creare una playlist unita.")
         }
@@ -449,7 +417,7 @@ struct SourcesView: View {
                 }
             }
         } header: {
-            Text("Preferiti")
+            GlassSectionHeader(title: "Preferiti")
         }
     }
 
@@ -494,7 +462,7 @@ struct SourcesView: View {
             }
             .glassListRow()
         } header: {
-            Text("Backup")
+            GlassSectionHeader(title: "Backup")
         } footer: {
             Text("Il file JSON può contenere credenziali e token. Condividilo solo tramite servizi affidabili.")
         }
@@ -903,18 +871,18 @@ struct AddPlaylistView: View {
             }
             .navigationTitle("Aggiungi playlist")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .glassScreenBackground()
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
+                    GlassIconButton(
+                        systemImage: "chevron.left",
+                        size: 36,
+                        isInSystemToolbar: true,
+                        accessibilityLabel: "Indietro"
+                    ) {
                         dismiss()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 16, weight: .semibold))
-                            .frame(width: 36, height: 36)
-                            .contentShape(Circle())
                     }
-                    .modifier(GlassCardBackground(cornerRadius: 18))
-                    .accessibilityLabel("Indietro")
                 }
             }
         }

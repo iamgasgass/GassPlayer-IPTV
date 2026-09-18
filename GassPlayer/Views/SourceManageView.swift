@@ -48,18 +48,17 @@ struct SourceManageView: View {
             .background(background)
             .navigationTitle(currentSource.name)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
+                    GlassIconButton(
+                        systemImage: "chevron.left",
+                        size: 36,
+                        isInSystemToolbar: true,
+                        accessibilityLabel: "Indietro"
+                    ) {
                         dismiss()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 16, weight: .semibold))
-                            .frame(width: 36, height: 36)
-                            .contentShape(Circle())
                     }
-                    .modifier(GlassCardBackground(cornerRadius: 18))
-                    .accessibilityLabel("Indietro")
                 }
             }
             .task(id: currentSource.id) {

@@ -8,6 +8,7 @@ struct SettingsView: View {
     @EnvironmentObject var themeManager: ThemeManager
     @EnvironmentObject var xtreamCatalog: XtreamCatalogStore
     @EnvironmentObject var recentlyWatched: RecentlyWatchedStore
+    @EnvironmentObject var contentManagement: ContentManagementService
 
     @StateObject private var cloudSync = CloudSyncService()
     @StateObject private var downloadManager = DownloadManager()
@@ -593,12 +594,27 @@ struct SettingsView: View {
             tint: .green
         ) {
             Button {
-                cloudSync.pushSources(sourceManager.sources)
+                syncToCloud()
             } label: {
                 SettingsRow(
                     title: "Sincronizza con iCloud",
-                    detail: "Sorgenti, preferiti e progresso visione",
+                    detail: "Salva sorgenti e preferiti",
                     symbol: "icloud.and.arrow.up",
+                    tint: .blue,
+                    showsChevron: false
+                )
+            }
+            .buttonStyle(.plain)
+
+            SettingsDivider()
+
+            Button {
+                restoreSourcesFromCloud()
+            } label: {
+                SettingsRow(
+                    title: "Ripristina da iCloud",
+                    detail: "Recupera le sorgenti salvate da un altro dispositivo",
+                    symbol: "icloud.and.arrow.down",
                     tint: .blue,
                     showsChevron: false
                 )
@@ -937,6 +953,39 @@ struct SettingsView: View {
         await CacheService.shared.clearAll()
         systemCacheCount = 0
         catalogActionFeedback = "Cache di sistema svuotata (guida TV e dati temporanei)."
+    }
+
+    // MARK: - iCloud
+
+    /// Invia su iCloud esattamente ciò che la riga promette: sorgenti e
+    /// preferiti. Il progresso di visione non viene incluso perché l'app
+    /// non lo traccia ancora (vedi `RecentlyWatchedStore`), quindi
+    /// includerlo qui direbbe il falso.
+    private func syncToCloud() {
+        cloudSync.pushSources(sourceManager.sources)
+        cloudSync.pushFavorites(Set(contentManagement.favorites.map(\.id)))
+        catalogActionFeedback = "Sorgenti e preferiti sincronizzati con iCloud."
+    }
+
+    /// Recupera le sorgenti salvate su iCloud e aggiunge solo quelle non
+    /// ancora presenti su questo dispositivo (confronto per id, così una
+    /// sorgente già sincronizzata in precedenza non viene duplicata).
+    private func restoreSourcesFromCloud() {
+        guard let pulled = cloudSync.pullSources(), !pulled.isEmpty else {
+            catalogActionFeedback = "Nessuna sorgente trovata su iCloud."
+            return
+        }
+
+        let existingIds = Set(sourceManager.sources.map(\.id))
+        let newSources = pulled.filter { !existingIds.contains($0.id) }
+
+        guard !newSources.isEmpty else {
+            catalogActionFeedback = "Le sorgenti salvate su iCloud sono già tutte presenti su questo dispositivo."
+            return
+        }
+
+        newSources.forEach(sourceManager.add)
+        catalogActionFeedback = "\(newSources.count) sorgent\(newSources.count == 1 ? "e" : "i") ripristinat\(newSources.count == 1 ? "a" : "e") da iCloud."
     }
 
     // MARK: - Import preferenze

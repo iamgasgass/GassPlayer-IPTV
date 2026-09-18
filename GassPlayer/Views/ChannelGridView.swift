@@ -89,7 +89,7 @@ struct ChannelGridView: View {
     @State private var epgByStream: [Int: EPGProgram?] = [:]
 
     @State private var catalogIndex = CatalogIndex(streams: [], categories: [])
-    @State private var indexedSourceIdentity = ""
+    @State private var indexedSourceIdentity: SourceIdentity?
     @State private var showEPGGuide = false
 
     private let epgTileBatchLimit = 24
@@ -229,28 +229,36 @@ struct ChannelGridView: View {
         kind == .series ? allSeries.count : allStreams.count
     }
 
-    private var sourceIdentity: String {
-        let categoryIdentity = categories
-            .map { "\($0.categoryId):\($0.categoryName)" }
-            .joined(separator: "|")
+    /// Identità "leggera" della sorgente dati correntemente mostrata, usata
+    /// come `id` di `.task` per decidere quando ricostruire l'indice delle
+    /// categorie e ricaricare l'EPG. Deve essere economica da calcolare: la
+    /// vecchia implementazione univa in un'unica stringa id e categoria di
+    /// OGNI stream e OGNI serie ad ogni singola valutazione di `body`
+    /// (quindi anche durante lo scroll, per via di `.onAppear` sui tile e
+    /// degli aggiornamenti di `epgByStream`), il che con cataloghi ampi
+    /// — Serie TV in particolare — produceva scatti percepibili. Contare
+    /// gli elementi e riusare `lastRefreshDate` (aggiornato solo quando il
+    /// catalogo cambia davvero) individua gli stessi cambiamenti in O(1).
+    private struct SourceIdentity: Equatable {
+        let kind: XtreamStreamKind
+        let host: String
+        let username: String
+        let lastRefreshDate: Date?
+        let categoryCount: Int
+        let streamCount: Int
+        let seriesCount: Int
+    }
 
-        let streamIdentity = allStreams
-            .map { "\($0.streamId):\($0.categoryId ?? "")" }
-            .joined(separator: "|")
-
-        let seriesIdentity = allSeries
-            .map { "\($0.seriesId):\($0.categoryId ?? "")" }
-            .joined(separator: "|")
-
-        return [
-            kind.rawValue,
-            credentials.host.lowercased(),
-            credentials.username,
-            categoryIdentity,
-            streamIdentity,
-            seriesIdentity
-        ]
-        .joined(separator: "§")
+    private var sourceIdentity: SourceIdentity {
+        SourceIdentity(
+            kind: kind,
+            host: credentials.host.lowercased(),
+            username: credentials.username,
+            lastRefreshDate: xtreamCatalog.lastRefreshDate,
+            categoryCount: categories.count,
+            streamCount: allStreams.count,
+            seriesCount: kind == .series ? allSeries.count : 0
+        )
     }
 
     private var isInitialLoadPending: Bool {
