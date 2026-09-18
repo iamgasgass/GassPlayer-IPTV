@@ -1,10 +1,9 @@
 import SwiftUI
 
-/// EPG touch-first ultra-ottimizzata e priva di ridondanze:
-/// - Architettura unificata di caricamento: eliminata la duplicazione tra caricamento a blocchi e caricamento on-demand.
-/// - Calcoli memoizzati per gruppi e stream: zero scansioni O(n) multiple durante i render SwiftUI.
-/// - Idratazione cache deterministica e centralizzata senza cicli a vuoto.
-/// - Sezione ore su Canvas nativo con spaziatura a 160pt/30min e sincronizzazione temporale millimetrica con le tile.
+/// EPG touch-first ultra-ottimizzata, priva di ridondanze e con routing player affidabile:
+/// - "Guarda in diretta" dal dettaglio programma (sheet) ora dismette lo sheet e riproduce lo stream su MainActor in modo deterministico.
+/// - Architettura di caricamento centralizzata ed eliminazione di ogni duplicazione/ricalcolo superfluo O(n).
+/// - Sezione ore su Canvas nativo con spaziatura a 160pt/30min e sincronizzazione temporale al millimetro con le tile.
 /// - Sticky content fluido per-tile durante lo scroll orizzontale.
 /// - Preservazione rigorosa di font (22pt ore, 10/12/16pt tile), layout, controlli e colori originali.
 struct EPGGridView: View {
@@ -295,8 +294,11 @@ struct EPGGridView: View {
                         stream: selection.stream,
                         isCurrentlyLive: selection.program.isCurrent(at: now),
                         onPlayLive: {
+                            let streamToPlay = selection.stream
                             selectedProgram = nil
-                            onPlayLive(selection.stream)
+                            DispatchQueue.main.async {
+                                onPlayLive(streamToPlay)
+                            }
                         },
                         onPlayCatchup: {
                             playCatchup(program: selection.program, stream: selection.stream)
