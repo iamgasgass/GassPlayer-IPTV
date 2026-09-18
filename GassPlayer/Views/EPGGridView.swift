@@ -1,12 +1,12 @@
 import SwiftUI
 
-/// EPG touch-first ad alte prestazioni:
-/// - Colonna banner fissa (110pt) con allineamento rigoroso.
-/// - Sincronizzazione millimetrica tra scala temporale oraria (80pt / 30min) e inizio/fine delle tile.
-/// - Animazione fluida dello scroll: il nome canale resta ancorato, l'orario e il titolo corrente
-///   rimangono stabili a sinistra, e il nuovo programma subentra sincronizzato al bordo di divisione.
-/// - Riempimento live della tile in onda sincronizzato alla freccia indicatore.
-/// - Avvio istantaneo e rendering a 60/120fps privo di codice superfluo.
+/// EPG touch-first ad alte prestazioni con sincronizzazione millimetrica:
+/// - Colonna banner fissa a 110pt (12pt inset + 86pt banner + 12pt inset).
+/// - Sezione ora e tile rigorosamente sincronizzate sulla stessa origine (`gridOrigin`) e scala (80pt / 30min).
+/// - Animazione scroll: il testo delle tile rimane ancorato a sinistra mentre scorrono i bordi esterni,
+///   con inserimento fluido dell'orario e del nome del nuovo programma.
+/// - Riempimento live della tile in onda sincronizzato al pixel con la freccia indicatore.
+/// - Caricamenti rapidi con idratazione immediata dalla cache e rendering a 60/120 fps.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -29,17 +29,17 @@ struct EPGGridView: View {
     @State private var selectedProgram: SelectedProgram?
     @State private var reminderToast: String?
     @State private var catchupPlayback: CatchupPlayback?
-    @State private var renderLimit = 12
+    @State private var renderLimit = 16
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
-    @State private var scrollOffsetX: CGFloat = 0
+    @State private var currentScrollX: CGFloat = 0
 
-    private let renderPageSize = 12
-    private let hardRenderCap = 72
-    private let maxConcurrentRequests = 8
+    private let renderPageSize = 16
+    private let hardRenderCap = 80
+    private let maxConcurrentRequests = 10
     private let shortEPGLimit = 24
-    private let searchDebounceNanoseconds: UInt64 = 250_000_000
-    private let loadingIndicatorDelayNanoseconds: UInt64 = 300_000_000
+    private let searchDebounceNanoseconds: UInt64 = 200_000_000
+    private let loadingIndicatorDelayNanoseconds: UInt64 = 250_000_000
 
     // MARK: - Geometria EPG
 
@@ -51,10 +51,10 @@ struct EPGGridView: View {
     private let timelineHeaderHeight: CGFloat = 44
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Spaziatura fissa ogni 30 minuti (80pt).
+    /// Spaziatura fissa ogni 30 minuti tra i rispettivi ':'.
     private let halfHourPixelSpacing: CGFloat = 80
 
-    /// Scala pixel per minuto: 80pt / 30min = 2.666 pt/min.
+    /// Scala temporale pixel per minuto: 80 / 30 = 2.666 pt/min.
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
     /// Larghezza fissa colonna banner: 12 + 86 + 12 = 110pt.
@@ -66,7 +66,7 @@ struct EPGGridView: View {
         bannerColumnWidth - (bannerInset * 2)
     }
 
-    /// Finestra temporale: 30 minuti passati, 3 ore future.
+    /// Finestra visuale: 30 minuti prima, 3 ore avanti.
     private let pastWindow: TimeInterval = 30 * 60
     private let futureWindow: TimeInterval = 180 * 60
 
@@ -395,13 +395,13 @@ struct EPGGridView: View {
         }
     }
 
-    // MARK: - Superficie EPG (HStack Principale)
+    // MARK: - Superficie EPG (HStack Principale con Tracking Scroll)
 
     private var epgSurface: some View {
         HStack(alignment: .top, spacing: 0) {
             fixedDayAndChannelColumn
                 .frame(width: bannerColumnWidth, alignment: .leading)
-                .zIndex(10)
+                .zIndex(20)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyVStack(spacing: 0) {
@@ -415,17 +415,17 @@ struct EPGGridView: View {
                     }
                 }
                 .background(
-                    GeometryReader { proxy in
+                    GeometryReader { geo in
                         Color.clear.preference(
-                            key: ScrollOffsetPreferenceKey.self,
-                            value: -proxy.frame(in: .named("epgHorizontalScroll")).minX
+                            key: EPGScrollOffsetKey.self,
+                            value: -geo.frame(in: .named("epgHorizontalScrollViewSpace")).minX
                         )
                     }
                 )
             }
-            .coordinateSpace(name: "epgHorizontalScroll")
-            .onPreferenceChange(ScrollOffsetPreferenceKey.self) { value in
-                scrollOffsetX = max(0, value)
+            .coordinateSpace(name: "epgHorizontalScrollViewSpace")
+            .onPreferenceChange(EPGScrollOffsetKey.self) { offset in
+                currentScrollX = max(0, offset)
             }
         }
     }
@@ -570,7 +570,7 @@ struct EPGGridView: View {
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// Blocco Programma con ancoraggio reattivo del testo e sincronizzazione dello scroll.
+    /// Tile del programma con animazione di scorrimento del testo (Sticky) e inserimento del nuovo programma.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -591,9 +591,10 @@ struct EPGGridView: View {
 
         let width = max(24, endX - startX)
 
-        // Calcolo dell'offset per mantenere il testo visibile mentre la tile scorre
-        let tileLeftOffset = scrollOffsetX - startX
-        let textStickyOffset = max(0, min(tileLeftOffset, width - 120))
+        // Calcolo dell'offset per mantenere il testo visibile a sinistra
+        let visibleOverlap = max(0, currentScrollX - startX)
+        let maxSticky = max(0, width - 110)
+        let textStickyOffset = min(visibleOverlap, maxSticky)
 
         return Button {
             selectedProgram = SelectedProgram(program: program, stream: stream)
@@ -1100,9 +1101,9 @@ struct EPGGridView: View {
     }
 }
 
-// MARK: - PreferenceKey per la propagazione dell'offset di scorrimento
+// MARK: - PreferenceKey per Scroll Orizzontale Reattivo
 
-private struct ScrollOffsetPreferenceKey: PreferenceKey {
+private struct EPGScrollOffsetKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
