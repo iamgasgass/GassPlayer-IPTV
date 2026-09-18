@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// EPG touch-first ultra-ottimizzata, priva di ridondanze e con routing player immediato:
-/// - "Guarda in diretta" dal menù dettaglio programma (sheet) avvia immediatamente la riproduzione del canale.
-/// - Tocco sul banner del canale (`channelBanner`) con area di tocco interattiva affidabile per l'avvio della diretta.
-/// - Architettura di caricamento asincrona centralizzata ed eliminazione di ogni scansione o computazione ridondante.
+/// EPG touch-first ultra-ottimizzata, priva di ridondanze e con routing player affidabile sia da banner sia da sheet:
+/// - Apertura streaming garantita: supporto integrato per `fullScreenCover(item: $activePlayback)` oltre alla closure `onPlayLive`.
+/// - Tocco su banner canale (`channelBanner`) e "Guarda in diretta" (`ProgramDetailSheet`) aprono direttamente il player.
+/// - Calcoli aggregati di stream/gruppi memoizzati in un unico passaggio O(n) per render.
 /// - Sezione ore su Canvas nativo con spaziatura a 160pt/30min e sincronizzazione temporale millimetrica con le tile.
 /// - Sticky content per-tile dinamico durante lo scroll orizzontale.
 /// - Preservazione rigorosa di font (22pt ore, 10/12/16pt tile), layout, controlli e colori originali.
@@ -29,6 +29,7 @@ struct EPGGridView: View {
     @State private var selectedProgram: SelectedProgram?
     @State private var reminderToast: String?
     @State private var catchupPlayback: CatchupPlayback?
+    @State private var activeLivePlayback: ActiveLivePlayback?
     @State private var renderLimit = 32
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
@@ -103,6 +104,12 @@ struct EPGGridView: View {
         let url: URL
         let title: String
         var id: String { url.absoluteString }
+    }
+
+    private struct ActiveLivePlayback: Identifiable {
+        let stream: XtreamStream
+        let url: URL
+        var id: Int { stream.streamId }
     }
 
     // MARK: - Sorgenti Dati Centralizzate
@@ -307,6 +314,9 @@ struct EPGGridView: View {
                     .presentationDetents([.medium, .large])
                     .presentationBackground(.thinMaterial)
                 }
+                .fullScreenCover(item: $activeLivePlayback) { live in
+                    AdaptivePlayerView(url: live.url, title: live.stream.name)
+                }
                 .fullScreenCover(item: $catchupPlayback) { playback in
                     AdaptivePlayerView(url: playback.url, title: playback.title)
                 }
@@ -482,7 +492,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner del canale con pulsante nativo ad alta reattività per aprire la diretta.
+    /// Banner del canale con tocco reattivo per aprire la riproduzione live del canale.
     private func channelBanner(_ stream: XtreamStream) -> some View {
         Button {
             playLiveStream(stream)
@@ -825,10 +835,14 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live
 
+    /// Esegue il dispatch della riproduzione live garantendo sia l'invocazione della callback genitore sia il fallback al player locale integrato.
     private func playLiveStream(_ stream: XtreamStream) {
         selectedProgram = nil
-        DispatchQueue.main.async {
-            self.onPlayLive(stream)
+        onPlayLive(stream)
+
+        let streamURL = credentials.liveStreamURL(for: stream.streamId, container: stream.containerExtension ?? "ts")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            self.activeLivePlayback = ActiveLivePlayback(stream: stream, url: streamURL)
         }
     }
 
