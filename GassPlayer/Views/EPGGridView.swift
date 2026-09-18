@@ -7,13 +7,14 @@ import SwiftUI
 ///   per formula ma per identico punto di riferimento geometrico;
 /// - le tacche orarie sono disegnate con `Canvas` a coordinate x assolute:
 ///   la distanza fra i ':' di due tacche consecutive e' sempre
-///   `halfHourPixelSpacing` (160pt, il doppio della versione precedente),
-///   un fatto matematico puro, non soggetto ad ambiguita' di layout;
+///   `halfHourPixelSpacing`, un fatto matematico puro;
 /// - la tile non supera mai l'inizio del programma successivo (niente
 ///   sovrapposizioni) ed e' verticalmente centrata come il banner canale;
 /// - ogni tile mostra il nome del canale prima dell'orario del programma;
-/// - avvio ottimizzato: nessuna idratazione cache duplicata, nessun calcolo
-///   ripetuto di gruppi/contatori nello stesso render del toolbar.
+/// - avvio ottimizzato: `pagedStreams` calcolato UNA sola volta per render
+///   e passato in basso, invece di essere ricalcolato in piu' punti;
+///   nessuna idratazione cache duplicata; piu' canali caricati per pagina e
+///   piu' richieste EPG concorrenti, con payload per canale piu' leggero.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -36,14 +37,17 @@ struct EPGGridView: View {
     @State private var selectedProgram: SelectedProgram?
     @State private var reminderToast: String?
     @State private var catchupPlayback: CatchupPlayback?
-    @State private var renderLimit = 12
+    @State private var renderLimit = 24
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
 
-    private let renderPageSize = 12
-    private let hardRenderCap = 72
-    private let maxConcurrentRequests = 8
-    private let shortEPGLimit = 24
+    /// Piu' canali caricati per pagina (24, tetto 150) e piu' richieste EPG
+    /// concorrenti (12), con payload per canale piu' leggero (18 eventi):
+    /// avvio piu' fluido e caricamento EPG piu' rapido a parita' di rete.
+    private let renderPageSize = 24
+    private let hardRenderCap = 150
+    private let maxConcurrentRequests = 12
+    private let shortEPGLimit = 18
     private let searchDebounceNanoseconds: UInt64 = 250_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 300_000_000
 
@@ -59,8 +63,7 @@ struct EPGGridView: View {
     private let minimumProgramBlockWidth: CGFloat = 88
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Distanza esatta fra due tacche orarie consecutive (ogni 30 minuti):
-    /// raddoppiata rispetto alla versione precedente (80 -> 160pt).
+    /// Distanza esatta fra due tacche orarie consecutive (ogni 30 minuti).
     private let halfHourPixelSpacing: CGFloat = 160
 
     /// La scala pixel/minuto e' calibrata sulla stessa costante: 30 minuti
@@ -211,8 +214,8 @@ struct EPGGridView: View {
         Self.scopeKey(for: credentials)
     }
 
-    private var streamIdentity: String {
-        let ids = pagedStreams.map(\.streamId).map(String.init).joined(separator: ",")
+    private func streamIdentity(for visibleStreams: [XtreamStream]) -> String {
+        let ids = visibleStreams.map(\.streamId).map(String.init).joined(separator: ",")
         return "\(normalizedSelectedGroupID ?? "all")|\(selectedDayOffset)|\(ids)"
     }
 
@@ -355,7 +358,7 @@ struct EPGGridView: View {
             }
             scheduleReload()
         }
-        .onChange(of: streamIdentity) { _, _ in
+        .onChange(of: streamIdentity(for: pagedStreams)) { _, _ in
             scheduleReload()
         }
         .onChange(of: searchQuery) { _, _ in
@@ -412,20 +415,22 @@ struct EPGGridView: View {
         }
     }
 
-    /// Nessun padding esterno. L'HStack ha esattamente due figli: colonna
-    /// fissa (110pt) e timeline. Sezione ora e tile leggono entrambe
-    /// `canvasWidth` e `gridOrigin`, quindi restano sincronizzate durante
-    /// lo scroll, non solo per larghezza ma per identico punto di partenza.
+    /// `pagedStreams` viene calcolato UNA sola volta qui e passato in basso,
+    /// invece di essere ricalcolato indipendentemente dalla colonna banner e
+    /// dalla timeline: evita di rifiltrare l'intero catalogo piu' volte per
+    /// lo stesso render, rendendo l'avvio e gli aggiornamenti piu' fluidi.
     private var epgSurface: some View {
-        HStack(alignment: .top, spacing: 0) {
-            fixedDayAndChannelColumn
+        let visibleStreams = pagedStreams
+
+        return HStack(alignment: .top, spacing: 0) {
+            fixedDayAndChannelColumn(visibleStreams: visibleStreams)
                 .frame(width: bannerColumnWidth, alignment: .leading)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyVStack(spacing: 0) {
                     scrollingTimelineHeader
 
-                    ForEach(pagedStreams) { stream in
+                    ForEach(visibleStreams) { stream in
                         timelineRow(for: stream)
                             .task(id: stream.streamId) {
                                 await loadProgramsIfNeeded(for: stream)
@@ -438,7 +443,7 @@ struct EPGGridView: View {
 
     /// La colonna fisica e' 110pt. “Oggi” e banner hanno entrambi margine
     /// sinistro 12pt; il banner e' contenuto in un frame interno da 86pt.
-    private var fixedDayAndChannelColumn: some View {
+    private func fixedDayAndChannelColumn(visibleStreams: [XtreamStream]) -> some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             Button {
                 selectedDayOffset = max(selectedDayOffset - 1, -7)
@@ -453,10 +458,10 @@ struct EPGGridView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Giorno: \(dayTitle)")
 
-            if pagedStreams.isEmpty {
+            if visibleStreams.isEmpty {
                 Color.clear.frame(width: bannerColumnWidth, height: 1)
             } else {
-                ForEach(pagedStreams) { stream in
+                ForEach(visibleStreams) { stream in
                     channelBanner(stream)
                 }
             }
@@ -468,7 +473,7 @@ struct EPGGridView: View {
     /// ed ESATTA (`context.draw(text, at:, anchor: .leading)`), senza
     /// passare per frame/HStack/alignment guide. La distanza fra due tacche
     /// e' la differenza matematica pura fra le rispettive `xCoordinate`,
-    /// sempre `halfHourPixelSpacing` (160pt) esatti.
+    /// sempre `halfHourPixelSpacing` esatti.
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, size in
@@ -514,8 +519,8 @@ struct EPGGridView: View {
 
         ToolbarItem(placement: .principal) {
             let data = groupsWithCounts
-            let selectedGroupID = normalizedSelectedGroupID
-            let selectedGroup = selectedGroupID.flatMap { id in data.groups.first(where: { $0.categoryId == id }) }
+            let selectedID = normalizedSelectedGroupID
+            let selectedGroup = selectedID.flatMap { id in data.groups.first(where: { $0.categoryId == id }) }
             let groupName = selectedGroup?.categoryName ?? "Tutti"
             let groupIcon = selectedGroup.map { Self.groupIcon(for: $0.categoryName) } ?? "square.grid.2x2"
 
@@ -959,10 +964,10 @@ struct EPGGridView: View {
     }
 
     @MainActor
-    private func hydrateVisibleProgramsFromCache() {
+    private func hydrateVisibleProgramsFromCache(for visibleStreams: [XtreamStream]) {
         let scope = cacheScope
 
-        for stream in pagedStreams {
+        for stream in visibleStreams {
             guard let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId) else {
                 continue
             }
@@ -1017,9 +1022,10 @@ struct EPGGridView: View {
         }
     }
 
-    /// Idrata sempre dalla cache PRIMA di eventuali richieste di rete: e'
-    /// l'unico punto che chiama `hydrateVisibleProgramsFromCache`, cosi'
-    /// l'avvio non esegue mai una doppia scansione della cache in memoria.
+    /// Idrata sempre dalla cache PRIMA di eventuali richieste di rete, poi
+    /// scarica in parallelo (fino a `maxConcurrentRequests`) solo i canali
+    /// visibili privi di dati: avvio piu' fluido e EPG piu' rapido perche'
+    /// nessun canale gia' in cache genera traffico di rete inutile.
     @MainActor
     private func reloadEPG(forceRefresh: Bool = false) async {
         loadingIndicatorTask?.cancel()
@@ -1035,7 +1041,7 @@ struct EPGGridView: View {
             return
         }
 
-        hydrateVisibleProgramsFromCache()
+        hydrateVisibleProgramsFromCache(for: targets)
 
         let pending = targets.filter { stream in
             forceRefresh || programsByStream[stream.streamId] == nil
