@@ -1,13 +1,12 @@
 import SwiftUI
 
-/// EPG ultra-rapido, fluido e ottimizzato al millimetro:
-/// - Risolto il collo di bottiglia del filtraggio/paginazione: `filteredStreams`, `pagedStreams` e `groupsWithCounts`
-///   vengono calcolati una sola volta in modo centralizzato e riusati per l'intero ciclo di render.
-/// - Eliminata l'idratazione cache duplicata: rimossi i richiami ridondanti in `onAppear` e negli `onChange`,
-///   lasciando la sola esecuzione centralizzata dentro `reloadEPG`.
-/// - Canvas nativo per la sezione ore con distanza raddoppiata (160pt / 30min) e perfetta sincronizzazione tile.
-/// - Sticky content per-tile dinamico: allo scroll il testo rimane ancorato al bordo visibile mentre i bordi scorrono.
-/// - Font (22pt ore, 10pt/12pt/16pt tile), geometria e colori originali rigorosamente preservati.
+/// EPG touch-first ultra-ottimizzata e priva di ridondanze:
+/// - Architettura unificata di caricamento: eliminata la duplicazione tra caricamento a blocchi e caricamento on-demand.
+/// - Calcoli memoizzati per gruppi e stream: zero scansioni O(n) multiple durante i render SwiftUI.
+/// - Idratazione cache deterministica e centralizzata senza cicli a vuoto.
+/// - Sezione ore su Canvas nativo con spaziatura a 160pt/30min e sincronizzazione temporale millimetrica con le tile.
+/// - Sticky content fluido per-tile durante lo scroll orizzontale.
+/// - Preservazione rigorosa di font (22pt ore, 10/12/16pt tile), layout, controlli e colori originali.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -126,7 +125,7 @@ struct EPGGridView: View {
         return normalized.isEmpty ? nil : normalized
     }
 
-    /// Calcolato una sola volta per render tramite il package strutturato di gruppi.
+    /// Risoluzione univoca dei gruppi e delle etichette della toolbar in un solo passaggio.
     private var groupData: (groups: [XtreamCategory], counts: [String: Int], name: String, icon: String) {
         var counts: [String: Int] = [:]
         var seenIDs = Set<String>()
@@ -173,7 +172,7 @@ struct EPGGridView: View {
         scheduleReload()
     }
 
-    /// Calcolo centralizzato di streams filtrati e paginati in un unico passaggio O(n)
+    /// Filtraggio e paginazione calcolati esattamente una sola volta per ciclo di render.
     private var streamData: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String) {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let groupID = normalizedSelectedGroupID
@@ -406,9 +405,6 @@ struct EPGGridView: View {
 
                     ForEach(pagedStreams) { stream in
                         timelineRow(for: stream)
-                            .task(id: stream.streamId) {
-                                await loadProgramsIfNeeded(for: stream)
-                            }
                     }
                 }
             }
@@ -441,7 +437,7 @@ struct EPGGridView: View {
         .background(Color.black)
     }
 
-    /// Sezione Ore ottimizzata con Canvas nativo ad altissime prestazioni.
+    /// Sezione Ore con Canvas nativo e freccia live allineata.
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, size in
@@ -916,53 +912,6 @@ struct EPGGridView: View {
             }
             programsByStream[stream.streamId] = cached
             failedStreamIDs.remove(stream.streamId)
-        }
-    }
-
-    private func loadProgramsIfNeeded(for stream: XtreamStream) async {
-        guard programsByStream[stream.streamId] == nil,
-              !loadingStreamIDs.contains(stream.streamId) else {
-            return
-        }
-        await loadPrograms(for: stream, forceRefresh: false)
-    }
-
-    @MainActor
-    private func loadPrograms(for stream: XtreamStream, forceRefresh: Bool) async {
-        guard !loadingStreamIDs.contains(stream.streamId) else { return }
-
-        let scope = cacheScope
-        if !forceRefresh,
-           let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId) {
-            programsByStream[stream.streamId] = cached
-            failedStreamIDs.remove(stream.streamId)
-            return
-        }
-
-        loadingStreamIDs.insert(stream.streamId)
-        defer { loadingStreamIDs.remove(stream.streamId) }
-
-        do {
-            let programs = try await EPGService(credentials: credentials).shortEPG(
-                streamId: stream.streamId,
-                limit: shortEPGLimit,
-                forceRefresh: forceRefresh
-            )
-
-            programsByStream[stream.streamId] = programs
-            EPGMemoryCache.shared.store(scope: scope, streamId: stream.streamId, programs: programs)
-
-            if programs.isEmpty {
-                failedStreamIDs.insert(stream.streamId)
-            } else {
-                failedStreamIDs.remove(stream.streamId)
-            }
-        } catch {
-            failedStreamIDs.insert(stream.streamId)
-            DebugLogger.logAsync(
-                .warning,
-                "EPG: caricamento fallito per stream \(stream.streamId): \(error.localizedDescription)"
-            )
         }
     }
 
