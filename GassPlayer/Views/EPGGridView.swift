@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// EPG ultra-performante e reattivo:
-/// - Sezione ore renderizzata con Canvas nativo ad alte prestazioni.
-/// - Distanza tra le tacche orarie a 160pt (30 min) perfettamente sincronizzata con la larghezza e posizione delle tile.
-/// - Caricamento massivo e rapido dei canali (dimensione pagina 32, cap 250, fino a 24 richieste concorrenti).
-/// - Avvio fluido senza blocchi: idratazione istantanea da cache ed esecuzione EPG asincrona non bloccante.
+/// EPG ultra-rapido, fluido e ottimizzato al millimetro:
+/// - Risolto il collo di bottiglia del filtraggio/paginazione: `filteredStreams`, `pagedStreams` e `groupsWithCounts`
+///   vengono calcolati una sola volta in modo centralizzato e riusati per l'intero ciclo di render.
+/// - Eliminata l'idratazione cache duplicata: rimossi i richiami ridondanti in `onAppear` e negli `onChange`,
+///   lasciando la sola esecuzione centralizzata dentro `reloadEPG`.
+/// - Canvas nativo per la sezione ore con distanza raddoppiata (160pt / 30min) e perfetta sincronizzazione tile.
 /// - Sticky content per-tile dinamico: allo scroll il testo rimane ancorato al bordo visibile mentre i bordi scorrono.
 /// - Font (22pt ore, 10pt/12pt/16pt tile), geometria e colori originali rigorosamente preservati.
 struct EPGGridView: View {
@@ -105,7 +106,7 @@ struct EPGGridView: View {
         var id: String { url.absoluteString }
     }
 
-    // MARK: - Sorgenti Dati
+    // MARK: - Sorgenti Dati Centralizzate
 
     private var streams: [XtreamStream] {
         xtreamCatalog.streams(for: kind)
@@ -125,7 +126,8 @@ struct EPGGridView: View {
         return normalized.isEmpty ? nil : normalized
     }
 
-    private var groupsWithCounts: (groups: [XtreamCategory], counts: [String: Int]) {
+    /// Calcolato una sola volta per render tramite il package strutturato di gruppi.
+    private var groupData: (groups: [XtreamCategory], counts: [String: Int], name: String, icon: String) {
         var counts: [String: Int] = [:]
         var seenIDs = Set<String>()
         var orderedIDs: [String] = []
@@ -143,20 +145,19 @@ struct EPGGridView: View {
         let categoryByID = Dictionary(
             uniqueKeysWithValues: liveCategories.map { ($0.categoryId, $0) }
         )
-        return (orderedIDs.compactMap { categoryByID[$0] }, counts)
-    }
+        let groups = orderedIDs.compactMap { categoryByID[$0] }
 
-    private var selectedGroupName: String {
-        guard let groupID = normalizedSelectedGroupID else { return "Tutti" }
-        return groupsWithCounts.groups.first(where: { $0.categoryId == groupID })?.categoryName ?? "Gruppo"
-    }
-
-    private var selectedGroupSystemImage: String {
-        guard let groupID = normalizedSelectedGroupID,
-              let group = groupsWithCounts.groups.first(where: { $0.categoryId == groupID }) else {
-            return "square.grid.2x2"
+        let currentGroupName: String
+        let currentGroupIcon: String
+        if let targetID = normalizedSelectedGroupID, let found = groups.first(where: { $0.categoryId == targetID }) {
+            currentGroupName = found.categoryName
+            currentGroupIcon = Self.groupIcon(for: found.categoryName)
+        } else {
+            currentGroupName = "Tutti"
+            currentGroupIcon = "square.grid.2x2"
         }
-        return Self.groupIcon(for: group.categoryName)
+
+        return (groups, counts, currentGroupName, currentGroupIcon)
     }
 
     private var groupSelectionBinding: Binding<String?> {
@@ -172,42 +173,40 @@ struct EPGGridView: View {
         scheduleReload()
     }
 
-    private var filteredStreams: [XtreamStream] {
+    /// Calcolo centralizzato di streams filtrati e paginati in un unico passaggio O(n)
+    private var streamData: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String) {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let groupID = normalizedSelectedGroupID
+        let isFiltering = !query.isEmpty || groupID != nil || showFavoritesOnly
 
-        guard !query.isEmpty || groupID != nil || showFavoritesOnly else {
-            return streams
+        let filtered: [XtreamStream]
+        if !isFiltering {
+            filtered = streams
+        } else {
+            filtered = streams.filter { stream in
+                let categoryID = stream.categoryId?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let groupID, categoryID != groupID { return false }
+                if showFavoritesOnly && !favorites.isFavorite(stream.streamId) { return false }
+                if !query.isEmpty && !stream.name.localizedCaseInsensitiveContains(query) { return false }
+                return true
+            }
         }
 
-        return streams.filter { stream in
-            let categoryID = stream.categoryId?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let groupID, categoryID != groupID { return false }
-            if showFavoritesOnly && !favorites.isFavorite(stream.streamId) { return false }
-            if !query.isEmpty && !stream.name.localizedCaseInsensitiveContains(query) { return false }
-            return true
-        }
-    }
+        let totalFiltered = filtered.count
+        let effectiveCap = min(totalFiltered, hardRenderCap)
+        let countToTake = min(max(renderLimit, 0), effectiveCap)
+        let paged = Array(filtered.prefix(countToTake))
+        let canMore = renderLimit < effectiveCap
+        let remaining = max(0, effectiveCap - renderLimit)
 
-    private var pagedStreams: [XtreamStream] {
-        Array(filteredStreams.prefix(min(max(renderLimit, 0), hardRenderCap)))
-    }
+        let ids = paged.map(\.streamId).map(String.init).joined(separator: ",")
+        let identity = "\(groupID ?? "all")|\(selectedDayOffset)|\(ids)"
 
-    private var canLoadMore: Bool {
-        renderLimit < min(filteredStreams.count, hardRenderCap)
-    }
-
-    private var remainingCount: Int {
-        max(0, min(filteredStreams.count, hardRenderCap) - renderLimit)
+        return (totalFiltered, paged, canMore, remaining, identity)
     }
 
     private var cacheScope: String {
         Self.scopeKey(for: credentials)
-    }
-
-    private var streamIdentity: String {
-        let ids = pagedStreams.map(\.streamId).map(String.init).joined(separator: ",")
-        return "\(normalizedSelectedGroupID ?? "all")|\(selectedDayOffset)|\(ids)"
     }
 
     // MARK: - Geometria Temporale
@@ -283,11 +282,14 @@ struct EPGGridView: View {
     }
 
     var body: some View {
+        let currentStreamData = streamData
+        let currentGroupData = groupData
+
         NavigationStack {
-            content
+            content(streamData: currentStreamData)
                 .background(Color.black.ignoresSafeArea())
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { toolbarContent }
+                .toolbar { toolbarContent(groupData: currentGroupData) }
                 .sheet(item: $selectedProgram) { selection in
                     ProgramDetailSheet(
                         program: selection.program,
@@ -323,28 +325,23 @@ struct EPGGridView: View {
                 .onAppear {
                     guard !didAppear else { return }
                     didAppear = true
-                    hydrateVisibleProgramsFromCache()
                     scheduleReload()
                 }
                 .onChange(of: streams.map(\.streamId)) { _, _ in
-                    if pagedStreams.isEmpty {
+                    if currentStreamData.paged.isEmpty {
                         renderLimit = min(renderPageSize, max(streams.count, 1))
                     }
-                    hydrateVisibleProgramsFromCache()
                     scheduleReload()
                 }
-                .onChange(of: streamIdentity) { _, _ in
-                    hydrateVisibleProgramsFromCache()
+                .onChange(of: currentStreamData.identity) { _, _ in
                     scheduleReload()
                 }
                 .onChange(of: searchQuery) { _, _ in
                     renderLimit = renderPageSize
-                    hydrateVisibleProgramsFromCache()
                     scheduleReload(debounced: true)
                 }
                 .onChange(of: showFavoritesOnly) { _, _ in
                     renderLimit = renderPageSize
-                    hydrateVisibleProgramsFromCache()
                     scheduleReload()
                 }
                 .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
@@ -358,7 +355,7 @@ struct EPGGridView: View {
     }
 
     @ViewBuilder
-    private var content: some View {
+    private func content(streamData: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String)) -> some View {
         if streams.isEmpty {
             ContentUnavailableView(
                 isCatalogStillLoading ? "Caricamento canali…" : "Nessun canale live",
@@ -374,10 +371,10 @@ struct EPGGridView: View {
             ScrollView(.vertical) {
                 VStack(spacing: 0) {
                     searchHeader
-                    epgSurface
+                    epgSurface(pagedStreams: streamData.paged)
 
-                    if canLoadMore {
-                        loadMoreButton
+                    if streamData.canLoadMore {
+                        loadMoreButton(remainingCount: streamData.remainingCount, filteredCount: streamData.filteredCount)
                     }
                 }
                 .padding(.bottom, 32)
@@ -397,9 +394,9 @@ struct EPGGridView: View {
 
     // MARK: - Superficie EPG (HStack Principale)
 
-    private var epgSurface: some View {
+    private func epgSurface(pagedStreams: [XtreamStream]) -> some View {
         HStack(alignment: .top, spacing: 0) {
-            fixedDayAndChannelColumn
+            fixedDayAndChannelColumn(pagedStreams: pagedStreams)
                 .frame(width: bannerColumnWidth, alignment: .leading)
                 .zIndex(10)
 
@@ -418,7 +415,7 @@ struct EPGGridView: View {
         }
     }
 
-    private var fixedDayAndChannelColumn: some View {
+    private func fixedDayAndChannelColumn(pagedStreams: [XtreamStream]) -> some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             Button {
                 selectedDayOffset = max(selectedDayOffset - 1, -7)
@@ -444,7 +441,7 @@ struct EPGGridView: View {
         .background(Color.black)
     }
 
-    /// Sezione Ore con Canvas nativo e freccia live allineata.
+    /// Sezione Ore ottimizzata con Canvas nativo ad altissime prestazioni.
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, size in
@@ -647,11 +644,11 @@ struct EPGGridView: View {
         }
     }
 
-    private var loadMoreButton: some View {
+    private func loadMoreButton(remainingCount: Int, filteredCount: Int) -> some View {
         Button {
             let newLimit = min(
                 renderLimit + renderPageSize,
-                min(filteredStreams.count, hardRenderCap)
+                min(filteredCount, hardRenderCap)
             )
             guard newLimit != renderLimit else { return }
             renderLimit = newLimit
@@ -673,7 +670,7 @@ struct EPGGridView: View {
     // MARK: - Toolbar
 
     @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
+    private func toolbarContent(groupData: (groups: [XtreamCategory], counts: [String: Int], name: String, icon: String)) -> some ToolbarContent {
         ToolbarItem(placement: .navigationBarLeading) {
             Button {
                 dismiss()
@@ -688,16 +685,15 @@ struct EPGGridView: View {
 
         ToolbarItem(placement: .principal) {
             Menu {
-                let data = groupsWithCounts
                 Picker("Gruppo playlist", selection: groupSelectionBinding) {
                     Label("Tutti i canali", systemImage: "square.grid.2x2")
                         .tag(String?.none)
 
-                    if !data.groups.isEmpty {
+                    if !groupData.groups.isEmpty {
                         Divider()
-                        ForEach(data.groups) { group in
+                        ForEach(groupData.groups) { group in
                             Label(
-                                "\(group.categoryName) (\(data.counts[group.categoryId] ?? 0))",
+                                "\(group.categoryName) (\(groupData.counts[group.categoryId] ?? 0))",
                                 systemImage: Self.groupIcon(for: group.categoryName)
                             )
                             .tag(Optional(group.categoryId))
@@ -706,11 +702,11 @@ struct EPGGridView: View {
                 }
                 .pickerStyle(.inline)
             } label: {
-                groupPillLabel
+                groupPillLabel(name: groupData.name, icon: groupData.icon)
             }
             .menuStyle(.button)
             .buttonStyle(.plain)
-            .accessibilityLabel("Gruppo playlist: \(selectedGroupName)")
+            .accessibilityLabel("Gruppo playlist: \(groupData.name)")
             .accessibilityHint("Tocca per scegliere il gruppo da visualizzare")
         }
 
@@ -768,12 +764,12 @@ struct EPGGridView: View {
     }
 
     @ViewBuilder
-    private var groupPillLabel: some View {
+    private func groupPillLabel(name: String, icon: String) -> some View {
         let pill = HStack(spacing: 8) {
-            Image(systemName: selectedGroupSystemImage)
+            Image(systemName: icon)
                 .font(.system(size: 16, weight: .semibold))
 
-            Text(selectedGroupName)
+            Text(name)
                 .font(.system(size: 17, weight: .semibold, design: .rounded))
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
@@ -912,9 +908,9 @@ struct EPGGridView: View {
     }
 
     @MainActor
-    private func hydrateVisibleProgramsFromCache() {
+    private func hydrateVisibleProgramsFromCache(for targetStreams: [XtreamStream]) {
         let scope = cacheScope
-        for stream in pagedStreams {
+        for stream in targetStreams {
             guard let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId) else {
                 continue
             }
@@ -979,13 +975,13 @@ struct EPGGridView: View {
             return
         }
 
-        let targets = pagedStreams
+        let targets = streamData.paged
         guard !targets.isEmpty else {
             showLoadingIndicator = false
             return
         }
 
-        hydrateVisibleProgramsFromCache()
+        hydrateVisibleProgramsFromCache(for: targets)
 
         let pending = targets.filter { stream in
             forceRefresh || programsByStream[stream.streamId] == nil
