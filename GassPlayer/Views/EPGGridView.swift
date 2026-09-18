@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// EPG touch-first ultra-performante con rendering Canvas e sincronizzazione geometrica al millimetro:
-/// - Sezione ore renderizzata con Canvas nativo ad altissime prestazioni (zero gerarchie di View/Stack).
-/// - Distanza orari raddoppiata (160pt esatti ogni 30 minuti), con scala temporale sincronizzata sia per le ore sia per le tile.
+/// EPG ultra-performante e reattivo:
+/// - Sezione ore renderizzata con Canvas nativo ad alte prestazioni.
+/// - Distanza tra le tacche orarie a 160pt (30 min) perfettamente sincronizzata con la larghezza e posizione delle tile.
+/// - Caricamento massivo e rapido dei canali (dimensione pagina 32, cap 250, fino a 24 richieste concorrenti).
+/// - Avvio fluido senza blocchi: idratazione istantanea da cache ed esecuzione EPG asincrona non bloccante.
 /// - Sticky content per-tile dinamico: allo scroll il testo rimane ancorato al bordo visibile mentre i bordi scorrono.
-/// - Avvio e caricamenti ultra-rapidi con parallelismo aumentato (fino a 16 richieste concorrenti) e caching immediato.
-/// - Font e dimensioni originali rigorosamente preservati.
+/// - Font (22pt ore, 10pt/12pt/16pt tile), geometria e colori originali rigorosamente preservati.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -28,16 +29,16 @@ struct EPGGridView: View {
     @State private var selectedProgram: SelectedProgram?
     @State private var reminderToast: String?
     @State private var catchupPlayback: CatchupPlayback?
-    @State private var renderLimit = 16
+    @State private var renderLimit = 32
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
 
-    private let renderPageSize = 16
-    private let hardRenderCap = 100
-    private let maxConcurrentRequests = 16
+    private let renderPageSize = 32
+    private let hardRenderCap = 250
+    private let maxConcurrentRequests = 24
     private let shortEPGLimit = 24
-    private let searchDebounceNanoseconds: UInt64 = 150_000_000
-    private let loadingIndicatorDelayNanoseconds: UInt64 = 200_000_000
+    private let searchDebounceNanoseconds: UInt64 = 120_000_000
+    private let loadingIndicatorDelayNanoseconds: UInt64 = 150_000_000
 
     // MARK: - Geometria EPG
 
@@ -49,13 +50,13 @@ struct EPGGridView: View {
     private let timelineHeaderHeight: CGFloat = 44
     private let arrowGlyphWidth: CGFloat = 20
 
-    /// Distanza tra i rispettivi ':' raddoppiata: 160pt ogni 30 minuti (il doppio di 80pt).
+    /// Distanza tra le tacche orarie: 160pt ogni 30 minuti.
     private let halfHourPixelSpacing: CGFloat = 160
 
     /// Scala temporale pixel per minuto: 160 / 30 = 5.333 pt/min.
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
-    /// Larghezza della colonna fissa laterale (12 + 86 + 12 = 110pt).
+    /// Larghezza colonna fissa laterale: 12 + 86 + 12 = 110pt.
     private var bannerColumnWidth: CGFloat {
         bannerInset + channelBannerWidth + bannerInset
     }
@@ -443,7 +444,7 @@ struct EPGGridView: View {
         .background(Color.black)
     }
 
-    /// Sezione Ore ottimizzata con Canvas nativo ad altissime prestazioni e freccia live.
+    /// Sezione Ore con Canvas nativo e freccia live allineata.
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, size in
@@ -550,7 +551,7 @@ struct EPGGridView: View {
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// Tile del programma sincronizzata con la nuova scala temporale e rilevamento geometrico viewport per l'effetto sticky.
+    /// Tile del programma con rilevamento coordinato viewport e posizionamento sticky fluido.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
