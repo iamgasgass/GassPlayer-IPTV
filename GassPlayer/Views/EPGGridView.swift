@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// EPG touch-first ultra-ottimizzata, priva di ridondanze e con routing player affidabile:
-/// - Apertura diretta garantita sia dal tocco sul banner canale (`channelBanner`) sia da "Guarda in diretta" (`ProgramDetailSheet`).
-/// - Il tocco sul canale invoca `onPlayLive(stream)` e dismette tempestivamente `EPGGridView` tramite `@Environment(\.dismiss)` per riportare la navigazione al player principale.
+/// - Avvio streaming in diretta garantito sia dal tocco sul banner canale (`channelBanner`) sia dal pulsante
+///   "Guarda in diretta" (`ProgramDetailSheet`), con dismissione automatica e propagazione deterministica dell'evento.
 /// - Calcoli aggregati di stream/gruppi memoizzati in un unico passaggio O(n) per render.
 /// - Sezione ore su Canvas nativo con spaziatura a 160pt/30min e sincronizzazione temporale millimetrica con le tile.
 /// - Sticky content per-tile dinamico durante lo scroll orizzontale.
@@ -482,43 +482,41 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner del canale con tocco reattivo per aprire la riproduzione live del canale.
+    /// Banner del canale con tocco garantito per avviare la riproduzione in diretta.
     private func channelBanner(_ stream: XtreamStream) -> some View {
-        Button {
-            playLiveStream(stream)
-        } label: {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(logoBackgroundColor(for: stream))
+        ZStack {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(logoBackgroundColor(for: stream))
 
-                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
-                    if case .success(let image) = phase {
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .padding(12)
-                    } else {
-                        Image(systemName: "tv")
-                            .font(.title3)
-                            .foregroundStyle(.white.opacity(0.75))
-                    }
-                }
-
-                if favorites.isFavorite(stream.streamId) {
-                    Image(systemName: "star.fill")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.yellow)
-                        .padding(6)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .padding(6)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
+                if case .success(let image) = phase {
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .padding(12)
+                } else {
+                    Image(systemName: "tv")
+                        .font(.title3)
+                        .foregroundStyle(.white.opacity(0.75))
                 }
             }
-            .frame(width: bannerContentWidth, height: bannerHeight)
-            .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
-            .contentShape(Rectangle())
+
+            if favorites.isFavorite(stream.streamId) {
+                Image(systemName: "star.fill")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.yellow)
+                    .padding(6)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .padding(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
         }
-        .buttonStyle(.plain)
+        .frame(width: bannerContentWidth, height: bannerHeight)
+        .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            playLiveStream(stream)
+        }
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
@@ -825,11 +823,13 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live
 
-    /// Esegue il dispatch della riproduzione live invocando la closure del genitore e dismettendo la vista EPG per mostrare il player.
+    /// Esegue il dispatch della riproduzione live garantendo la corretta chiusura dello sheet e la propagazione al container genitore.
     private func playLiveStream(_ stream: XtreamStream) {
-        selectedProgram = nil
+        if selectedProgram != nil {
+            selectedProgram = nil
+            dismiss()
+        }
         onPlayLive(stream)
-        dismiss()
     }
 
     private func visiblePrograms(for stream: XtreamStream) -> [EPGProgram] {
