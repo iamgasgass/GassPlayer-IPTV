@@ -9,10 +9,16 @@ extension View {
     /// Sfondo "vetro" per una riga di `List`: rettangolo arrotondato
     /// traslucido al posto dello sfondo di sistema, separatore nascosto
     /// (il distacco tra le righe è dato dal margine della card stessa).
-    /// Da usare insieme a `.scrollContentBackground(.hidden)` sulla `List`
-    /// e a `.glassScreenBackground()` per il gradiente sullo sfondo.
+    /// Da usare insieme a `.listStyle(.plain)` + `.scrollContentBackground(.hidden)`
+    /// sulla `List` e a `.glassScreenBackground()` per il gradiente sullo
+    /// sfondo. Lo stile di lista predefinito di SwiftUI (".automatic", che
+    /// su iOS equivale a "insetGrouped" quando la lista ha più `Section`)
+    /// disegna le righe di una stessa sezione come un'unica card continua,
+    /// quindi senza `.listStyle(.plain)` queste card "vetro" per riga
+    /// risultano incollate l'una all'altra: le due modifiche vanno sempre
+    /// applicate insieme.
     func glassListRow() -> some View {
-        listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             .listRowSeparator(.hidden)
             .listRowBackground(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -36,6 +42,35 @@ extension View {
             )
             .ignoresSafeArea()
         )
+    }
+
+    /// Da applicare alla `List` stessa (non alle righe): stile piatto senza
+    /// il raggruppamento automatico di sistema, sfondo nativo nascosto e
+    /// gradiente Liquid Glass. Combinata con `.glassListRow()` su ogni riga,
+    /// produce le card distanziate in modo uniforme richieste per
+    /// `SourcesView`; usarla è ciò che rende `.glassListRow()` visibile
+    /// come card separate invece che come un unico blocco per sezione.
+    func glassListContainer() -> some View {
+        listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .glassScreenBackground()
+    }
+}
+
+/// Etichetta di sezione in maiuscolo, stessa tipografia usata da
+/// `EPGManageView`/`SourceManagerView` per intestare i gruppi di card.
+/// Necessaria perché `.listStyle(.plain)` (richiesto da `.glassListRow()`
+/// per evitare che le righe di una sezione appaiano come un unico blocco,
+/// vedi `glassListContainer()`) non applica da solo lo stile piccolo e
+/// grigio delle intestazioni "insetGrouped".
+struct GlassSectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
     }
 }
 
