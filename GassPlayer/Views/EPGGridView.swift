@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// EPG touch-first ultra-ottimizzata, priva di ridondanze e con routing player affidabile:
-/// - Il tocco sul banner canale (`channelBanner`) e "Guarda in diretta" (`ProgramDetailSheet`) invocano
-///   immediatamente `onPlayLive(stream)` dopo la chiusura deterministica degli stati modali.
+/// - Apertura diretta garantita sia dal tocco sul banner canale (`channelBanner`) sia da "Guarda in diretta" (`ProgramDetailSheet`).
+/// - Il tocco sul canale invoca `onPlayLive(stream)` e dismette tempestivamente `EPGGridView` tramite `@Environment(\.dismiss)` per riportare la navigazione al player principale.
 /// - Calcoli aggregati di stream/gruppi memoizzati in un unico passaggio O(n) per render.
 /// - Sezione ore su Canvas nativo con spaziatura a 160pt/30min e sincronizzazione temporale millimetrica con le tile.
 /// - Sticky content per-tile dinamico durante lo scroll orizzontale.
@@ -825,12 +825,11 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live
 
-    /// Esegue il dispatch della riproduzione live garantendo l'invocazione sul thread principale e la chiusura modale.
+    /// Esegue il dispatch della riproduzione live invocando la closure del genitore e dismettendo la vista EPG per mostrare il player.
     private func playLiveStream(_ stream: XtreamStream) {
         selectedProgram = nil
-        DispatchQueue.main.async {
-            self.onPlayLive(stream)
-        }
+        onPlayLive(stream)
+        dismiss()
     }
 
     private func visiblePrograms(for stream: XtreamStream) -> [EPGProgram] {
