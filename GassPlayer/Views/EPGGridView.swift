@@ -27,9 +27,9 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 /// - Vista "Comoda": vista spaziosa e ricca (rowHeight 96, banner 86x76, tile 82pt, layout su 3 righe dedicate canale/ora/titolo con corner radius 18pt).
 /// - Colori Pastello e Dinamici Adattivi con rendering nativo (.original) per i banner e le tile con riempimento live differenziato.
 /// - Voce dedicata "Aspetto EPG" inserita nel menu '…' in alto a destra con persistenza UserDefaults.
-/// - Gestione Flusso Streaming Live TV / ChannelGridView Maniacale:
-///   - Quando invocato da Live TV (`ChannelGridView`), delega univocamente l'avvio alla closure genitore `onPlayLive` e chiude la guida, azzerando le collisioni di riproduzione simultanea e consentendo al player di avviare il flusso automaticamente senza blocchi.
-///   - Quando aperto autonomamente (es. da Home dove `onPlayLive` è `nil`), avvia direttamente e istantaneamente la riproduzione full-screen interna.
+/// - Gestione avvio streaming Live TV chirurgica:
+///   - Quando invocato da Live TV (`ChannelGridView`), coordina la chiusura delle modali con sincronizzazione dei cicli di transizione UIKit/SwiftUI per garantire l'avvio automatico e immediato del flusso streaming nel player senza richiedere il tocco manuale su "Play".
+///   - Quando aperto autonomamente (es. da Home), gestisce la riproduzione full-screen interna ad avvio istantaneo.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -58,6 +58,7 @@ struct EPGGridView: View {
     @State private var renderLimit = 32
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
+    @State private var isTransitioningToLivePlayer = false
 
     private let renderPageSize = 32
     private let hardRenderCap = 250
@@ -1009,22 +1010,39 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
-    /// Avvia la riproduzione live del canale in modo deterministico e pulito.
-    /// - Se invocato da `ChannelGridView` (Live TV con `onPlayLive` passato):
-    ///   1. Chiude prima la scheda di dettaglio se aperta (`selectedProgram = nil`).
-    ///   2. Chiude `EPGGridView` (`dismiss()`) e delega l'avvio a `onPlayLive(stream)`.
-    ///   3. Non imposta `livePlayback`, evitando doppi avvii e conflitti di presentazione modale.
-    /// - Se aperto in modalità autonoma (es. da Home senza `onPlayLive`):
-    ///   Avvia istantaneamente `AdaptivePlayerView` in full-screen cover locale.
+    /// Avvia la riproduzione live del canale in modo deterministico, fluido e privo di blocchi.
+    /// - Quando invocato da Live TV (`ChannelGridView` con `onPlayLive` passato):
+    ///   1. Chiude la scheda dettaglio se aperta (`selectedProgram = nil`).
+    ///   2. Chiude `EPGGridView` (`dismiss()`).
+    ///   3. Attende il completamento della transizione di dismissal prima di invocare `onPlayLive(stream)`.
+    ///      In questo modo `ChannelGridView` presenta `AdaptivePlayerView` su una gerarchia UIKit completamente
+    ///      stabile e attiva, garantendo l'autoplay immediato senza che il video resti in pausa.
+    /// - Quando aperto autonomamente (es. da Home senza `onPlayLive`):
+    ///   Avvia istantaneamente `AdaptivePlayerView` in `livePlayback` full-screen locale.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
-        if dismissSheetFirst {
-            selectedProgram = nil
-        }
+        guard !isTransitioningToLivePlayer else { return }
 
         if let onPlayLive {
+            isTransitioningToLivePlayer = true
+
+            if dismissSheetFirst {
+                selectedProgram = nil
+            }
+
             dismiss()
-            onPlayLive(stream)
+
+            Task { @MainActor in
+                // Intervallo di rilassamento per il completamento della transizione di dismiss
+                try? await Task.sleep(nanoseconds: 220_000_000)
+                guard !Task.isCancelled else { return }
+                isTransitioningToLivePlayer = false
+                onPlayLive(stream)
+            }
         } else {
+            if dismissSheetFirst {
+                selectedProgram = nil
+            }
+
             if let streamURL = makeLiveStreamURL(for: stream) {
                 self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
             }
