@@ -1,13 +1,15 @@
 import SwiftUI
 
-/// EPG touch-first - Replica Pixel-to-Pixel Fedele al 100%:
-/// - Geometria identica: colonna fissa laterale (110pt) con banner canale (86x76pt, cornerRadius 16).
-/// - Sezione ore su Canvas nativo (160pt ogni 30 min) con freccia indicatore live triangolare.
-/// - Gap esatto di 4pt (`tileGap = 4`) tra le tile consecutive con angoli arrotondati a raggio continuo (cornerRadius 16).
-/// - Animazione Sticky Header per il Nome Canale (`channelNameStickyX`), scorrimento dedicato per l'Orario (`timeStickyX`),
-///   e dissolvenza naturale in uscita (`exitFadeProgress`) calibrata sullo spazio residuo visibile della card.
-/// - Riempimento live dinamico della card in onda perfettamente allineato all'asse dell'indicatore.
-/// - Colori, typography, gerarchia e layout identici al video originale.
+/// EPG touch-first - Replica Pixel-to-Pixel dell'interfaccia nel video:
+/// 1. Banner Canale Fisso a Sinistra:
+///   - Riquadro rosso acceso con corner radius 14pt.
+///   - Icone/loghi standard e originali con rendering nativo (.original / senza tinte forzate).
+/// 2. Header Temporale:
+///   - Testo giorno ("Oggi") pulito senza triangolini a fianco.
+///   - Indicatore Live (freccia a triangolo bianco) posizionato nell'header sull'orario corrente.
+/// 3. Allineamento e Tipografia Tile:
+///   - Contenuto della tile perfettamente allineato verticalmente al centro.
+///   - Colori, opacità e riempimento live sincronizzati al pixel.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -42,24 +44,21 @@ struct EPGGridView: View {
     private let searchDebounceNanoseconds: UInt64 = 120_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 150_000_000
 
-    // MARK: - Geometria EPG (Dimensioni Esatte Pixel-to-Pixel)
+    // MARK: - Dimensioni & Geometria Pixel-to-Pixel
 
-    private let bannerInset: CGFloat = 12
-    private let channelBannerWidth: CGFloat = 86
-    private let rowHeight: CGFloat = 96
-    private let bannerHeight: CGFloat = 76
-    private let blockHeight: CGFloat = 82
-    private let timelineHeaderHeight: CGFloat = 44
-    private let arrowGlyphWidth: CGFloat = 20
-    private let tileGap: CGFloat = 4
+    private let bannerInset: CGFloat = 10
+    private let channelBannerWidth: CGFloat = 80
+    private let bannerHeight: CGFloat = 58
+    private let blockHeight: CGFloat = 58
+    private let rowHeight: CGFloat = 66
+    private let timelineHeaderHeight: CGFloat = 40
+    private let arrowGlyphWidth: CGFloat = 16
 
-    /// Distanza tra le tacche orarie: 160pt ogni 30 minuti.
+    /// Spaziatura temporale (160pt ogni 30 minuti): scala pixel per minuto = 160 / 30 = 5.333 pt/min.
     private let halfHourPixelSpacing: CGFloat = 160
-
-    /// Scala temporale pixel per minuto: 160 / 30 = 5.333 pt/min.
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
-    /// Larghezza colonna fissa laterale: 12 + 86 + 12 = 110pt.
+    /// Larghezza della colonna fissa laterale: 10 + 80 + 10 = 100pt.
     private var bannerColumnWidth: CGFloat {
         bannerInset + channelBannerWidth + bannerInset
     }
@@ -68,7 +67,7 @@ struct EPGGridView: View {
         bannerColumnWidth - (bannerInset * 2)
     }
 
-    /// Finestra temporale visuale: 30 minuti passati, 3 ore future.
+    /// Finestra temporale: 30 minuti passati, 3 ore future.
     private let pastWindow: TimeInterval = 30 * 60
     private let futureWindow: TimeInterval = 180 * 60
 
@@ -114,7 +113,7 @@ struct EPGGridView: View {
         var id: Int { stream.streamId }
     }
 
-    // MARK: - Fonti Dati Centralizzate
+    // MARK: - Sorgenti Dati Centralizzate
 
     private var streams: [XtreamStream] {
         xtreamCatalog.streams(for: kind)
@@ -134,7 +133,6 @@ struct EPGGridView: View {
         return normalized.isEmpty ? nil : normalized
     }
 
-    /// Risoluzione univoca dei gruppi e delle etichette della toolbar in un solo passaggio.
     private var groupData: (groups: [XtreamCategory], counts: [String: Int], name: String, icon: String) {
         var counts: [String: Int] = [:]
         var seenIDs = Set<String>()
@@ -153,6 +151,7 @@ struct EPGGridView: View {
         let categoryByID = Dictionary(
             uniqueKeysWithValues: liveCategories.map { ($0.categoryId, $0) }
         )
+
         let groups = orderedIDs.compactMap { categoryByID[$0] }
 
         let currentGroupName: String
@@ -181,7 +180,6 @@ struct EPGGridView: View {
         scheduleReload()
     }
 
-    /// Filtraggio e paginazione calcolati esattamente una sola volta per ciclo di render.
     private var streamData: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String) {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let groupID = normalizedSelectedGroupID
@@ -372,8 +370,8 @@ struct EPGGridView: View {
                 systemImage: isCatalogStillLoading ? "hourglass" : "tv.slash",
                 description: Text(
                     isCatalogStillLoading
-                    ? "Il catalogo si sta ancora caricando."
-                    : "Questa sorgente non contiene canali live."
+                        ? "Il catalogo si sta ancora caricando."
+                        : "Questa sorgente non contiene canali live."
                 )
             )
             .foregroundStyle(.white)
@@ -387,7 +385,7 @@ struct EPGGridView: View {
                         loadMoreButton(remainingCount: streamData.remainingCount, filteredCount: streamData.filteredCount)
                     }
                 }
-                .padding(.bottom, 32)
+                .padding(.bottom, 24)
             }
             .coordinateSpace(name: "epgViewportCoordinateSpace")
             .scrollIndicators(.hidden)
@@ -402,7 +400,7 @@ struct EPGGridView: View {
         }
     }
 
-    // MARK: - Superficie EPG (HStack Principale)
+    // MARK: - Superficie EPG (HStack Principale Pixel-to-Pixel)
 
     private func epgSurface(pagedStreams: [XtreamStream]) -> some View {
         HStack(alignment: .top, spacing: 0) {
@@ -424,18 +422,20 @@ struct EPGGridView: View {
 
     private func fixedDayAndChannelColumn(pagedStreams: [XtreamStream]) -> some View {
         LazyVStack(alignment: .leading, spacing: 0) {
-            Button {
-                selectedDayOffset = max(selectedDayOffset - 1, -7)
-                scheduleReload()
-            } label: {
-                Text(dayTitle)
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .frame(width: bannerContentWidth, height: timelineHeaderHeight, alignment: .leading)
-                    .padding(.horizontal, bannerInset)
+            HStack(spacing: 4) {
+                Button {
+                    selectedDayOffset = max(selectedDayOffset - 1, -7)
+                    scheduleReload()
+                } label: {
+                    Text(dayTitle)
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .frame(height: timelineHeaderHeight, alignment: .leading)
+                        .padding(.leading, bannerInset)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Giorno: \(dayTitle)")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Giorno: \(dayTitle)")
 
             if pagedStreams.isEmpty {
                 Color.clear.frame(width: bannerColumnWidth, height: 1)
@@ -448,14 +448,14 @@ struct EPGGridView: View {
         .background(Color.black)
     }
 
-    /// Sezione Ore su Canvas nativo ad altissime prestazioni con indicatore live triangolare.
+    /// Header orari su Canvas con disegno immediato e freccia live allineata.
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, size in
                 for tick in halfHourTicks {
                     let text = Text(Self.timeFormatter.string(from: tick))
-                        .font(.system(size: 22, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.58))
+                        .font(.system(size: 20, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.60))
                         .monospacedDigit()
                     context.draw(text, at: CGPoint(x: xCoordinate(for: tick), y: size.height / 2), anchor: .leading)
                 }
@@ -464,7 +464,7 @@ struct EPGGridView: View {
 
             if isToday {
                 Image(systemName: "arrowtriangle.down.fill")
-                    .font(.system(size: 20, weight: .bold))
+                    .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: arrowGlyphWidth, height: timelineHeaderHeight, alignment: .center)
                     .offset(x: liveAxisX - arrowGlyphWidth / 2)
@@ -494,39 +494,48 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner canale nativo identico al video.
+    /// Banner Canale Rosso Stile Video: Icone standard native e originali
     private func channelBanner(_ stream: XtreamStream) -> some View {
         Button {
             playLiveStream(stream, dismissSheetFirst: false)
         } label: {
             ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(logoBackgroundColor(for: stream))
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(red: 0.90, green: 0.16, blue: 0.22))
 
-                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
-                    if case .success(let image) = phase {
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .padding(12)
-                    } else {
-                        Image(systemName: "tv")
-                            .font(.title3)
-                            .foregroundStyle(.white.opacity(0.75))
+                if let icon = stream.streamIcon, !icon.isEmpty {
+                    AsyncImage(url: URL(string: icon)) { phase in
+                        if case .success(let image) = phase {
+                            image
+                                .renderingMode(.original)
+                                .resizable()
+                                .scaledToFit()
+                                .padding(8)
+                        } else {
+                            Image(systemName: "play.tv.fill")
+                                .renderingMode(.original)
+                                .font(.system(size: 22))
+                                .foregroundStyle(.white)
+                        }
                     }
+                } else {
+                    Image(systemName: "play.tv.fill")
+                        .renderingMode(.original)
+                        .font(.system(size: 22))
+                        .foregroundStyle(.white)
                 }
 
                 if favorites.isFavorite(stream.streamId) {
                     Image(systemName: "star.fill")
-                        .font(.caption2.weight(.bold))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.yellow)
-                        .padding(6)
+                        .padding(4)
                         .background(.ultraThinMaterial, in: Circle())
-                        .padding(6)
+                        .padding(4)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
             }
-            .frame(width: bannerContentWidth, height: bannerHeight)
+            .frame(width: channelBannerWidth, height: bannerHeight)
             .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
             .contentShape(Rectangle())
         }
@@ -538,7 +547,7 @@ struct EPGGridView: View {
         let loading = loadingStreamIDs.contains(stream.streamId)
         let failed = failedStreamIDs.contains(stream.streamId)
 
-        return HStack(spacing: 7) {
+        return HStack(spacing: 6) {
             if loading {
                 ProgressView()
                     .tint(.white)
@@ -548,21 +557,18 @@ struct EPGGridView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                 Text("EPG non disponibile")
             } else {
-                Image(systemName: "calendar.badge.exclamationmark")
                 Text("Dati non disponibili")
             }
         }
-        .font(.system(size: 15, weight: .medium))
-        .foregroundStyle(.white.opacity(0.85))
-        .padding(.horizontal, 18)
+        .font(.system(size: 14, weight: .medium, design: .rounded))
+        .foregroundStyle(.white.opacity(0.65))
+        .padding(.horizontal, 14)
+        .frame(height: blockHeight)
+        .background(Color(white: 0.11), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// Blocco Programma con replica pixel-to-pixel:
-    /// - `channelNameStickyX`: Sticky Header del nome canale che rimane visibile e ancorato sul bordo sinistro.
-    /// - `timeStickyX`: Scorrimento armonioso dell'orario all'ingresso della card.
-    /// - `exitFadeProgress`: Dissolvenza naturale in uscita calibrata sullo spazio residuo (`remainingVisibleWidth`).
-    /// - `tileGap = 4`: Distanza esatta tra tile adiacenti con `cornerRadius: 16`.
+    /// Tile del programma con allineamento verticale centrato e scorrimento sticky fluido
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -573,64 +579,59 @@ struct EPGGridView: View {
         let startX = xCoordinate(for: clippedStart)
         let calculatedEndX = xCoordinate(for: clippedEnd)
 
-        let rawEndX: CGFloat
+        let endX: CGFloat
         if let nextProgramStart {
             let nextStartX = xCoordinate(for: max(nextProgramStart, windowStart))
-            rawEndX = min(calculatedEndX, nextStartX)
+            endX = min(calculatedEndX, nextStartX)
         } else {
-            rawEndX = calculatedEndX
+            endX = calculatedEndX
         }
 
-        // Spaziatura esatta di 4pt tra blocchi contigui
-        let totalSpan = max(36, rawEndX - startX)
-        let width = max(32, totalSpan - tileGap)
+        let width = max(36, endX - startX)
 
         return GeometryReader { geo in
             let frameInViewport = geo.frame(in: .named("epgViewportCoordinateSpace"))
             let tileMinX = frameInViewport.minX
+
+            // Offset per mantenere il testo agganciato a sinistra all'interno del viewport
             let overlap = max(0, bannerColumnWidth - tileMinX)
+            let maxSticky = max(0, width - 120)
+            let stickyX = min(overlap, maxSticky)
 
-            // 1. Sticky del Nome Canale
-            let channelNameStickyX = min(overlap, max(0, width - 110))
-
-            // 2. Scorrimento dedicato dell'Orario
-            let timeStickyX = min(overlap * 0.95, max(0, width - 80))
-
-            // 3. Dissolvenza graduale in uscita
-            let remainingVisibleWidth = max(0, width - overlap)
-            let exitFadeProgress = min(1.0, max(0.0, (remainingVisibleWidth - 30) / 45.0))
+            // Animazione di scivolamento verso il programma successivo
+            let transitionProgress = max(0, min(1, (overlap - maxSticky) / 30))
+            let nameSlideOffset = stickyX
+            let timeEntranceOpacity = max(0.2, 1.0 - Double(transitionProgress))
 
             Button {
                 selectedProgram = SelectedProgram(program: program, stream: stream)
             } label: {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
+                        // Nome Canale sempre ancorato a sinistra
                         Text(stream.name)
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.65))
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white)
                             .lineLimit(1)
-                            .offset(x: channelNameStickyX)
 
+                        // Orario con animazione fluida
                         Text(program.start.formatted(date: .omitted, time: .shortened))
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.52))
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.55))
                             .lineLimit(1)
-                            .offset(x: timeStickyX)
+                            .opacity(timeEntranceOpacity)
                     }
 
+                    // Titolo del Programma
                     Text(program.title)
-                        .font(.system(size: 16, weight: .regular, design: .rounded))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 14, weight: .regular, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.92))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .padding(.top, 1)
-
-                    Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .opacity(exitFadeProgress)
-                .frame(width: width, height: blockHeight, alignment: .topLeading)
+                .padding(.horizontal, 10)
+                .offset(x: nameSlideOffset)
+                .frame(width: width, height: blockHeight, alignment: .leading)
             }
             .buttonStyle(.plain)
             .background {
@@ -641,7 +642,7 @@ struct EPGGridView: View {
                     tileWidth: width
                 )
             }
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .frame(width: width, height: blockHeight)
         .offset(x: startX)
@@ -650,7 +651,7 @@ struct EPGGridView: View {
         )
     }
 
-    /// Riempimento dinamico sincronizzato all'asse live con clipShape a raggio 16.
+    /// Background scuro della card con riempimento live sincronizzato alla freccia corrente
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
@@ -658,16 +659,15 @@ struct EPGGridView: View {
         tileStartX: CGFloat,
         tileWidth: CGFloat
     ) -> some View {
-        let base = programColor(for: stream, program: program)
         let brightWidth = isToday ? min(max(liveAxisX - tileStartX, 0), tileWidth) : 0
 
         ZStack(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(base.opacity(0.30))
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(white: 0.13))
 
             if brightWidth > 0 {
                 Rectangle()
-                    .fill(base)
+                    .fill(Color(white: 0.22))
                     .frame(width: brightWidth)
             }
         }
@@ -687,11 +687,11 @@ struct EPGGridView: View {
                 "Carica altri \(min(renderPageSize, remainingCount)) canali",
                 systemImage: "arrow.down.circle"
             )
-            .font(.headline)
+            .font(.system(size: 15, weight: .semibold, design: .rounded))
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
+            .padding(.vertical, 14)
             .foregroundStyle(.white)
-            .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .padding(16)
         }
     }
@@ -851,24 +851,21 @@ struct EPGGridView: View {
         }
         .padding(.horizontal, bannerInset)
         .padding(.top, 10)
-        .padding(.bottom, 18)
+        .padding(.bottom, 16)
     }
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
-    /// Avvia la riproduzione live del canale senza latenze artificiali.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
         }
         onPlayLive(stream)
-
         if let streamURL = makeLiveStreamURL(for: stream) {
             self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
         }
     }
 
-    /// Costruisce l'URL dello stream live in modo conforme e deterministico.
     private func makeLiveStreamURL(for stream: XtreamStream) -> URL? {
         let rawHost = credentials.host
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -885,20 +882,6 @@ struct EPGGridView: View {
         (programsByStream[stream.streamId] ?? []).filter {
             $0.end > windowStart && $0.start < windowEnd
         }
-    }
-
-    private func logoBackgroundColor(for stream: XtreamStream) -> Color {
-        paletteColor(seed: stream.streamId, saturation: 0.34, brightness: 0.78)
-    }
-
-    private func programColor(for stream: XtreamStream, program: EPGProgram) -> Color {
-        let seed = stream.streamId ^ Int(program.start.timeIntervalSince1970)
-        return paletteColor(seed: seed, saturation: 0.48, brightness: 0.30)
-    }
-
-    private func paletteColor(seed: Int, saturation: Double, brightness: Double) -> Color {
-        let normalized = abs(seed % 360)
-        return Color(hue: Double(normalized) / 360.0, saturation: saturation, brightness: brightness)
     }
 
     private static func groupIcon(for groupName: String) -> String {
@@ -1017,6 +1000,10 @@ struct EPGGridView: View {
             let end = min(start + maxConcurrentRequests, pending.count)
             let batch = Array(pending[start..<end])
 
+            for stream in batch {
+                loadingStreamIDs.insert(stream.streamId)
+            }
+
             await withTaskGroup(of: (Int, Result<[EPGProgram], Error>).self) { group in
                 for stream in batch {
                     group.addTask {
@@ -1087,141 +1074,141 @@ struct EPGGridView: View {
         }
         return String(digest, radix: 16)
     }
-}
 
-// MARK: - Cache & Stores
+    // MARK: - Cache & Stores
 
-@MainActor
-private final class EPGMemoryCache {
-    static let shared = EPGMemoryCache()
+    @MainActor
+    private final class EPGMemoryCache {
+        static let shared = EPGMemoryCache()
 
-    private struct Entry {
-        let programs: [EPGProgram]
-    }
-
-    private var storage: [String: Entry] = [:]
-
-    private func key(scope: String, streamId: Int) -> String {
-        "\(scope)#\(streamId)"
-    }
-
-    func programs(scope: String, streamId: Int) -> [EPGProgram]? {
-        storage[key(scope: scope, streamId: streamId)]?.programs
-    }
-
-    func store(scope: String, streamId: Int, programs: [EPGProgram]) {
-        storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs)
-    }
-}
-
-@MainActor
-private final class EPGFavoritesStore: ObservableObject {
-    @Published private(set) var favoriteStreamIDs: Set<Int>
-    private let key: String
-
-    init(scopeKey: String) {
-        key = "gassplayer.epgFavorites.\(scopeKey)"
-        favoriteStreamIDs = Set(UserDefaults.standard.array(forKey: key) as? [Int] ?? [])
-    }
-
-    func isFavorite(_ streamID: Int) -> Bool {
-        favoriteStreamIDs.contains(streamID)
-    }
-
-    func toggle(_ streamID: Int) {
-        if favoriteStreamIDs.contains(streamID) {
-            favoriteStreamIDs.remove(streamID)
-        } else {
-            favoriteStreamIDs.insert(streamID)
+        private struct Entry {
+            let programs: [EPGProgram]
         }
-        UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
-    }
-}
 
-// MARK: - Dettaglio Programma
+        private var storage: [String: Entry] = [:]
 
-private struct ProgramDetailSheet: View {
-    let program: EPGProgram
-    let stream: XtreamStream
-    let isCurrentlyLive: Bool
-    let onPlayLive: () -> Void
-    let onPlayCatchup: () -> Void
-    let onSetReminder: () -> Void
+        private func key(scope: String, streamId: Int) -> String {
+            "\(scope)#\(streamId)"
+        }
 
-    @Environment(\.dismiss) private var dismiss
+        func programs(scope: String, streamId: Int) -> [EPGProgram]? {
+            storage[key(scope: scope, streamId: streamId)]?.programs
+        }
 
-    private var isFuture: Bool {
-        program.start > Date()
+        func store(scope: String, streamId: Int, programs: [EPGProgram]) {
+            storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs)
+        }
     }
 
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(stream.name)
-                            .font(.caption.weight(.semibold))
+    @MainActor
+    private final class EPGFavoritesStore: ObservableObject {
+        @Published private(set) var favoriteStreamIDs: Set<Int>
+        private let key: String
+
+        init(scopeKey: String) {
+            key = "gassplayer.epgFavorites.\(scopeKey)"
+            favoriteStreamIDs = Set(UserDefaults.standard.array(forKey: key) as? [Int] ?? [])
+        }
+
+        func isFavorite(_ streamID: Int) -> Bool {
+            favoriteStreamIDs.contains(streamID)
+        }
+
+        func toggle(_ streamID: Int) {
+            if favoriteStreamIDs.contains(streamID) {
+                favoriteStreamIDs.remove(streamID)
+            } else {
+                favoriteStreamIDs.insert(streamID)
+            }
+            UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
+        }
+    }
+
+    // MARK: - Dettaglio Programma
+
+    private struct ProgramDetailSheet: View {
+        let program: EPGProgram
+        let stream: XtreamStream
+        let isCurrentlyLive: Bool
+        let onPlayLive: () -> Void
+        let onPlayCatchup: () -> Void
+        let onSetReminder: () -> Void
+
+        @Environment(\.dismiss) private var dismiss
+
+        private var isFuture: Bool {
+            program.start > Date()
+        }
+
+        var body: some View {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(stream.name)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                            Text(program.title)
+                                .font(.title3.weight(.bold))
+
+                            Label(
+                                "\(program.start.formatted(date: .abbreviated, time: .shortened)) – \(program.end.formatted(date: .omitted, time: .shortened))",
+                                systemImage: "clock"
+                            )
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
 
-                        Text(program.title)
-                            .font(.title3.weight(.bold))
+                            if isCurrentlyLive {
+                                Label("In onda ora", systemImage: "dot.radiowaves.left.and.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.red)
+                            }
 
-                        Label(
-                            "\(program.start.formatted(date: .abbreviated, time: .shortened)) – \(program.end.formatted(date: .omitted, time: .shortened))",
-                            systemImage: "clock"
-                        )
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
-                        if isCurrentlyLive {
-                            Label("In onda ora", systemImage: "dot.radiowaves.left.and.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.red)
+                            if let description = program.description, !description.isEmpty {
+                                Text(description)
+                                    .font(.body)
+                                    .padding(.top, 4)
+                            }
                         }
-                    }
+                        .padding()
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-                    if let description = program.description, !description.isEmpty {
-                        Text(description)
-                            .font(.body)
-                            .padding(.top, 4)
-                    }
-                }
-                .padding()
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        VStack(spacing: 10) {
+                            if isCurrentlyLive {
+                                Button(action: onPlayLive) {
+                                    Label("Guarda in diretta", systemImage: "play.fill")
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 12)
+                                }
+                                .buttonStyle(.borderedProminent)
+                            } else if program.hasArchive {
+                                Button(action: onPlayCatchup) {
+                                    Label("Riproduci differita", systemImage: "gobackward")
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 12)
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
 
-                VStack(spacing: 10) {
-                    if isCurrentlyLive {
-                        Button(action: onPlayLive) {
-                            Label("Guarda in diretta", systemImage: "play.fill")
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
+                            if isFuture {
+                                Button(action: onSetReminder) {
+                                    Label("Imposta promemoria", systemImage: "bell")
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
+                                }
+                                .buttonStyle(.bordered)
+                            }
                         }
-                        .buttonStyle(.borderedProminent)
-                    } else if program.hasArchive {
-                        Button(action: onPlayCatchup) {
-                            Label("Riproduci differita", systemImage: "gobackward")
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-
-                    if isFuture {
-                        Button(action: onSetReminder) {
-                            Label("Imposta promemoria", systemImage: "bell")
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
-                        }
-                        .buttonStyle(.bordered)
+                        .padding()
                     }
                 }
-                .padding()
-            }
-            .navigationTitle("Dettaglio programma")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Chiudi") { dismiss() }
+                .navigationTitle("Dettaglio programma")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Chiudi") { dismiss() }
+                    }
                 }
             }
         }
