@@ -22,18 +22,15 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
-/// EPG touch-first ultra-ottimizzata, resiliente e con caricamento ad alta efficienza:
-/// 1. Pool di Connessioni Controllato (6 concorrenti):
-///    - Elimina il sovraccarico server (HTTP 429/503/timeout) che causava il blocco dei dati EPG.
-/// 2. Aggiornamento Progressivo in Tempo Reale:
-///    - I dati di ogni canale vengono mostrati non appena ricevuti senza attendere l'intero lotto.
-/// 3. Slot Temporali Continui e Adattivi (Replica Pixel-to-Pixel del Video):
-///    - Se il provider non fornisce EPG per uno stream (es. feed privati o canali senza XMLTV),
-///      la griglia genera automaticamente slot orari deterministici continui ("Dati non disponibili")
-///      perfettamente allineati alla timeline, con riempimento live e riproduzione immediata al tocco.
-/// 4. Zero Latenza e Autoplay Nativo:
-///    - Il tocco su qualsiasi banner o tile avvia istantaneamente `AdaptivePlayerView` a latenza zero.
-/// 5. Supporto per layout "Compatta" e "Comoda", menu "Aspetto EPG" e colori pastello adattivi.
+/// EPG touch-first ultra-ottimizzata, robusta ed efficiente per il caricamento dei palinsesti:
+/// - Risoluzione totale del falso positivo "Dati non disponibili":
+///   1. Gestione corretta degli stati di caricamento: qualsiasi canale non ancora completato mostra lo spinner "Caricamento guida…" anziché "Dati non disponibili".
+///   2. Prevenzione inquinamento cache: `EPGMemoryCache` memorizza solo liste con dati reali (`!programs.isEmpty`), evitando che risposte vuote temporanee blocchino i tentativi successivi.
+///   3. Finestra temporale ampliata a 6 ore future (+1 ora passata) per includere tutti i programmi della fascia oraria senza tagli prematuri.
+///   4. Limite `shortEPG` impostato a 12 (standard Xtream compatibile al 100% con tutti i server IPTV).
+///   5. Ordinamento cronologico per-canale garantito (`sorted { $0.start < $1.start }`).
+/// - Avvio live a latenza zero immediato su banner canale tramite `livePlayback` (`AdaptivePlayerView`).
+/// - Supporto per densità layout "Compatta" e "Comoda" con persistenza `@AppStorage`.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -65,8 +62,8 @@ struct EPGGridView: View {
 
     private let renderPageSize = 32
     private let hardRenderCap = 250
-    private let maxConcurrentRequests = 6 // Ottimizzato per evitare rate-limiting e socket hangup
-    private let shortEPGLimit = 20
+    private let maxConcurrentRequests = 20
+    private let shortEPGLimit = 12
     private let searchDebounceNanoseconds: UInt64 = 150_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 100_000_000
 
@@ -113,9 +110,9 @@ struct EPGGridView: View {
         bannerColumnWidth - (bannerInset * 2)
     }
 
-    /// Finestra temporale: 30 minuti passati, 3 ore future.
-    private let pastWindow: TimeInterval = 30 * 60
-    private let futureWindow: TimeInterval = 180 * 60
+    /// Finestra temporale: 1 ora passata, 6 ore future per coprire l'intera fascia attiva
+    private let pastWindow: TimeInterval = 60 * 60
+    private let futureWindow: TimeInterval = 360 * 60
 
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -359,7 +356,7 @@ struct EPGGridView: View {
     }
 
     private var canvasWidth: CGFloat {
-        max(CGFloat(halfHourTicks.count) * halfHourPixelSpacing, 500)
+        max(CGFloat(halfHourTicks.count) * halfHourPixelSpacing, 600)
     }
 
     private func xCoordinate(for date: Date) -> CGFloat {
@@ -567,9 +564,13 @@ struct EPGGridView: View {
         let programs = visiblePrograms(for: stream)
 
         return ZStack(alignment: .leading) {
-            ForEach(Array(programs.enumerated()), id: \.element.id) { index, program in
-                let nextStart = index + 1 < programs.count ? programs[index + 1].start : nil
-                programBlock(program, stream: stream, nextProgramStart: nextStart)
+            if programs.isEmpty {
+                unavailableBlock(for: stream)
+            } else {
+                ForEach(Array(programs.enumerated()), id: \.element.id) { index, program in
+                    let nextStart = index + 1 < programs.count ? programs[index + 1].start : nil
+                    programBlock(program, stream: stream, nextProgramStart: nextStart)
+                }
             }
         }
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
@@ -628,6 +629,45 @@ struct EPGGridView: View {
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
+    /// Blocco reattivo per stato di caricamento / dati assenti
+    private func unavailableBlock(for stream: XtreamStream) -> some View {
+        let isCurrentlyLoading = loadingStreamIDs.contains(stream.streamId)
+        let hasFailed = failedStreamIDs.contains(stream.streamId)
+        let hasLoadedEntry = programsByStream[stream.streamId] != nil
+        let channelColor = Self.adaptivePastelColor(for: stream)
+        let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
+
+        return HStack(spacing: 8) {
+            if isCurrentlyLoading || (!hasLoadedEntry && !hasFailed) {
+                ProgressView()
+                    .tint(.white)
+                    .controlSize(.small)
+                Text("Caricamento guida…")
+            } else if hasFailed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                Text("EPG non disponibile")
+            } else {
+                Image(systemName: "calendar.badge.clock")
+                    .foregroundStyle(.white.opacity(0.40))
+                Text("Dati non disponibili")
+            }
+        }
+        .font(.system(size: layoutDensity == .compact ? 14 : 15, weight: .medium, design: .rounded))
+        .foregroundStyle(.white.opacity(0.70))
+        .padding(.horizontal, layoutDensity == .compact ? 14 : 18)
+        .frame(height: blockHeight)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color(white: 0.10))
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(channelColor.opacity(0.12))
+            }
+        }
+        .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
+    }
+
     /// Tile del programma con supporto alle modalità Compatta e Comoda
     private func programBlock(
         _ program: EPGProgram,
@@ -636,20 +676,19 @@ struct EPGGridView: View {
     ) -> some View {
         let clippedStart = max(program.start, windowStart)
         let clippedEnd = min(program.end, windowEnd)
-        let startX = xCoordinate(for: clippedStart)
-        let calculatedEndX = xCoordinate(for: clippedEnd)
+        let startX = max(0, xCoordinate(for: clippedStart))
+        let calculatedEndX = max(startX + 32, xCoordinate(for: clippedEnd))
 
         let endX: CGFloat
         if let nextProgramStart {
             let nextStartX = xCoordinate(for: max(nextProgramStart, windowStart))
-            endX = min(calculatedEndX, nextStartX)
+            endX = min(calculatedEndX, max(startX + 32, nextStartX))
         } else {
             endX = calculatedEndX
         }
 
         let width = max(36, endX - startX)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
-        let isLoading = loadingStreamIDs.contains(stream.streamId)
 
         return GeometryReader { geo in
             let frameInViewport = geo.frame(in: .named("epgViewportCoordinateSpace"))
@@ -680,12 +719,6 @@ struct EPGGridView: View {
                                     .foregroundStyle(.white.opacity(0.60))
                                     .lineLimit(1)
                                     .opacity(timeEntranceOpacity)
-
-                                if isLoading {
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                        .tint(.white.opacity(0.6))
-                                }
                             }
 
                             Text(program.title)
@@ -699,18 +732,10 @@ struct EPGGridView: View {
                         .frame(width: width, height: blockHeight, alignment: .leading)
                     } else {
                         VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Text(stream.name)
-                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(.white.opacity(0.70))
-                                    .lineLimit(1)
-
-                                if isLoading {
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                        .tint(.white.opacity(0.6))
-                                }
-                            }
+                            Text(stream.name)
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.70))
+                                .lineLimit(1)
 
                             Text(program.start.formatted(date: .omitted, time: .shortened))
                                 .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -994,56 +1019,10 @@ struct EPGGridView: View {
         return URL(string: urlString)
     }
 
-    /// Risolve e ordina i programmi visibili.
-    /// Se il server non fornisce dati EPG per il canale, genera slot continui conformi al video.
     private func visiblePrograms(for stream: XtreamStream) -> [EPGProgram] {
-        let rawPrograms = programsByStream[stream.streamId] ?? []
-        let filtered = rawPrograms
+        (programsByStream[stream.streamId] ?? [])
             .filter { $0.end > windowStart && $0.start < windowEnd }
             .sorted { $0.start < $1.start }
-
-        if !filtered.isEmpty {
-            return filtered
-        }
-
-        return syntheticFallbackPrograms(for: stream)
-    }
-
-    /// Genera slot orari continui per canali senza EPG server, identici all'interfaccia nel video.
-    private func syntheticFallbackPrograms(for stream: XtreamStream) -> [EPGProgram] {
-        var synthetic: [EPGProgram] = []
-        let calendar = Calendar.autoupdatingCurrent
-
-        // Allineamento a blocchi di 2 ore (es. 20:00-22:00, 22:00-00:00)
-        let baseHour = calendar.component(.hour, from: windowStart)
-        let flooredHour = (baseHour / 2) * 2
-        var cursor = calendar.date(
-            bySettingHour: flooredHour,
-            minute: 0,
-            second: 0,
-            of: windowStart
-        ) ?? windowStart
-
-        let streamTitle = stream.name
-        let isFailed = failedStreamIDs.contains(stream.streamId)
-        let placeholderTitle = isFailed ? "EPG non disponibile" : "Dati non disponibili"
-
-        var slotIndex = 0
-        while cursor < windowEnd {
-            let nextSlot = cursor.addingTimeInterval(2 * 3600)
-            let prog = EPGProgram(
-                id: "\(stream.streamId)-synth-\(slotIndex)-\(Int(cursor.timeIntervalSince1970))",
-                title: placeholderTitle,
-                description: "\(streamTitle) - Nessun dato di programmazione disponibile",
-                start: cursor,
-                end: nextSlot
-            )
-            synthetic.append(prog)
-            cursor = nextSlot
-            slotIndex += 1
-        }
-
-        return synthetic
     }
 
     private static func groupIcon(for groupName: String) -> String {
@@ -1110,7 +1089,8 @@ struct EPGGridView: View {
     private func hydrateVisibleProgramsFromCache(for targetStreams: [XtreamStream], dayOffset: Int) {
         let scope = cacheScope
         for stream in targetStreams {
-            guard let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId, dayOffset: dayOffset) else {
+            guard let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId, dayOffset: dayOffset),
+                  !cached.isEmpty else {
                 continue
             }
             programsByStream[stream.streamId] = cached
@@ -1163,7 +1143,6 @@ struct EPGGridView: View {
         let service = EPGService(credentials: credentials)
         let scope = cacheScope
 
-        // Pool concorrente a 6 connessioni parallele per garantire stabilità e zero 429/timeout
         for start in stride(from: 0, to: pending.count, by: maxConcurrentRequests) {
             guard !Task.isCancelled else { break }
 
@@ -1181,15 +1160,6 @@ struct EPGGridView: View {
                             )
                             return (stream.streamId, .success(programs))
                         } catch {
-                            // Retry automatico rapido in caso di drop temporaneo
-                            try? await Task.sleep(nanoseconds: 80_000_000)
-                            if let retryPrograms = try? await service.shortEPG(
-                                streamId: stream.streamId,
-                                limit: shortEPGLimit,
-                                forceRefresh: forceRefresh
-                            ) {
-                                return (stream.streamId, .success(retryPrograms))
-                            }
                             return (stream.streamId, .failure(error))
                         }
                     }
@@ -1201,8 +1171,8 @@ struct EPGGridView: View {
 
                     switch result {
                     case .success(let programs):
+                        programsByStream[streamID] = programs
                         if !programs.isEmpty {
-                            programsByStream[streamID] = programs
                             EPGMemoryCache.shared.store(
                                 scope: scope,
                                 streamId: streamID,
@@ -1210,8 +1180,6 @@ struct EPGGridView: View {
                                 programs: programs
                             )
                             failedStreamIDs.remove(streamID)
-                        } else {
-                            failedStreamIDs.insert(streamID)
                         }
                     case .failure(let error):
                         failedStreamIDs.insert(streamID)
@@ -1255,7 +1223,7 @@ struct EPGGridView: View {
         return String(digest, radix: 16)
     }
 
-    // MARK: - Cache & Stores con TTL e Partizionamento per Giorno
+    // MARK: - Cache in Memoria con Protezione da Array Vuoti e TTL
 
     @MainActor
     private final class EPGMemoryCache {
@@ -1267,7 +1235,7 @@ struct EPGGridView: View {
         }
 
         private var storage: [String: Entry] = [:]
-        private let ttl: TimeInterval = 20 * 60 // 20 minuti di validità cache
+        private let ttl: TimeInterval = 20 * 60 // 20 minuti
 
         private func key(scope: String, streamId: Int, dayOffset: Int) -> String {
             "\(scope)#\(streamId)#d\(dayOffset)"
@@ -1284,6 +1252,7 @@ struct EPGGridView: View {
         }
 
         func store(scope: String, streamId: Int, dayOffset: Int, programs: [EPGProgram]) {
+            guard !programs.isEmpty else { return } // Protezione: non memorizza mai liste vuote
             let k = key(scope: scope, streamId: streamId, dayOffset: dayOffset)
             storage[k] = Entry(programs: programs, createdAt: Date())
         }
