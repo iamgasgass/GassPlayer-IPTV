@@ -16,6 +16,29 @@ import Foundation
 ///   originale cosi' come ricevuto dal provider;
 /// - i risultati sono ordinati per orario di inizio e deduplicati per id
 ///   (o per firma start+end+titolo quando l'id manca).
+///
+/// FIX 2026-09-20 (regressione "Dati non disponibili" nelle tile EPG):
+/// 1) Normalizzazione robusta dei timestamp Unix: alcuni pannelli Xtream
+///    inviano `start_timestamp`/`stop_timestamp` in MILLISECONDI invece che
+///    in secondi. Prima venivano interpretati sempre come secondi,
+///    producendo date collocate migliaia di anni nel futuro: il programma
+///    superava comunque il controllo `end > start` e veniva quindi accettato,
+///    ma cadeva sempre fuori dalla finestra oraria della griglia EPG,
+///    facendo apparire la tile come "Dati non disponibili" nonostante il
+///    fetch fosse andato a buon fine con dati reali. Ora la magnitudine del
+///    valore viene rilevata automaticamente e convertita in secondi quando
+///    necessario.
+/// 2) `isEmptyPayload`/`RawResponse` ora gestiscono correttamente le risposte
+///    scalari (`false`, `null`, stringa vuota) che alcuni pannelli inviano
+///    per segnalare "nessun EPG disponibile": prima potevano propagarsi come
+///    errore di decoding invece che come lista vuota gestita in modo pulito
+///    dal normale flusso di fallback.
+/// 3) Aggiunto `stop` come nome di campo alternativo per l'orario testuale di
+///    fine programma, per compatibilita' con pannelli che non usano `end`.
+/// 4) Euristica di decodifica Base64 irrobustita per non corrompere titoli
+///    gia' in chiaro (non tutti i provider codificano in Base64).
+///
+/// Parametri di cache/rete (TTL, timeout, limiti) INVARIATI.
 struct EPGService {
     let credentials: XtreamCredentials
 
@@ -318,13 +341,26 @@ struct EPGService {
         let items: [RawProgram]
 
         init(from decoder: Decoder) throws {
-            if let single = try? decoder.singleValueContainer(),
-               let array = try? single.decode([RawProgram].self) {
-                items = array
-                return
+            if let single = try? decoder.singleValueContainer() {
+                if let array = try? single.decode([RawProgram].self) {
+                    items = array
+                    return
+                }
+                // Risposta scalare (es. `false`/`null`) usata da alcuni pannelli
+                // per segnalare "nessun EPG disponibile": la trattiamo come
+                // lista vuota, non come errore di decodifica.
+                if (try? single.decode(Bool.self)) != nil || single.decodeNil() {
+                    items = []
+                    return
+                }
             }
 
-            let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+            guard let container = try? decoder.container(keyedBy: DynamicCodingKey.self) else {
+                // Il payload non è né un array né un oggetto riconoscibile
+                // (es. numero o stringa isolata): trattato come "nessun dato".
+                items = []
+                return
+            }
 
             for name in ["epg_listings", "epgListings", "listings", "programs", "data"] {
                 let key = DynamicCodingKey(stringValue: name)
@@ -357,6 +393,7 @@ struct EPGService {
             case programDescription = "description"
             case start
             case end
+            case stop
             case startTimestamp = "start_timestamp"
             case stopTimestamp = "stop_timestamp"
             case hasArchive = "has_archive"
@@ -364,7 +401,7 @@ struct EPGService {
 
         var startDate: Date? {
             if let startTimestamp, startTimestamp > 0 {
-                return Date(timeIntervalSince1970: TimeInterval(startTimestamp))
+                return Date(timeIntervalSince1970: EPGService.normalizedEpochSeconds(startTimestamp))
             }
 
             return start.flatMap(EPGService.parseDate)
@@ -372,11 +409,16 @@ struct EPGService {
 
         var endDate: Date? {
             if let stopTimestamp, stopTimestamp > 0 {
-                return Date(timeIntervalSince1970: TimeInterval(stopTimestamp))
+                return Date(timeIntervalSince1970: EPGService.normalizedEpochSeconds(stopTimestamp))
             }
 
-            return end.flatMap(EPGService.parseDate)
+            return (end ?? stopFallback).flatMap(EPGService.parseDate)
         }
+
+        /// Alcuni pannelli usano `stop` invece di `end` per l'orario testuale
+        /// di fine programma. Conservato separatamente per non alterare la
+        /// codifica principale del campo `end`.
+        private let stopFallback: String?
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -387,6 +429,7 @@ struct EPGService {
             programDescription = container.flexibleString(forKey: .programDescription)
             start = container.flexibleString(forKey: .start)
             end = container.flexibleString(forKey: .end)
+            stopFallback = container.flexibleString(forKey: .stop)
             startTimestamp = container.flexibleInt(forKey: .startTimestamp)
             stopTimestamp = container.flexibleInt(forKey: .stopTimestamp)
             hasArchive = container.flexibleBool(forKey: .hasArchive) ?? false
@@ -410,6 +453,19 @@ struct EPGService {
 
     // MARK: - Date handling
 
+    /// Alcuni provider Xtream inviano i timestamp Unix in MILLISECONDI
+    /// invece che in secondi. Un timestamp in secondi "ragionevole" (fino
+    /// a circa l'anno 5138) sta sotto i 100 miliardi; valori superiori sono
+    /// quasi certamente espressi in millisecondi e vengono quindi divisi
+    /// per 1000. Senza questa normalizzazione, un timestamp in millisecondi
+    /// interpretato come secondi produce una data migliaia di anni nel
+    /// futuro, che la griglia EPG scarta sempre come "fuori finestra"
+    /// mostrando erroneamente "Dati non disponibili".
+    fileprivate static func normalizedEpochSeconds(_ rawValue: Int) -> TimeInterval {
+        let value = TimeInterval(rawValue)
+        return value > 100_000_000_000 ? value / 1000 : value
+    }
+
     private static func parseDate(_ value: String) -> Date? {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -418,7 +474,8 @@ struct EPGService {
         }
 
         if let timestamp = TimeInterval(normalized), timestamp > 0 {
-            return Date(timeIntervalSince1970: timestamp)
+            let seconds = timestamp > 100_000_000_000 ? timestamp / 1000 : timestamp
+            return Date(timeIntervalSince1970: seconds)
         }
 
         for formatter in dateFormatters {
@@ -542,8 +599,21 @@ struct EPGService {
 
     // MARK: - Payload handling
 
+    /// Rileva payload "vuoti" in senso lato: array/dizionari vuoti, ma anche
+    /// valori scalari (`false`, `null`, stringa vuota, `0`) che alcuni
+    /// pannelli Xtream inviano per segnalare "nessun EPG disponibile" per
+    /// quel canale. In precedenza solo array/dizionari venivano riconosciuti:
+    /// una risposta scalare falliva silenziosamente il parsing JSON generico
+    /// e rischiava di propagarsi come errore di decodifica invece che come
+    /// normale lista vuota gestita dal flusso di fallback.
     private func isEmptyPayload(_ data: Data) -> Bool {
-        guard let object = try? JSONSerialization.jsonObject(with: data) else {
+        guard let object = try? JSONSerialization.jsonObject(
+            with: data,
+            options: [.fragmentsAllowed]
+        ) else {
+            // JSON non parsabile affatto: lasciamo che sia il decoder a
+            // tentare (e a produrre un errore chiaro) piuttosto che
+            // mascherarlo qui.
             return false
         }
 
@@ -555,6 +625,22 @@ struct EPGService {
             return dictionary.isEmpty
         }
 
+        if object is NSNull {
+            return true
+        }
+
+        if let boolValue = object as? Bool {
+            return boolValue == false
+        }
+
+        if let stringValue = object as? String {
+            return stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        if let numberValue = object as? NSNumber {
+            return numberValue.doubleValue == 0
+        }
+
         return false
     }
 
@@ -562,6 +648,17 @@ struct EPGService {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
+            return value
+        }
+
+        // Se il testo contiene spazi o caratteri estranei all'alfabeto
+        // Base64/URL-safe, è quasi certamente già testo in chiaro: evitiamo
+        // di tentare una decodifica che potrebbe "accidentalmente" produrre
+        // un risultato non-nil ma corrotto (falso positivo).
+        let base64Allowed = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=-_"
+        )
+        guard trimmed.unicodeScalars.allSatisfy({ base64Allowed.contains($0) }) else {
             return value
         }
 
