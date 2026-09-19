@@ -1,22 +1,41 @@
 import SwiftUI
 
 /// Estensioni che portano l'estetica Liquid Glass di `GlassCard` dentro
-/// layout custom (`ScrollView` + `VStack`, come `HomeView`) e — per le
-/// schermate che avessero ancora bisogno di una `List` di sistema — dentro
-/// una `List`. `SourcesView` non usa più la parte "List" da quando è stata
-/// convertita a `ScrollView`, ma questi helper restano qui per eventuali
-/// altre schermate dell'app che si affidano ancora a una `List` nativa.
+/// contenitori sia `List` (per le schermate che ne hanno ancora bisogno)
+/// sia `VStack`/`ScrollView` (come `SourcesView`, che non usa più `List`).
 extension View {
-    /// Sfondo "vetro" per una riga di `List`: stesso identico rendering di
-    /// `GlassCardBackground` (usato da `GlassCard`), non una sua imitazione.
+    /// Sfondo "vetro" per una riga di `List`, stesso rendering di
+    /// `GlassCardBackground`: `.glassEffect` reale su iOS 26+, fallback
+    /// `.ultraThinMaterial` + bordo altrimenti.
     func glassListRow(cornerRadius: CGFloat = 16) -> some View {
         listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             .listRowSeparator(.hidden)
             .listRowBackground(GlassListRowBackground(cornerRadius: cornerRadius))
     }
 
+    /// Da applicare alla `List` stessa (non alle righe): stile piatto senza
+    /// il raggruppamento automatico di sistema, sfondo nativo nascosto e
+    /// gradiente Liquid Glass.
+    func glassListContainer() -> some View {
+        listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .glassScreenBackground()
+    }
+
+    /// Equivalente di `glassListRow()` per contenuti **fuori** da `List`
+    /// (`VStack`/`ScrollView`, come in `HomeView` e — dopo la rimozione del
+    /// contenitore `List` — in `SourcesView`). Applica lo stesso identico
+    /// sfondo vetro come `.background(_:)` invece che come
+    /// `.listRowBackground(_:)`, con lo stesso padding orizzontale/verticale
+    /// che prima veniva dato dagli inset di riga.
+    func glassTab(cornerRadius: CGFloat = 16) -> some View {
+        padding(.horizontal, 16)
+            .padding(.vertical, 13)
+            .background(GlassListRowBackground(cornerRadius: cornerRadius))
+    }
+
     /// Sfondo di schermata coerente con `SourceManageView`, `EPGManageView`,
-    /// `TraktConnectView` **e** `HomeView`: stesso identico gradiente.
+    /// `TraktConnectView` e `HomeView`: stesso identico gradiente.
     func glassScreenBackground() -> some View {
         background(
             LinearGradient(
@@ -31,33 +50,12 @@ extension View {
             .ignoresSafeArea()
         )
     }
-
-    /// Da applicare a una `List` (non più usata da `SourcesView`, mantenuta
-    /// per compatibilità con altre schermate che si affidano ancora a una
-    /// `List` nativa con lo stesso linguaggio visivo).
-    func glassListContainer() -> some View {
-        listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .glassScreenBackground()
-    }
-
-    /// Sfondo "vetro" per una riga **fuori da una `List`** (dentro un
-    /// `VStack`/`ScrollView`, come in `HomeView` e nella nuova
-    /// `SourcesView`): stesso identico `GlassCardBackground` di `GlassCard`,
-    /// applicato direttamente al contenuto della riga invece che passato a
-    /// `.listRowBackground`. È l'equivalente "senza List" di
-    /// `.glassListRow()`.
-    func glassRow(cornerRadius: CGFloat = 16) -> some View {
-        padding(.horizontal, 14)
-            .modifier(GlassCardBackground(cornerRadius: cornerRadius))
-    }
 }
 
-/// Vista di sfondo per una riga di `List`, identica nel rendering a
-/// `GlassCardBackground` (stesso `glassEffect`/fallback), estratta come
-/// tipo a sé perché `.listRowBackground(_:)` richiede una `View` concreta
-/// e non un `ViewModifier` applicato al contenuto della riga.
-private struct GlassListRowBackground: View {
+/// Vista di sfondo Liquid Glass condivisa da `.glassListRow()` (dentro
+/// `List`) e `.glassTab()` (fuori da `List`), così il rendering è
+/// letteralmente lo stesso codice nei due contesti.
+struct GlassListRowBackground: View {
     let cornerRadius: CGFloat
 
     var body: some View {
@@ -92,67 +90,6 @@ struct GlassSectionHeader: View {
     }
 }
 
-// MARK: - Blocco di sezione senza List (fix spaziatura header→tab)
-
-/// Metriche del blocco di sezione, estratte in un tipo **non generico**
-/// perché Swift non ammette `static let` (stored property) dentro un tipo
-/// generico come `GlassSectionBlock<Content>`.
-///
-/// FIX BUILD — "static stored properties not supported in generic types":
-/// la build falliva perché `headerSpacing` era dichiarata `static let`
-/// direttamente dentro `GlassSectionBlock<Content: View>`. Le stored
-/// property statiche richiedono un layout di memoria fisso e univoco per
-/// tipo, cosa che un tipo generico non garantisce (ogni istanziazione
-/// `GlassSectionBlock<X>` sarebbe un tipo diverso a runtime). Spostando la
-/// costante in questo enum non generico il valore resta unico e condiviso
-/// da qualunque `GlassSectionBlock<Content>`, con zero impatto sul
-/// comportamento: 8pt esattamente come prima.
-private enum GlassSectionMetrics {
-    static let headerSpacing: CGFloat = 8
-}
-
-/// Blocco "sezione" per layout `ScrollView`/`VStack` (non `List`): titolo +
-/// contenuto, con una distanza header→primo elemento **fissa e identica in
-/// tutta l'app** (vedi `GlassSectionMetrics.headerSpacing`).
-///
-/// Rimuovendo la `List` e introducendo questo blocco, la distanza
-/// header→primo elemento è la stessa identica costante per **ogni**
-/// sezione, senza eccezioni: non c'è più alcun calcolo automatico di
-/// sistema (`List`/`Section`) che possa farla divergere tra sezioni con
-/// header/footer diversi.
-struct GlassSectionBlock<Content: View>: View {
-    let title: String
-    var trailingText: String? = nil
-    var footer: String? = nil
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: GlassSectionMetrics.headerSpacing) {
-            HStack {
-                GlassSectionHeader(title: title)
-
-                if let trailingText {
-                    Spacer()
-                    Text(trailingText)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            VStack(spacing: 10) {
-                content
-            }
-
-            if let footer {
-                Text(footer)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 2)
-            }
-        }
-    }
-}
-
 /// Cerchio icona colorato usato per identificare una sorgente per tipo,
 /// stessa proporzione (44×44) e stessa palette di `SourceManagerView`.
 struct GlassSourceIcon: View {
@@ -171,9 +108,7 @@ struct GlassSourceIcon: View {
 
 /// Contenuto di riga in stile Liquid Glass per un `NavigationLink`: icona in
 /// cerchio colorato + titolo, senza il proprio `Button` (il tocco e la
-/// chevron sono già forniti dal `NavigationLink` che lo ospita — usarci
-/// dentro `GlassSettingsRow`, che è essa stessa un `Button`, creerebbe un
-/// conflitto di gesture).
+/// chevron sono già forniti dal `NavigationLink` che lo ospita).
 struct GlassSourceRowLabel: View {
     let icon: String
     let title: String
@@ -196,6 +131,8 @@ struct GlassSourceRowLabel: View {
                         .lineLimit(1)
                 }
             }
+
+            Spacer()
         }
         .padding(.vertical, 13)
     }
@@ -219,9 +156,8 @@ extension MediaSourceType {
 // MARK: - Pillola flottante condivisa (floating tab)
 
 /// Pillola "Liquid Glass" flottante da usare in `.principal` nella toolbar,
-/// come selettore/menu a tendina. Condivisa da `HomeView` e `SourcesView`:
-/// un'unica fonte di verità per il "floating tab" Liquid Glass di tutta
-/// l'app.
+/// come selettore/menu a tendina. Condivisa carattere per carattere da
+/// `HomeView` e `SourcesView`.
 struct GlassMenuPillLabel: View {
     let systemImage: String
     let title: String
