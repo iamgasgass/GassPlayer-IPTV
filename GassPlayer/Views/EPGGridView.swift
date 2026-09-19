@@ -1,17 +1,37 @@
 import SwiftUI
 
-/// EPG touch-first - Replica Pixel-to-Pixel dell'interfaccia nel video:
-/// 1. Colore Banner Canale & Tile Dinamico e Adattivo (100% Colori Pastello):
-///    - Palette pastello dinamica e calibrata per canale (Rai 1, Rai 2, Rai 3, 4K, Sport, Cinema, o hash deterministico pastello).
-///    - Banner canale con fondo pastello solido vibrante e icone originali.
-///    - Tile con sfondo adattivo scuro-pastello (`channelColor.opacity(0.14)`) e riempimento live luminoso (`channelColor.opacity(0.32)`).
-/// 2. Sezione Tile con Animazioni Fluidi di Nome Canale e Orario:
-///    - Navigazione sticky orizzontale perfetta: Nome canale e orario rimangono ancorati al bordo visibile durante lo scroll.
-///    - Transizione fluida quando il confine della tile successiva subentra.
-///    - Testo perfettamente allineato e centrato verticalmente a 58pt di altezza.
-/// 3. Header Temporale e Indicatore Live:
-///    - "Oggi" pulito senza triangolini a fianco.
-///    - Indicatore a freccia live posizionato al millimetro sull'ora corrente.
+/// Modalità di visualizzazione dell'aspetto EPG
+enum EPGDisplayMode: String, CaseIterable, Identifiable {
+    case compact = "compact"
+    case comfortable = "comfortable"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .compact: return "Compatta"
+        case .comfortable: return "Comoda"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .compact: return "rectangle.grid.1x2"
+        case .comfortable: return "rectangle.grid.2x2"
+        }
+    }
+}
+
+/// EPG touch-first ultra-ottimizzata con supporto doppio aspetto (Compatta / Comoda):
+/// 1. Aspetto EPG Selezionabile (Menu "…" -> "Aspetto EPG"):
+///    - **Compatta**: Layout salvaspazio a 2 righe per tile, altezza 58pt, banner 80x58, navigazione sticky e colori pastello reattivi.
+///    - **Comoda**: Layout esteso a 3 righe (Canale / Orario / Titolo 16pt), altezza 82pt, banner 86x76, spaziatura generosa.
+/// 2. Colori Pastello Dinamici & Adattivi:
+///    - Palette pastello per canale (Rai 1, Rai 2, Rai 3, 4K, Sport, Cinema, o hash deterministico pastello).
+///    - Tile con sfondo adattivo scuro-pastello e riempimento live luminoso sincronizzato alla freccia oraria.
+/// 3. Navigazione Fluida & Sticky Header:
+///    - Nome canale e orario rimangono ancorati al bordo visibile durante lo scrolling orizzontale.
+///    - Header temporale con Canvas ad alte prestazioni e freccia live allineata al pixel.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -20,6 +40,8 @@ struct EPGGridView: View {
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var favorites: EPGFavoritesStore
+
+    @AppStorage("gassplayer.epg.display_mode") private var displayMode: EPGDisplayMode = .compact
 
     @State private var programsByStream: [Int: [EPGProgram]] = [:]
     @State private var failedStreamIDs = Set<Int>()
@@ -46,21 +68,29 @@ struct EPGGridView: View {
     private let searchDebounceNanoseconds: UInt64 = 120_000_000
     private let loadingIndicatorDelayNanoseconds: UInt64 = 150_000_000
 
-    // MARK: - Dimensioni & Geometria Pixel-to-Pixel
+    // MARK: - Geometria Dinamica (Compatta vs Comoda)
 
-    private let bannerInset: CGFloat = 10
-    private let channelBannerWidth: CGFloat = 80
-    private let bannerHeight: CGFloat = 58
-    private let blockHeight: CGFloat = 58
-    private let rowHeight: CGFloat = 66
-    private let timelineHeaderHeight: CGFloat = 40
-    private let arrowGlyphWidth: CGFloat = 16
+    private var isComfortable: Bool { displayMode == .comfortable }
+
+    private var bannerInset: CGFloat { isComfortable ? 12 : 10 }
+    private var channelBannerWidth: CGFloat { isComfortable ? 86 : 80 }
+    private var bannerHeight: CGFloat { isComfortable ? 76 : 58 }
+    private var blockHeight: CGFloat { isComfortable ? 82 : 58 }
+    private var rowHeight: CGFloat { isComfortable ? 96 : 66 }
+    private var bannerCornerRadius: CGFloat { isComfortable ? 16 : 14 }
+    private var tileCornerRadius: CGFloat { isComfortable ? 18 : 12 }
+    private var timelineHeaderHeight: CGFloat { isComfortable ? 44 : 40 }
+    private var arrowGlyphWidth: CGFloat { isComfortable ? 20 : 16 }
+    private var arrowGlyphFontSize: CGFloat { isComfortable ? 20 : 15 }
+    private var dayTitleFontSize: CGFloat { isComfortable ? 28 : 24 }
+    private var hourFontSize: CGFloat { isComfortable ? 22 : 20 }
+    private var hourFontWeight: Font.Weight { isComfortable ? .medium : .semibold }
 
     /// Spaziatura temporale (160pt ogni 30 minuti): scala pixel per minuto = 160 / 30 = 5.333 pt/min.
     private let halfHourPixelSpacing: CGFloat = 160
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
-    /// Larghezza della colonna fissa laterale: 10 + 80 + 10 = 100pt.
+    /// Larghezza della colonna fissa laterale
     private var bannerColumnWidth: CGFloat {
         bannerInset + channelBannerWidth + bannerInset
     }
@@ -115,48 +145,45 @@ struct EPGGridView: View {
         var id: Int { stream.streamId }
     }
 
-    // MARK: - Palette Pastello Dinamica & Adattiva per Canale
+    // MARK: - Palette Pastello Dinamica & Adattiva
 
-    /// Genera o associa un colore pastello dedicato, elegante e riconoscibile per ciascun canale.
     private static func pastelColor(for stream: XtreamStream) -> Color {
         let name = stream.name.lowercased()
 
-        // Riconoscimento canali noti con tonalità pastello fedeli al video
         if name.contains("rai 1") || name.contains("rai1") {
-            return Color(red: 0.88, green: 0.29, blue: 0.33) // Pastello Corallo / Rosso Rai 1
+            return Color(red: 0.88, green: 0.29, blue: 0.33)
         } else if name.contains("rai 2") || name.contains("rai2") {
-            return Color(red: 0.89, green: 0.44, blue: 0.28) // Pastello Terracotta / Arancio Rai 2
+            return Color(red: 0.89, green: 0.44, blue: 0.28)
         } else if name.contains("rai 3") || name.contains("rai3") {
-            return Color(red: 0.28, green: 0.68, blue: 0.48) // Pastello Salvia / Verde Rai 3
+            return Color(red: 0.28, green: 0.68, blue: 0.48)
         } else if name.contains("rai 4k") || name.contains("4k") {
-            return Color(red: 0.76, green: 0.22, blue: 0.36) // Pastello Rubino Scuro
+            return Color(red: 0.76, green: 0.22, blue: 0.36)
         } else if name.contains("rai 4") || name.contains("rai4") {
-            return Color(red: 0.58, green: 0.34, blue: 0.78) // Pastello Lavanda / Viola Rai 4
+            return Color(red: 0.58, green: 0.34, blue: 0.78)
         } else if name.contains("rai 5") || name.contains("rai5") {
-            return Color(red: 0.86, green: 0.62, blue: 0.24) // Pastello Ambra / Ocra Rai 5
+            return Color(red: 0.86, green: 0.62, blue: 0.24)
         } else if name.contains("rai news") || name.contains("tg24") || name.contains("news") {
-            return Color(red: 0.28, green: 0.52, blue: 0.84) // Pastello Celeste / Indaco News
+            return Color(red: 0.28, green: 0.52, blue: 0.84)
         } else if name.contains("sport") || name.contains("calcio") || name.contains("dazn") {
-            return Color(red: 0.22, green: 0.70, blue: 0.62) // Pastello Smeraldo / Turchese Sport
+            return Color(red: 0.22, green: 0.70, blue: 0.62)
         } else if name.contains("movie") || name.contains("cinema") || name.contains("film") {
-            return Color(red: 0.52, green: 0.38, blue: 0.82) // Pastello Indaco / Cinema
+            return Color(red: 0.52, green: 0.38, blue: 0.82)
         } else if name.contains("private") || name.contains("vip") {
-            return Color(red: 0.80, green: 0.20, blue: 0.26) // Pastello Cremisi
+            return Color(red: 0.80, green: 0.20, blue: 0.26)
         }
 
-        // Generazione deterministica di colore pastello basata sul nome del canale
         let hash = name.utf8.reduce(into: 5381) { ($0 = ($0 << 5) &+ $0 &+ Int($1)) }
         let hues: [(Double, Double, Double)] = [
-            (0.88, 0.32, 0.36), // Pastel Coral Red
-            (0.89, 0.46, 0.28), // Pastel Terracotta
-            (0.86, 0.62, 0.26), // Pastel Amber
-            (0.28, 0.68, 0.48), // Pastel Sage Green
-            (0.22, 0.68, 0.62), // Pastel Mint Teal
-            (0.28, 0.54, 0.85), // Pastel Cerulean Blue
-            (0.48, 0.42, 0.82), // Pastel Slate Indigo
-            (0.64, 0.36, 0.78), // Pastel Purple
-            (0.82, 0.32, 0.62), // Pastel Orchid
-            (0.78, 0.24, 0.38)  // Pastel Ruby Rose
+            (0.88, 0.32, 0.36),
+            (0.89, 0.46, 0.28),
+            (0.86, 0.62, 0.26),
+            (0.28, 0.68, 0.48),
+            (0.22, 0.68, 0.62),
+            (0.28, 0.54, 0.85),
+            (0.48, 0.42, 0.82),
+            (0.64, 0.36, 0.78),
+            (0.82, 0.32, 0.62),
+            (0.78, 0.24, 0.38)
         ]
         let rgb = hues[abs(hash) % hues.count]
         return Color(red: rgb.0, green: rgb.1, blue: rgb.2)
@@ -255,7 +282,7 @@ struct EPGGridView: View {
         let remaining = max(0, effectiveCap - renderLimit)
 
         let ids = paged.map(\.streamId).map(String.init).joined(separator: ",")
-        let identity = "\(groupID ?? "all")|\(selectedDayOffset)|\(ids)"
+        let identity = "\(groupID ?? "all")|\(selectedDayOffset)|\(ids)|\(displayMode.rawValue)"
 
         return (totalFiltered, paged, canMore, remaining, identity)
     }
@@ -477,7 +504,7 @@ struct EPGGridView: View {
                     scheduleReload()
                 } label: {
                     Text(dayTitle)
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .font(.system(size: dayTitleFontSize, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                         .frame(height: timelineHeaderHeight, alignment: .leading)
                         .padding(.leading, bannerInset)
@@ -497,13 +524,13 @@ struct EPGGridView: View {
         .background(Color.black)
     }
 
-    /// Header orari su Canvas con disegno immediato e freccia live allineata.
+    /// Header orari su Canvas ad alte prestazioni con freccia live allineata
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, size in
                 for tick in halfHourTicks {
                     let text = Text(Self.timeFormatter.string(from: tick))
-                        .font(.system(size: 20, weight: .semibold, design: .rounded))
+                        .font(.system(size: hourFontSize, weight: hourFontWeight, design: .rounded))
                         .foregroundStyle(.white.opacity(0.60))
                         .monospacedDigit()
                     context.draw(text, at: CGPoint(x: xCoordinate(for: tick), y: size.height / 2), anchor: .leading)
@@ -513,7 +540,7 @@ struct EPGGridView: View {
 
             if isToday {
                 Image(systemName: "arrowtriangle.down.fill")
-                    .font(.system(size: 15, weight: .bold))
+                    .font(.system(size: arrowGlyphFontSize, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: arrowGlyphWidth, height: timelineHeaderHeight, alignment: .center)
                     .offset(x: liveAxisX - arrowGlyphWidth / 2)
@@ -544,7 +571,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale con Colore Pastello Dinamico e Icone Native Originali
+    /// Banner Canale con Aspetto Dinamico (Compatto vs Comodo) e Colore Pastello
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let themeColor = Self.pastelColor(for: stream)
 
@@ -552,8 +579,7 @@ struct EPGGridView: View {
             playLiveStream(stream, dismissSheetFirst: false)
         } label: {
             ZStack {
-                // Sfondo banner pastello vivo
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: bannerCornerRadius, style: .continuous)
                     .fill(themeColor)
 
                 if let icon = stream.streamIcon, !icon.isEmpty {
@@ -563,26 +589,26 @@ struct EPGGridView: View {
                                 .renderingMode(.original)
                                 .resizable()
                                 .scaledToFit()
-                                .padding(8)
+                                .padding(isComfortable ? 12 : 8)
                         } else {
                             Image(systemName: "play.tv.fill")
                                 .renderingMode(.original)
-                                .font(.system(size: 22))
+                                .font(.system(size: isComfortable ? 26 : 22))
                                 .foregroundStyle(.white)
                         }
                     }
                 } else {
                     Image(systemName: "play.tv.fill")
                         .renderingMode(.original)
-                        .font(.system(size: 22))
+                        .font(.system(size: isComfortable ? 26 : 22))
                         .foregroundStyle(.white)
                 }
 
                 if favorites.isFavorite(stream.streamId) {
                     Image(systemName: "star.fill")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(size: isComfortable ? 11 : 10, weight: .bold))
                         .foregroundStyle(.yellow)
-                        .padding(4)
+                        .padding(isComfortable ? 5 : 4)
                         .background(.ultraThinMaterial, in: Circle())
                         .padding(4)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -613,22 +639,22 @@ struct EPGGridView: View {
                 Text("Dati non disponibili")
             }
         }
-        .font(.system(size: 14, weight: .medium, design: .rounded))
+        .font(.system(size: isComfortable ? 15 : 14, weight: .medium, design: .rounded))
         .foregroundStyle(.white.opacity(0.65))
-        .padding(.horizontal, 14)
+        .padding(.horizontal, isComfortable ? 16 : 14)
         .frame(height: blockHeight)
         .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: tileCornerRadius, style: .continuous)
                 .fill(Color(white: 0.10).opacity(0.85))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: tileCornerRadius, style: .continuous)
                         .fill(themeColor.opacity(0.08))
                 }
         }
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// Tile del programma: Sfondo adattivo pastello, riempimento live luminoso e animazione sticky del testo
+    /// Tile del programma: Adatta la densità dei dati in base alla modalità Compatta / Comoda
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -654,44 +680,66 @@ struct EPGGridView: View {
             let frameInViewport = geo.frame(in: .named("epgViewportCoordinateSpace"))
             let tileMinX = frameInViewport.minX
 
-            // Calcolo offset per mantenere il blocco testo agganciato a sinistra all'interno del viewport
             let visibleLeadingEdge = max(0, bannerColumnWidth - tileMinX)
-            let maxSticky = max(0, width - 110)
+            let maxSticky = max(0, width - (isComfortable ? 130 : 110))
             let stickyX = min(visibleLeadingEdge, maxSticky)
 
-            // Scivolamento e dissolvenza calibrata all'avvicinarsi del bordo finale della tile
             let exitProgress = max(0, min(1, (visibleLeadingEdge - maxSticky) / 24))
             let textFadeOpacity = max(0.20, 1.0 - Double(exitProgress * 0.75))
 
             Button {
                 selectedProgram = SelectedProgram(program: program, stream: stream)
             } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        // Nome Canale ancorato a sinistra
+                if isComfortable {
+                    // Vista Comoda: layout esteso su 3 righe
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(stream.name)
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-
-                        // Orario di inizio
-                        Text(program.start.formatted(date: .omitted, time: .shortened))
-                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
                             .foregroundStyle(.white.opacity(0.60))
                             .lineLimit(1)
-                    }
 
-                    // Titolo del Programma
-                    Text(program.title)
-                        .font(.system(size: 14, weight: .regular, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.92))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                        Text(program.start.formatted(date: .omitted, time: .shortened))
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.52))
+                            .lineLimit(1)
+
+                        Text(program.title)
+                            .font(.system(size: 16, weight: .regular, design: .rounded))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .opacity(textFadeOpacity)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 8)
+                    .offset(x: stickyX)
+                    .frame(width: width, height: blockHeight, alignment: .topLeading)
+                } else {
+                    // Vista Compatta: layout salvaspazio a 2 righe con centraggio perfetto
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(stream.name)
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+
+                            Text(program.start.formatted(date: .omitted, time: .shortened))
+                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.60))
+                                .lineLimit(1)
+                        }
+
+                        Text(program.title)
+                            .font(.system(size: 14, weight: .regular, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .opacity(textFadeOpacity)
+                    .padding(.horizontal, 10)
+                    .offset(x: stickyX)
+                    .frame(width: width, height: blockHeight, alignment: .leading)
                 }
-                .opacity(textFadeOpacity)
-                .padding(.horizontal, 10)
-                .offset(x: stickyX)
-                .frame(width: width, height: blockHeight, alignment: .leading)
             }
             .buttonStyle(.plain)
             .background {
@@ -701,9 +749,9 @@ struct EPGGridView: View {
                     tileWidth: width
                 )
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: tileCornerRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: tileCornerRadius, style: .continuous)
                     .strokeBorder(themeColor.opacity(0.18), lineWidth: 0.8)
             }
         }
@@ -714,7 +762,7 @@ struct EPGGridView: View {
         )
     }
 
-    /// Background pastello adattivo della tile con riempimento live luminoso fino alla freccia oraria
+    /// Background pastello adattivo della tile con riempimento live luminoso
     @ViewBuilder
     private func programTileBackground(
         themeColor: Color,
@@ -724,15 +772,13 @@ struct EPGGridView: View {
         let brightWidth = isToday ? min(max(liveAxisX - tileStartX, 0), tileWidth) : 0
 
         ZStack(alignment: .leading) {
-            // Sfondo base scuro con elegante tonalità pastello adattiva del canale
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: tileCornerRadius, style: .continuous)
                 .fill(Color(white: 0.10))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: tileCornerRadius, style: .continuous)
                         .fill(themeColor.opacity(0.14))
                 }
 
-            // Riempimento live luminoso sincronizzato all'asse live
             if brightWidth > 0 {
                 Rectangle()
                     .fill(
@@ -812,6 +858,21 @@ struct EPGGridView: View {
 
         ToolbarItem(placement: .navigationBarTrailing) {
             Menu {
+                // Menu specifico ASPETTO EPG
+                Menu {
+                    Picker("Aspetto EPG", selection: $displayMode) {
+                        ForEach(EPGDisplayMode.allCases) { mode in
+                            Label(mode.title, systemImage: mode.icon)
+                                .tag(mode)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("Aspetto EPG", systemImage: "rectangle.split.2x1")
+                }
+
+                Divider()
+
                 Button {
                     reminderToast = "Aggiornamento guida in corso…"
                     Task { await refreshAll() }
