@@ -1,15 +1,17 @@
 import SwiftUI
 
 /// EPG touch-first - Replica Pixel-to-Pixel dell'interfaccia nel video:
-/// 1. Banner Canale Fisso a Sinistra:
-///   - Riquadro rosso acceso con corner radius 14pt.
-///   - Icone/loghi standard e originali con rendering nativo (.original / senza tinte forzate).
-/// 2. Header Temporale:
-///   - Testo giorno ("Oggi") pulito senza triangolini a fianco.
-///   - Indicatore Live (freccia a triangolo bianco) posizionato nell'header sull'orario corrente.
-/// 3. Allineamento e Tipografia Tile:
-///   - Contenuto della tile perfettamente allineato verticalmente al centro.
-///   - Colori, opacità e riempimento live sincronizzati al pixel.
+/// 1. Colore Banner Canale & Tile Dinamico e Adattivo (100% Colori Pastello):
+///    - Palette pastello dinamica e calibrata per canale (Rai 1, Rai 2, Rai 3, 4K, Sport, Cinema, o hash deterministico pastello).
+///    - Banner canale con fondo pastello solido vibrante e icone originali.
+///    - Tile con sfondo adattivo scuro-pastello (`channelColor.opacity(0.14)`) e riempimento live luminoso (`channelColor.opacity(0.32)`).
+/// 2. Sezione Tile con Animazioni Fluidi di Nome Canale e Orario:
+///    - Navigazione sticky orizzontale perfetta: Nome canale e orario rimangono ancorati al bordo visibile durante lo scroll.
+///    - Transizione fluida quando il confine della tile successiva subentra.
+///    - Testo perfettamente allineato e centrato verticalmente a 58pt di altezza.
+/// 3. Header Temporale e Indicatore Live:
+///    - "Oggi" pulito senza triangolini a fianco.
+///    - Indicatore a freccia live posizionato al millimetro sull'ora corrente.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -111,6 +113,53 @@ struct EPGGridView: View {
         let stream: XtreamStream
         let url: URL
         var id: Int { stream.streamId }
+    }
+
+    // MARK: - Palette Pastello Dinamica & Adattiva per Canale
+
+    /// Genera o associa un colore pastello dedicato, elegante e riconoscibile per ciascun canale.
+    private static func pastelColor(for stream: XtreamStream) -> Color {
+        let name = stream.name.lowercased()
+
+        // Riconoscimento canali noti con tonalità pastello fedeli al video
+        if name.contains("rai 1") || name.contains("rai1") {
+            return Color(red: 0.88, green: 0.29, blue: 0.33) // Pastello Corallo / Rosso Rai 1
+        } else if name.contains("rai 2") || name.contains("rai2") {
+            return Color(red: 0.89, green: 0.44, blue: 0.28) // Pastello Terracotta / Arancio Rai 2
+        } else if name.contains("rai 3") || name.contains("rai3") {
+            return Color(red: 0.28, green: 0.68, blue: 0.48) // Pastello Salvia / Verde Rai 3
+        } else if name.contains("rai 4k") || name.contains("4k") {
+            return Color(red: 0.76, green: 0.22, blue: 0.36) // Pastello Rubino Scuro
+        } else if name.contains("rai 4") || name.contains("rai4") {
+            return Color(red: 0.58, green: 0.34, blue: 0.78) // Pastello Lavanda / Viola Rai 4
+        } else if name.contains("rai 5") || name.contains("rai5") {
+            return Color(red: 0.86, green: 0.62, blue: 0.24) // Pastello Ambra / Ocra Rai 5
+        } else if name.contains("rai news") || name.contains("tg24") || name.contains("news") {
+            return Color(red: 0.28, green: 0.52, blue: 0.84) // Pastello Celeste / Indaco News
+        } else if name.contains("sport") || name.contains("calcio") || name.contains("dazn") {
+            return Color(red: 0.22, green: 0.70, blue: 0.62) // Pastello Smeraldo / Turchese Sport
+        } else if name.contains("movie") || name.contains("cinema") || name.contains("film") {
+            return Color(red: 0.52, green: 0.38, blue: 0.82) // Pastello Indaco / Cinema
+        } else if name.contains("private") || name.contains("vip") {
+            return Color(red: 0.80, green: 0.20, blue: 0.26) // Pastello Cremisi
+        }
+
+        // Generazione deterministica di colore pastello basata sul nome del canale
+        let hash = name.utf8.reduce(into: 5381) { ($0 = ($0 << 5) &+ $0 &+ Int($1)) }
+        let hues: [(Double, Double, Double)] = [
+            (0.88, 0.32, 0.36), // Pastel Coral Red
+            (0.89, 0.46, 0.28), // Pastel Terracotta
+            (0.86, 0.62, 0.26), // Pastel Amber
+            (0.28, 0.68, 0.48), // Pastel Sage Green
+            (0.22, 0.68, 0.62), // Pastel Mint Teal
+            (0.28, 0.54, 0.85), // Pastel Cerulean Blue
+            (0.48, 0.42, 0.82), // Pastel Slate Indigo
+            (0.64, 0.36, 0.78), // Pastel Purple
+            (0.82, 0.32, 0.62), // Pastel Orchid
+            (0.78, 0.24, 0.38)  // Pastel Ruby Rose
+        ]
+        let rgb = hues[abs(hash) % hues.count]
+        return Color(red: rgb.0, green: rgb.1, blue: rgb.2)
     }
 
     // MARK: - Sorgenti Dati Centralizzate
@@ -479,14 +528,15 @@ struct EPGGridView: View {
 
     private func timelineRow(for stream: XtreamStream) -> some View {
         let programs = visiblePrograms(for: stream)
+        let themeColor = Self.pastelColor(for: stream)
 
         return ZStack(alignment: .leading) {
             if programs.isEmpty {
-                unavailableBlock(for: stream)
+                unavailableBlock(for: stream, themeColor: themeColor)
             } else {
                 ForEach(Array(programs.enumerated()), id: \.element.id) { index, program in
                     let nextStart = index + 1 < programs.count ? programs[index + 1].start : nil
-                    programBlock(program, stream: stream, nextProgramStart: nextStart)
+                    programBlock(program, stream: stream, themeColor: themeColor, nextProgramStart: nextStart)
                 }
             }
         }
@@ -494,14 +544,17 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale Rosso Stile Video: Icone standard native e originali
+    /// Banner Canale con Colore Pastello Dinamico e Icone Native Originali
     private func channelBanner(_ stream: XtreamStream) -> some View {
-        Button {
+        let themeColor = Self.pastelColor(for: stream)
+
+        return Button {
             playLiveStream(stream, dismissSheetFirst: false)
         } label: {
             ZStack {
+                // Sfondo banner pastello vivo
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color(red: 0.90, green: 0.16, blue: 0.22))
+                    .fill(themeColor)
 
                 if let icon = stream.streamIcon, !icon.isEmpty {
                     AsyncImage(url: URL(string: icon)) { phase in
@@ -543,7 +596,7 @@ struct EPGGridView: View {
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
-    private func unavailableBlock(for stream: XtreamStream) -> some View {
+    private func unavailableBlock(for stream: XtreamStream, themeColor: Color) -> some View {
         let loading = loadingStreamIDs.contains(stream.streamId)
         let failed = failedStreamIDs.contains(stream.streamId)
 
@@ -564,14 +617,22 @@ struct EPGGridView: View {
         .foregroundStyle(.white.opacity(0.65))
         .padding(.horizontal, 14)
         .frame(height: blockHeight)
-        .background(Color(white: 0.11), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(white: 0.10).opacity(0.85))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(themeColor.opacity(0.08))
+                }
+        }
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// Tile del programma con allineamento verticale centrato e scorrimento sticky fluido
+    /// Tile del programma: Sfondo adattivo pastello, riempimento live luminoso e animazione sticky del testo
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
+        themeColor: Color,
         nextProgramStart: Date?
     ) -> some View {
         let clippedStart = max(program.start, windowStart)
@@ -593,33 +654,31 @@ struct EPGGridView: View {
             let frameInViewport = geo.frame(in: .named("epgViewportCoordinateSpace"))
             let tileMinX = frameInViewport.minX
 
-            // Offset per mantenere il testo agganciato a sinistra all'interno del viewport
-            let overlap = max(0, bannerColumnWidth - tileMinX)
-            let maxSticky = max(0, width - 120)
-            let stickyX = min(overlap, maxSticky)
+            // Calcolo offset per mantenere il blocco testo agganciato a sinistra all'interno del viewport
+            let visibleLeadingEdge = max(0, bannerColumnWidth - tileMinX)
+            let maxSticky = max(0, width - 110)
+            let stickyX = min(visibleLeadingEdge, maxSticky)
 
-            // Animazione di scivolamento verso il programma successivo
-            let transitionProgress = max(0, min(1, (overlap - maxSticky) / 30))
-            let nameSlideOffset = stickyX
-            let timeEntranceOpacity = max(0.2, 1.0 - Double(transitionProgress))
+            // Scivolamento e dissolvenza calibrata all'avvicinarsi del bordo finale della tile
+            let exitProgress = max(0, min(1, (visibleLeadingEdge - maxSticky) / 24))
+            let textFadeOpacity = max(0.20, 1.0 - Double(exitProgress * 0.75))
 
             Button {
                 selectedProgram = SelectedProgram(program: program, stream: stream)
             } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
-                        // Nome Canale sempre ancorato a sinistra
+                        // Nome Canale ancorato a sinistra
                         Text(stream.name)
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
                             .foregroundStyle(.white)
                             .lineLimit(1)
 
-                        // Orario con animazione fluida
+                        // Orario di inizio
                         Text(program.start.formatted(date: .omitted, time: .shortened))
                             .font(.system(size: 13, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.55))
+                            .foregroundStyle(.white.opacity(0.60))
                             .lineLimit(1)
-                            .opacity(timeEntranceOpacity)
                     }
 
                     // Titolo del Programma
@@ -629,20 +688,24 @@ struct EPGGridView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
+                .opacity(textFadeOpacity)
                 .padding(.horizontal, 10)
-                .offset(x: nameSlideOffset)
+                .offset(x: stickyX)
                 .frame(width: width, height: blockHeight, alignment: .leading)
             }
             .buttonStyle(.plain)
             .background {
                 programTileBackground(
-                    stream: stream,
-                    program: program,
+                    themeColor: themeColor,
                     tileStartX: startX,
                     tileWidth: width
                 )
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(themeColor.opacity(0.18), lineWidth: 0.8)
+            }
         }
         .frame(width: width, height: blockHeight)
         .offset(x: startX)
@@ -651,23 +714,31 @@ struct EPGGridView: View {
         )
     }
 
-    /// Background scuro della card con riempimento live sincronizzato alla freccia corrente
+    /// Background pastello adattivo della tile con riempimento live luminoso fino alla freccia oraria
     @ViewBuilder
     private func programTileBackground(
-        stream: XtreamStream,
-        program: EPGProgram,
+        themeColor: Color,
         tileStartX: CGFloat,
         tileWidth: CGFloat
     ) -> some View {
         let brightWidth = isToday ? min(max(liveAxisX - tileStartX, 0), tileWidth) : 0
 
         ZStack(alignment: .leading) {
+            // Sfondo base scuro con elegante tonalità pastello adattiva del canale
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(white: 0.13))
+                .fill(Color(white: 0.10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(themeColor.opacity(0.14))
+                }
 
+            // Riempimento live luminoso sincronizzato all'asse live
             if brightWidth > 0 {
                 Rectangle()
-                    .fill(Color(white: 0.22))
+                    .fill(
+                        Color(white: 0.14)
+                            .overlay(themeColor.opacity(0.32))
+                    )
                     .frame(width: brightWidth)
             }
         }
