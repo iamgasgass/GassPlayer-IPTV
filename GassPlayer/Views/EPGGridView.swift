@@ -27,6 +27,17 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 /// - Il tocco sul banner canale attiva direttamente `livePlayback` (`AdaptivePlayerView`) a latenza zero, esattamente come in EPG da Home.
 /// - Supporto per entrambe le densità di layout: "Compatta" (rowHeight 66, banner 80x58) e "Comoda" (rowHeight 96, banner 86x76).
 /// - Colori pastello adattivi, avanzamento live coordinato e voce di menu dedicata "Aspetto EPG".
+///
+/// FIX 2026-09-20 (regressione "Dati non disponibili"):
+/// 1) I trigger reattivi (cambio identity/lista canali/preferiti) ora usano SEMPRE `scheduleReload(debounced: true)`
+///    così raffiche ravvicinate di aggiornamenti (es. catalogo che si popola in modo incrementale) non generano
+///    una cascata di cancellazioni che impedisce a un batch EPG di completarsi mai.
+/// 2) Il task group di fetch non scarta più i risultati "in ritardo" quando il Task viene cancellato: un batch
+///    già avviato viene sempre portato a termine e il suo stato applicato correttamente (niente più stream
+///    "orfani" bloccati sul messaggio di default).
+/// 3) La cache EPG e lo stato in memoria vengono ora invalidati/riscoperti in base al giorno selezionato
+///    (Ieri/Oggi/Domani), evitando di mostrare (o nascondere) dati appartenenti a un'altra finestra temporale.
+/// Parametri di tempo e numero di caricamenti concorrenti INVARIATI rispetto alla versione precedente.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -56,6 +67,7 @@ struct EPGGridView: View {
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
 
+    // MARK: - Parametri di tempo & concorrenza (INVARIATI)
     private let renderPageSize = 32
     private let hardRenderCap = 250
     private let maxConcurrentRequests = 24
@@ -106,7 +118,7 @@ struct EPGGridView: View {
         bannerColumnWidth - (bannerInset * 2)
     }
 
-    /// Finestra temporale: 30 minuti passati, 3 ore future.
+    /// Finestra temporale: 30 minuti passati, 3 ore future. (INVARIATA)
     private let pastWindow: TimeInterval = 30 * 60
     private let futureWindow: TimeInterval = 180 * 60
 
@@ -261,7 +273,8 @@ struct EPGGridView: View {
         searchQuery = ""
         showFavoritesOnly = false
         renderLimit = renderPageSize
-        scheduleReload()
+        // Il cambio di identity generato da questa selezione farà scattare
+        // automaticamente `scheduleReload(debounced: true)` tramite l'onChange dedicato.
     }
 
     private var streamData: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String) {
@@ -290,13 +303,17 @@ struct EPGGridView: View {
         let remaining = max(0, effectiveCap - renderLimit)
 
         let ids = paged.map(\.streamId).map(String.init).joined(separator: ",")
+        // L'identity include il giorno selezionato: cambiare giorno genera sempre
+        // un nuovo ciclo di ricarica/rivalidazione della cache EPG.
         let identity = "\(groupID ?? "all")|\(selectedDayOffset)|\(ids)"
 
         return (totalFiltered, paged, canMore, remaining, identity)
     }
 
+    /// Scope di cache che include anche il giorno selezionato, per evitare che dati
+    /// di un giorno diverso vengano riusati/mostrati come validi per la finestra corrente.
     private var cacheScope: String {
-        Self.scopeKey(for: credentials)
+        "\(Self.scopeKey(for: credentials))|d\(selectedDayOffset)"
     }
 
     // MARK: - Geometria Temporale
@@ -423,10 +440,20 @@ struct EPGGridView: View {
                     if currentStreamData.paged.isEmpty {
                         renderLimit = min(renderPageSize, max(streams.count, 1))
                     }
-                    scheduleReload()
+                    // Debounced: evita che un catalogo che si popola in modo incrementale
+                    // generi una cascata di cancellazioni che impedisce il completamento del fetch EPG.
+                    scheduleReload(debounced: true)
                 }
                 .onChange(of: currentStreamData.identity) { _, _ in
-                    scheduleReload()
+                    scheduleReload(debounced: true)
+                }
+                .onChange(of: selectedDayOffset) { _, _ in
+                    // Il giorno selezionato è cambiato: lo stato in memoria appartiene alla
+                    // vecchia finestra temporale, va scartato per forzare una rivalutazione pulita.
+                    programsByStream.removeAll()
+                    failedStreamIDs.removeAll()
+                    loadingStreamIDs.removeAll()
+                    renderLimit = renderPageSize
                 }
                 .onChange(of: searchQuery) { _, _ in
                     renderLimit = renderPageSize
@@ -434,7 +461,7 @@ struct EPGGridView: View {
                 }
                 .onChange(of: showFavoritesOnly) { _, _ in
                     renderLimit = renderPageSize
-                    scheduleReload()
+                    scheduleReload(debounced: true)
                 }
                 .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
                     now = date
@@ -509,7 +536,6 @@ struct EPGGridView: View {
             HStack(spacing: 4) {
                 Button {
                     selectedDayOffset = max(selectedDayOffset - 1, -7)
-                    scheduleReload()
                 } label: {
                     Text(dayTitle)
                         .font(
@@ -814,7 +840,6 @@ struct EPGGridView: View {
             )
             guard newLimit != renderLimit else { return }
             renderLimit = newLimit
-            scheduleReload()
         } label: {
             Label(
                 "Carica altri \(min(renderPageSize, remainingCount)) canali",
@@ -825,8 +850,8 @@ struct EPGGridView: View {
             .padding(.vertical, layoutDensity == .compact ? 14 : 16)
             .foregroundStyle(.white)
             .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: layoutDensity == .compact ? 14 : 16, style: .continuous))
-            .padding(16)
         }
+        .padding(16)
     }
 
     // MARK: - Toolbar
@@ -910,7 +935,6 @@ struct EPGGridView: View {
 
                 Button {
                     selectedDayOffset = -1
-                    scheduleReload()
                 } label: {
                     Label("Ieri", systemImage: "chevron.left")
                 }
@@ -918,14 +942,12 @@ struct EPGGridView: View {
                 Button {
                     selectedDayOffset = 0
                     now = Date()
-                    scheduleReload()
                 } label: {
                     Label("Oggi", systemImage: "calendar")
                 }
 
                 Button {
                     selectedDayOffset = 1
-                    scheduleReload()
                 } label: {
                     Label("Domani", systemImage: "chevron.right")
                 }
@@ -1010,7 +1032,6 @@ struct EPGGridView: View {
         if dismissSheetFirst {
             selectedProgram = nil
         }
-
         if let streamURL = makeLiveStreamURL(for: stream) {
             self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
         }
@@ -1072,7 +1093,6 @@ struct EPGGridView: View {
             reminderToast = "Abilita le notifiche per ricevere promemoria."
             return
         }
-
         ReminderService.shared.scheduleReminder(for: program, minutesBefore: 5)
         reminderToast = "Promemoria impostato per \"\(program.title)\""
         selectedProgram = nil
@@ -1083,6 +1103,12 @@ struct EPGGridView: View {
         await reloadEPG(forceRefresh: true)
     }
 
+    /// Programma una ricarica dell'EPG, cancellando quella eventualmente in corso.
+    /// - Parameter debounced: quando `true` attende `searchDebounceNanoseconds` prima di
+    ///   eseguire realmente il fetch, in modo da assorbire raffiche di cambi di stato
+    ///   (catalogo che si popola in modo incrementale, cambi rapidi di filtro/giorno)
+    ///   evitando che ogni singolo cambiamento cancelli e riavvii il caricamento EPG
+    ///   prima che un batch riesca mai a completarsi (causa della regressione "Dati non disponibili").
     private func scheduleReload(forceRefresh: Bool = false, debounced: Bool = false) {
         reloadTaskBox.task?.cancel()
         reloadTaskBox.task = Task { @MainActor in
@@ -1145,6 +1171,10 @@ struct EPGGridView: View {
         let scope = cacheScope
 
         for start in stride(from: 0, to: pending.count, by: maxConcurrentRequests) {
+            // Controlliamo la cancellazione solo PRIMA di avviare un nuovo batch:
+            // un batch già in volo (max `maxConcurrentRequests` richieste, invariato)
+            // viene sempre portato a termine e il suo esito applicato per intero,
+            // in modo che nessuno stream resti "orfano" (né loading, né failed, né caricato).
             guard !Task.isCancelled else { break }
 
             let end = min(start + maxConcurrentRequests, pending.count)
@@ -1171,7 +1201,11 @@ struct EPGGridView: View {
                 }
 
                 for await (streamID, result) in group {
-                    guard !Task.isCancelled else { continue }
+                    // Applichiamo SEMPRE il risultato ricevuto, anche se il Task esterno
+                    // è stato nel frattempo cancellato: il fetch è già stato eseguito,
+                    // scartarne l'esito lascerebbe lo stream bloccato in uno stato
+                    // ambiguo (né loading, né failed, né caricato) — la causa esatta
+                    // della regressione "Dati non disponibili" osservata in produzione.
                     loadingStreamIDs.remove(streamID)
 
                     switch result {
@@ -1273,92 +1307,92 @@ struct EPGGridView: View {
             UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
         }
     }
+}
 
-    // MARK: - Dettaglio Programma
+// MARK: - Dettaglio Programma
 
-    private struct ProgramDetailSheet: View {
-        let program: EPGProgram
-        let stream: XtreamStream
-        let isCurrentlyLive: Bool
-        let onPlayLive: () -> Void
-        let onPlayCatchup: () -> Void
-        let onSetReminder: () -> Void
+private struct ProgramDetailSheet: View {
+    let program: EPGProgram
+    let stream: XtreamStream
+    let isCurrentlyLive: Bool
+    let onPlayLive: () -> Void
+    let onPlayCatchup: () -> Void
+    let onSetReminder: () -> Void
 
-        @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismiss) private var dismiss
 
-        private var isFuture: Bool {
-            program.start > Date()
-        }
+    private var isFuture: Bool {
+        program.start > Date()
+    }
 
-        var body: some View {
-            NavigationStack {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(stream.name)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-
-                            Text(program.title)
-                                .font(.title3.weight(.bold))
-
-                            Label(
-                                "\(program.start.formatted(date: .abbreviated, time: .shortened)) – \(program.end.formatted(date: .omitted, time: .shortened))",
-                                systemImage: "clock"
-                            )
-                            .font(.subheadline)
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(stream.name)
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
 
-                            if isCurrentlyLive {
-                                Label("In onda ora", systemImage: "dot.radiowaves.left.and.right")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.red)
-                            }
+                        Text(program.title)
+                            .font(.title3.weight(.bold))
 
-                            if let description = program.description, !description.isEmpty {
-                                Text(description)
-                                    .font(.body)
-                                    .padding(.top, 4)
-                            }
+                        Label(
+                            "\(program.start.formatted(date: .abbreviated, time: .shortened)) – \(program.end.formatted(date: .omitted, time: .shortened))",
+                            systemImage: "clock"
+                        )
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                        if isCurrentlyLive {
+                            Label("In onda ora", systemImage: "dot.radiowaves.left.and.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.red)
                         }
-                        .padding()
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-                        VStack(spacing: 10) {
-                            if isCurrentlyLive {
-                                Button(action: onPlayLive) {
-                                    Label("Guarda in diretta", systemImage: "play.fill")
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 12)
-                                }
-                                .buttonStyle(.borderedProminent)
-                            } else if program.hasArchive {
-                                Button(action: onPlayCatchup) {
-                                    Label("Riproduci differita", systemImage: "gobackward")
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 12)
-                                }
-                                .buttonStyle(.borderedProminent)
-                            }
-
-                            if isFuture {
-                                Button(action: onSetReminder) {
-                                    Label("Imposta promemoria", systemImage: "bell")
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                }
-                                .buttonStyle(.bordered)
-                            }
+                        if let description = program.description, !description.isEmpty {
+                            Text(description)
+                                .font(.body)
+                                .padding(.top, 4)
                         }
-                        .padding()
+                    }
+                    .padding()
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                    VStack(spacing: 10) {
+                        if isCurrentlyLive {
+                            Button(action: onPlayLive) {
+                                Label("Guarda in diretta", systemImage: "play.fill")
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        } else if program.hasArchive {
+                            Button(action: onPlayCatchup) {
+                                Label("Riproduci differita", systemImage: "gobackward")
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+
+                        if isFuture {
+                            Button(action: onSetReminder) {
+                                Label("Imposta promemoria", systemImage: "bell")
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                            }
+                            .buttonStyle(.bordered)
+                        }
                     }
                 }
-                .navigationTitle("Dettaglio programma")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("Chiudi") { dismiss() }
-                    }
+                .padding()
+            }
+            .navigationTitle("Dettaglio programma")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Chiudi") { dismiss() }
                 }
             }
         }
