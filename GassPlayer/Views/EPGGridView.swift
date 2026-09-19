@@ -22,16 +22,22 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
-/// EPG touch-first ultra-ottimizzata, affidabile e con caricamento dati garantito:
-/// - Risoluzione definitiva problema "Dati non disponibili":
-///   1. Ciclo di vita unificato tramite `.task(id: identity)` nativo di SwiftUI: elimina le collisioni di cancellazione tra onAppear e onChange.
-///   2. Tracciamento accurato dello stato di caricamento: mostra `ProgressView` finché i programmi non sono arrivati invece di mostrare prematuramente "Dati non disponibili".
-///   3. Fallback intelligente per discrepanze di fuso orario/finestra temporale: visualizza sempre i programmi restituiti dall'API Xtream.
-///   4. Finestra temporale allargata a 1 ora nel passato e 4 ore nel futuro per coprire l'intera programmazione serale e notturna.
-///   5. Cache in memoria `EPGMemoryCache` con TTL di 20 minuti e partizionamento per giorno selezionato.
-/// - Supporto per entrambe le densità di layout: "Compatta" (66pt) e "Comoda" (96pt) con persistenza `@AppStorage`.
-/// - Colori pastello adattivi deterministici e rendering originale per banner canale.
-/// - Riproduzione live istantanea a latenza zero tramite `AdaptivePlayerView` in full-screen cover locale.
+/// EPG touch-first ultra-ottimizzata, robusta ed esente da bug di caricamento:
+/// 1. Caricamento Playlist ed EPG ad Alte Prestazioni:
+///   - Finestra temporale dinamica full-day (26 ore da 00:00 a 02:00 del giorno successivo), consentendo di visualizzare l'intera programmazione del giorno senza filtri prematuri.
+///   - Reattività completa sullo stato di `xtreamCatalog`: ricarica automatica non appena la playlist/catalogo è pronto.
+///   - Richieste concorrenti scalate e regolate (`maxConcurrentRequests = 8`) per evitare rate-limiting o caduta di connessioni sui server Xtream Codes.
+///   - Cache in memoria `EPGMemoryCache` con chiave partizionata per giorno e scadenza TTL (30 minuti).
+///   - Ordinamento cronologico rigoroso di `visiblePrograms` per prevenire glitch grafici e sovrapposizioni tra programmi.
+///   - Auto-centraggio temporale su "Oggi" all'orario corrente tramite `ScrollViewReader`.
+/// 2. Aspetto EPG Personalizzabile:
+///   - Supporto completo alle viste "Compatta" (66pt) e "Comoda" (96pt) con persistenza `@AppStorage`.
+///   - Voce dedicata "Aspetto EPG" nel menu in alto a destra.
+/// 3. Banner Canale e Tile Adattive:
+///   - Colori pastello brand-adaptive deterministici con rendering nativo `.original` su loghi/icone.
+///   - Avanzamento live ad alta leggibilità proporzionato all'asse temporale.
+/// 4. Riproduzione Live Istantanea a Latenza Zero:
+///   - Avvio immediato tramite `AdaptivePlayerView` in full-screen cover locale.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -58,13 +64,15 @@ struct EPGGridView: View {
     @State private var catchupPlayback: CatchupPlayback?
     @State private var livePlayback: LivePlaybackItem?
     @State private var renderLimit = 32
+    @State private var reloadTaskBox = TaskBox()
+    @State private var didAppear = false
 
     private let renderPageSize = 32
     private let hardRenderCap = 250
-    private let maxConcurrentRequests = 24
+    private let maxConcurrentRequests = 8
     private let shortEPGLimit = 24
     private let searchDebounceNanoseconds: UInt64 = 150_000_000
-    private let loadingIndicatorDelayNanoseconds: UInt64 = 120_000_000
+    private let loadingIndicatorDelayNanoseconds: UInt64 = 100_000_000
 
     // MARK: - Dimensioni & Geometria Dinamiche (Compatta vs Comoda)
 
@@ -109,10 +117,6 @@ struct EPGGridView: View {
         bannerColumnWidth - (bannerInset * 2)
     }
 
-    /// Finestra temporale: 1 ora passata, 4 ore future (copre comodamente la timeline EPG)
-    private let pastWindow: TimeInterval = 60 * 60
-    private let futureWindow: TimeInterval = 240 * 60
-
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -131,6 +135,10 @@ struct EPGGridView: View {
         _favorites = StateObject(
             wrappedValue: EPGFavoritesStore(scopeKey: Self.scopeKey(for: credentials))
         )
+    }
+
+    private final class TaskBox {
+        var task: Task<Void, Never>?
     }
 
     private struct SelectedProgram: Identifiable {
@@ -300,7 +308,7 @@ struct EPGGridView: View {
         Self.scopeKey(for: credentials)
     }
 
-    // MARK: - Geometria Temporale
+    // MARK: - Geometria Temporale Full-Day
 
     private var selectedDate: Date {
         Calendar.autoupdatingCurrent.date(byAdding: .day, value: selectedDayOffset, to: now) ?? now
@@ -310,40 +318,23 @@ struct EPGGridView: View {
         selectedDayOffset == 0
     }
 
-    private var windowCenter: Date {
-        if isToday { return now }
-        return Calendar.autoupdatingCurrent.date(
-            bySettingHour: 12,
-            minute: 0,
-            second: 0,
-            of: selectedDate
-        ) ?? selectedDate
-    }
-
-    private var windowStart: Date {
-        windowCenter.addingTimeInterval(-pastWindow)
-    }
-
-    private var windowEnd: Date {
-        windowCenter.addingTimeInterval(futureWindow)
-    }
-
+    /// Inizio del giorno selezionato (00:00)
     private var gridOrigin: Date {
-        let calendar = Calendar.autoupdatingCurrent
-        let startMinute = calendar.component(.minute, from: windowStart)
-        let flooredMinute = startMinute < 30 ? 0 : 30
-        return calendar.date(
-            bySettingHour: calendar.component(.hour, from: windowStart),
-            minute: flooredMinute,
-            second: 0,
-            of: windowStart
-        ) ?? windowStart
+        Calendar.autoupdatingCurrent.startOfDay(for: selectedDate)
     }
+
+    /// Fine della griglia temporale: 26 ore da gridOrigin (copre fino alle 02:00 del giorno successivo)
+    private var gridEnd: Date {
+        Calendar.autoupdatingCurrent.date(byAdding: .hour, value: 26, to: gridOrigin) ?? gridOrigin.addingTimeInterval(26 * 3600)
+    }
+
+    private var timelineStart: Date { gridOrigin }
+    private var timelineEnd: Date { gridEnd }
 
     private var halfHourTicks: [Date] {
         var ticks: [Date] = []
         var cursor = gridOrigin
-        while cursor <= windowEnd {
+        while cursor <= gridEnd {
             ticks.append(cursor)
             cursor = cursor.addingTimeInterval(30 * 60)
         }
@@ -359,7 +350,20 @@ struct EPGGridView: View {
     }
 
     private var liveAxisX: CGFloat {
-        xCoordinate(for: windowCenter)
+        xCoordinate(for: now)
+    }
+
+    private var currentHalfHourTickAnchorID: String {
+        let calendar = Calendar.autoupdatingCurrent
+        let minute = calendar.component(.minute, from: now)
+        let flooredMinute = minute < 30 ? 0 : 30
+        let flooredDate = calendar.date(
+            bySettingHour: calendar.component(.hour, from: now),
+            minute: flooredMinute,
+            second: 0,
+            of: now
+        ) ?? now
+        return Self.timeFormatter.string(from: flooredDate)
     }
 
     private var dayTitle: String {
@@ -415,17 +419,26 @@ struct EPGGridView: View {
                             }
                     }
                 }
-                .task(id: currentStreamData.identity) {
-                    if !searchQuery.isEmpty {
-                        try? await Task.sleep(nanoseconds: searchDebounceNanoseconds)
-                        guard !Task.isCancelled else { return }
-                    }
-                    await reloadEPG(forceRefresh: false)
+                .onAppear {
+                    guard !didAppear else { return }
+                    didAppear = true
+                    scheduleReload()
+                }
+                .onChange(of: xtreamCatalog.state) { _, _ in
+                    scheduleReload()
+                }
+                .onChange(of: streams.count) { _, _ in
+                    scheduleReload()
+                }
+                .onChange(of: currentStreamData.identity) { _, _ in
+                    let isDebounceNeeded = !searchQuery.isEmpty
+                    scheduleReload(debounced: isDebounceNeeded)
                 }
                 .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
                     now = date
                 }
                 .onDisappear {
+                    reloadTaskBox.task?.cancel()
                     loadingIndicatorTask?.cancel()
                 }
         }
@@ -469,7 +482,7 @@ struct EPGGridView: View {
         }
     }
 
-    // MARK: - Superficie EPG (HStack Principale)
+    // MARK: - Superficie EPG (HStack Principale con Auto-Centraggio)
 
     private func epgSurface(pagedStreams: [XtreamStream]) -> some View {
         HStack(alignment: .top, spacing: 0) {
@@ -477,12 +490,21 @@ struct EPGGridView: View {
                 .frame(width: bannerColumnWidth, alignment: .leading)
                 .zIndex(10)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyVStack(spacing: 0) {
-                    scrollingTimelineHeader
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyVStack(spacing: 0) {
+                        scrollingTimelineHeader
 
-                    ForEach(pagedStreams) { stream in
-                        timelineRow(for: stream)
+                        ForEach(pagedStreams) { stream in
+                            timelineRow(for: stream)
+                        }
+                    }
+                }
+                .onAppear {
+                    if isToday {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            proxy.scrollTo("tick_\(currentHalfHourTickAnchorID)", anchor: .center)
+                        }
                     }
                 }
             }
@@ -525,6 +547,15 @@ struct EPGGridView: View {
     /// Header orari su Canvas con disegno immediato e freccia live allineata
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
+            // Punti di ancoraggio invisibili per lo scroll automatico all'orario corrente
+            HStack(spacing: 0) {
+                ForEach(halfHourTicks, id: \.self) { tick in
+                    Color.clear
+                        .frame(width: halfHourPixelSpacing, height: timelineHeaderHeight)
+                        .id("tick_\(Self.timeFormatter.string(from: tick))")
+                }
+            }
+
             Canvas { context, size in
                 for tick in halfHourTicks {
                     let fontSize: CGFloat = layoutDensity == .compact ? 20 : 22
@@ -543,7 +574,7 @@ struct EPGGridView: View {
                     .foregroundStyle(.white)
                     .frame(width: arrowGlyphWidth, height: timelineHeaderHeight, alignment: .center)
                     .offset(x: liveAxisX - arrowGlyphWidth / 2)
-                    .accessibilityLabel("Ora corrente: \(Self.timeFormatter.string(from: windowCenter))")
+                    .accessibilityLabel("Ora corrente: \(Self.timeFormatter.string(from: now))")
             }
         }
         .frame(width: canvasWidth, height: timelineHeaderHeight, alignment: .topLeading)
@@ -622,25 +653,25 @@ struct EPGGridView: View {
     }
 
     private func unavailableBlock(for stream: XtreamStream) -> some View {
-        let isFetching = loadingStreamIDs.contains(stream.streamId) || programsByStream[stream.streamId] == nil
-        let isFailed = failedStreamIDs.contains(stream.streamId)
+        let loading = loadingStreamIDs.contains(stream.streamId)
+        let failed = failedStreamIDs.contains(stream.streamId)
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
         return HStack(spacing: 6) {
-            if isFetching && !isFailed {
+            if loading {
                 ProgressView()
                     .tint(.white)
                     .controlSize(.small)
                 Text("Caricamento EPG…")
-            } else if isFailed {
+            } else if failed {
                 Image(systemName: "exclamationmark.triangle.fill")
                 Text("EPG non disponibile")
             } else {
                 Text("Dati non disponibili")
             }
         }
-        .font(.system(size: layoutDensity == .compact ? 13 : 15, weight: .medium, design: .rounded))
+        .font(.system(size: layoutDensity == .compact ? 14 : 15, weight: .medium, design: .rounded))
         .foregroundStyle(.white.opacity(0.65))
         .padding(.horizontal, layoutDensity == .compact ? 14 : 18)
         .frame(height: blockHeight)
@@ -661,20 +692,21 @@ struct EPGGridView: View {
         stream: XtreamStream,
         nextProgramStart: Date?
     ) -> some View {
-        let clippedStart = max(program.start, windowStart)
-        let clippedEnd = min(program.end, windowEnd)
-        let startX = xCoordinate(for: clippedStart)
-        let calculatedEndX = xCoordinate(for: clippedEnd)
+        let clampedStart = max(program.start, timelineStart)
+        let clampedEnd = min(program.end, timelineEnd)
+        let startX = xCoordinate(for: clampedStart)
+        let calculatedEndX = xCoordinate(for: clampedEnd)
 
         let endX: CGFloat
         if let nextProgramStart {
-            let nextStartX = xCoordinate(for: max(nextProgramStart, windowStart))
+            let nextClampedStart = max(nextProgramStart, timelineStart)
+            let nextStartX = xCoordinate(for: nextClampedStart)
             endX = min(calculatedEndX, nextStartX)
         } else {
             endX = calculatedEndX
         }
 
-        let width = max(32, endX - startX)
+        let width = max(36, endX - startX)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
         return GeometryReader { geo in
@@ -983,7 +1015,6 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea a Latenza Zero
 
-    /// Avvia la riproduzione live del canale in modo istantaneo a latenza zero
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
@@ -1006,17 +1037,13 @@ struct EPGGridView: View {
         return URL(string: urlString)
     }
 
-    /// Restituisce i programmi visibili per il canale con fallback intelligente
     private func visiblePrograms(for stream: XtreamStream) -> [EPGProgram] {
-        guard let all = programsByStream[stream.streamId], !all.isEmpty else { return [] }
-
-        let filtered = all.filter { $0.end > windowStart && $0.start < windowEnd }
-        if !filtered.isEmpty {
-            return filtered.sorted { $0.start < $1.start }
+        guard let all = programsByStream[stream.streamId], !all.isEmpty else {
+            return []
         }
-
-        // Fallback: se i programmi dell'EPG cadono appena fuori dal range per fuso orario, li mostriamo ordinati
-        return all.sorted { $0.start < $1.start }
+        return all
+            .filter { $0.end > timelineStart && $0.start < timelineEnd }
+            .sorted { $0.start < $1.start }
     }
 
     private static func groupIcon(for groupName: String) -> String {
@@ -1064,8 +1091,20 @@ struct EPGGridView: View {
     }
 
     private func refreshAll() async {
+        EPGMemoryCache.shared.clear(scope: cacheScope)
         await xtreamCatalog.refresh(credentials: credentials, kind: kind)
         await reloadEPG(forceRefresh: true)
+    }
+
+    private func scheduleReload(forceRefresh: Bool = false, debounced: Bool = false) {
+        reloadTaskBox.task?.cancel()
+        reloadTaskBox.task = Task { @MainActor in
+            if debounced {
+                try? await Task.sleep(nanoseconds: searchDebounceNanoseconds)
+                guard !Task.isCancelled else { return }
+            }
+            await reloadEPG(forceRefresh: forceRefresh)
+        }
     }
 
     @MainActor
@@ -1100,7 +1139,7 @@ struct EPGGridView: View {
 
         let pending = targets.filter { stream in
             if forceRefresh { return true }
-            return programsByStream[stream.streamId] == nil
+            return programsByStream[stream.streamId] == nil && !failedStreamIDs.contains(stream.streamId)
         }
 
         guard !pending.isEmpty else {
@@ -1218,7 +1257,7 @@ struct EPGGridView: View {
         }
 
         private var storage: [String: Entry] = [:]
-        private let ttl: TimeInterval = 20 * 60 // 20 minuti di validità cache
+        private let ttl: TimeInterval = 30 * 60 // 30 minuti di validità cache
 
         private func key(scope: String, streamId: Int, dayOffset: Int) -> String {
             "\(scope)#\(streamId)#d\(dayOffset)"
@@ -1237,6 +1276,10 @@ struct EPGGridView: View {
         func store(scope: String, streamId: Int, dayOffset: Int, programs: [EPGProgram]) {
             let k = key(scope: scope, streamId: streamId, dayOffset: dayOffset)
             storage[k] = Entry(programs: programs, createdAt: Date())
+        }
+
+        func clear(scope: String) {
+            storage = storage.filter { !$0.key.hasPrefix(scope) }
         }
     }
 
