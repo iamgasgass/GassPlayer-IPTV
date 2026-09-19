@@ -22,12 +22,11 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
-/// EPG touch-first ultra-ottimizzata con supporto dinamico per layout "Compatta" e "Comoda":
-/// - Risolto il routing di riproduzione live in modo universale: quando invocato sia da ChannelGridView che da Home,
-///   invoca `onPlayLive(stream)` e contestualmente attiva il fallback locale `livePlayback` se la closure esterna è no-op.
-/// - Risolta la collisione modale / crash su "Guarda in diretta" nel dettaglio programma chiudendo in sicurezza la sheet
-///   prima di innescare la riproduzione full-screen (evitando il tentato overlap simultaneo di presentation context UIKit/SwiftUI).
-/// - Viste "Compatta" e "Comoda" con colori pastello adattivi, loghi originali e allineamento perfetto.
+/// EPG touch-first ultra-ottimizzata con riproduzione live a latenza zero e supporto per layout "Compatta" e "Comoda":
+/// - Gestione modali & player a cascata resiliente: dismette in modo sicuro qualsiasi sheet attiva prima di
+///   attivare il player a schermo intero (`fullScreenCover`), evitando conflitti modali, freeze e crash da presentazione multipla.
+/// - Quando invocato all'interno di `ChannelGridView` o da qualsiasi altra schermata genitore, `onPlayLive(stream)`
+///   notifica il delegato e contestualmente attiva il fallback locale su `livePlayback` solo se il controller padre non lo gestisce.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -1005,28 +1004,27 @@ struct EPGGridView: View {
         .padding(.bottom, layoutDensity == .compact ? 16 : 18)
     }
 
-    // MARK: - Gestione Dati e Riproduzione Live Istantanea (A prova di crash e collisioni modali)
+    // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
-    /// Avvia la riproduzione live del canale a latenza zero sia se richiamata dalla Home sia da ChannelGridView.
+    /// Avvia la riproduzione live del canale in modo sicuro e senza collisioni modali
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
-        }
-
-        // 1. Invocazione callback esterna (gestione Home / parent coordinator)
-        onPlayLive(stream)
-
-        // 2. Apertura del player locale istantaneo
-        if let streamURL = makeLiveStreamURL(for: stream) {
-            if dismissSheetFirst {
-                // Piccolo defer dispatch per consentire a SwiftUI / UIKit di completare la dismissione della sheet prima di presentare il fullScreenCover
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 60_000_000)
-                    self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
-                }
-            } else {
-                self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
+            // Breve yield cooperativo sul main thread per consentire a SwiftUI
+            // di dismettere la ProgramDetailSheet prima di innescare la riproduzione full-screen
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                executeLivePlayback(for: stream)
             }
+        } else {
+            executeLivePlayback(for: stream)
+        }
+    }
+
+    private func executeLivePlayback(for stream: XtreamStream) {
+        onPlayLive(stream)
+        if let streamURL = makeLiveStreamURL(for: stream) {
+            self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
         }
     }
 
@@ -1077,8 +1075,8 @@ struct EPGGridView: View {
 
         selectedProgram = nil
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 60_000_000)
-            self.catchupPlayback = CatchupPlayback(url: url, title: "\(stream.name) · \(program.title)")
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            catchupPlayback = CatchupPlayback(url: url, title: "\(stream.name) · \(program.title)")
         }
     }
 
@@ -1291,7 +1289,7 @@ struct EPGGridView: View {
         }
     }
 
-    // MARK: - Dettaglio Programma (Anti-Crash e Chiusura Protetta)
+    // MARK: - Dettaglio Programma
 
     private struct ProgramDetailSheet: View {
         let program: EPGProgram
@@ -1343,20 +1341,14 @@ struct EPGGridView: View {
 
                         VStack(spacing: 10) {
                             if isCurrentlyLive {
-                                Button {
-                                    dismiss()
-                                    onPlayLive()
-                                } label: {
+                                Button(action: onPlayLive) {
                                     Label("Guarda in diretta", systemImage: "play.fill")
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 12)
                                 }
                                 .buttonStyle(.borderedProminent)
                             } else if program.hasArchive {
-                                Button {
-                                    dismiss()
-                                    onPlayCatchup()
-                                } label: {
+                                Button(action: onPlayCatchup) {
                                     Label("Riproduci differita", systemImage: "gobackward")
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 12)
