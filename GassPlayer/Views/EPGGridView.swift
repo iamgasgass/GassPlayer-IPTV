@@ -22,15 +22,11 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
-/// EPG touch-first ultra-ottimizzata con supporto dinamico per layout "Compatta" e "Comoda":
-/// - Vista "Compatta": densità touch-first (rowHeight 66, banner 80x58, tile 58pt, allineamento orizzontale compatto).
-/// - Vista "Comoda": vista spaziosa e ricca (rowHeight 96, banner 86x76, tile 82pt, layout su 3 righe dedicate canale/ora/titolo con corner radius 18pt).
-/// - Colori Pastello e Dinamici Adattivi con rendering nativo (.original) per i banner e le tile con riempimento live differenziato.
-/// - Voce dedicata "Aspetto EPG" inserita nel menu '…' in alto a destra con persistenza UserDefaults.
-/// - Risoluzione chirurgica e definitiva avvio streaming da Live TV (ChannelGridView):
-///   - Al tocco sul banner canale o su "Guarda in diretta", chiude la modale EPG (`dismiss()`) e dispaccia in modo asincrono e protetto `onPlayLive(stream)` sul MainActor.
-///   - Questo previene qualsiasi collisione di transizione tra la chiusura della modale EPG e l'apertura del player di sistema, garantendo che AVPlayer non entri in pausa e avvii automaticamente e istantaneamente la riproduzione del flusso.
-///   - In modalità autonoma (es. da Home), avvia direttamente `AdaptivePlayerView` locale full-screen cover a latenza zero.
+/// EPG touch-first ultra-ottimizzata con riproduzione nativa immediata a latenza zero:
+/// - Avvio streaming istantaneo su banner canale: elimina ogni ritardo, dispatch o transizione modale ridondante.
+/// - Il tocco sul banner canale attiva direttamente `livePlayback` (`AdaptivePlayerView`) a latenza zero, esattamente come in EPG da Home.
+/// - Supporto per entrambe le densità di layout: "Compatta" (rowHeight 66, banner 80x58) e "Comoda" (rowHeight 96, banner 86x76).
+/// - Colori pastello adattivi, avanzamento live coordinato e voce di menu dedicata "Aspetto EPG".
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -589,7 +585,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale Adattivo (Compatta vs Comoda)
+    /// Banner Canale Adattivo con avvio immediato a latenza zero
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
@@ -675,7 +671,7 @@ struct EPGGridView: View {
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// Tile del programma con supporto completo alle modalità Compatta e Comoda
+    /// Tile del programma con supporto alle modalità Compatta e Comoda
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -714,7 +710,6 @@ struct EPGGridView: View {
             } label: {
                 Group {
                     if layoutDensity == .compact {
-                        // MARK: Vista Compatta (Allineamento centrato verticale)
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
                                 Text(stream.name)
@@ -739,7 +734,6 @@ struct EPGGridView: View {
                         .offset(x: nameSlideOffset)
                         .frame(width: width, height: blockHeight, alignment: .leading)
                     } else {
-                        // MARK: Vista Comoda (Layout a 3 righe ampie)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(stream.name)
                                 .font(.system(size: 11, weight: .semibold, design: .rounded))
@@ -880,7 +874,6 @@ struct EPGGridView: View {
 
         ToolbarItem(placement: .navigationBarTrailing) {
             Menu {
-                // MARK: Voce specifica ASPETTO EPG
                 Menu {
                     Picker("Aspetto EPG", selection: $layoutDensity) {
                         ForEach(EPGLayoutDensity.allCases) { density in
@@ -1008,29 +1001,18 @@ struct EPGGridView: View {
         .padding(.bottom, layoutDensity == .compact ? 16 : 18)
     }
 
-    // MARK: - Gestione Dati e Riproduzione Live Istantanea
+    // MARK: - Gestione Dati e Riproduzione Live Istantanea a Latenza Zero
 
-    /// Avvia la riproduzione live del canale garantendo che il player avvii subito il flusso streaming:
-    /// - Quando aperto da ChannelGridView (Live TV con `onPlayLive` presente):
-    ///   1. Chiude la modale di dettaglio se aperta (`selectedProgram = nil`).
-    ///   2. Chiude la modale EPG (`dismiss()`).
-    ///   3. Esegue `onPlayLive(stream)` asincronamente sul MainActor per evitare collisioni di ciclo di vita con UIKit/AVPlayer.
-    /// - Quando aperto autonomamente (senza `onPlayLive`):
-    ///   Crea l'URL e presenta `AdaptivePlayerView` internamente tramite `livePlayback`.
+    /// Avvia la riproduzione live del canale in modo istantaneo a latenza zero:
+    /// - Apre direttamente `AdaptivePlayerView` in fullScreenCover sopra l'EPG, esattamente come avviene da Home.
+    /// - Nessuna animazione di chiusura modale intermedia, nessun ritardo o chiamata asincrona ridondante.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
         }
 
-        if let onPlayLive {
-            dismiss()
-            DispatchQueue.main.async {
-                onPlayLive(stream)
-            }
-        } else {
-            if let streamURL = makeLiveStreamURL(for: stream) {
-                self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
-            }
+        if let streamURL = makeLiveStreamURL(for: stream) {
+            self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
         }
     }
 
