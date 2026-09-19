@@ -27,7 +27,9 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 /// - Vista "Comoda": vista spaziosa e ricca (rowHeight 96, banner 86x76, tile 82pt, layout su 3 righe dedicate canale/ora/titolo con corner radius 18pt).
 /// - Colori Pastello e Dinamici Adattivi con rendering nativo (.original) per i banner e le tile con riempimento live differenziato.
 /// - Voce dedicata "Aspetto EPG" inserita nel menu '…' in alto a destra con persistenza UserDefaults.
-/// - Avvio streaming nativo istantaneo a latenza zero unificato (stesse identiche chiamate Home/Standalone e Live TV di ChannelGridView con adattamento modale).
+/// - Gestione flusso riproduzione chirurgica:
+///   - Quando invocato da Live TV (`ChannelGridView`), chiude la modale ed esegue il dispatch coordinato di `onPlayLive` per garantire l'avvio immediato e automatico dello streaming nel player senza collisioni UIKit/SwiftUI.
+///   - Quando aperto autonomamente (es. da Home), gestisce la riproduzione full-screen interna ad avvio istantaneo.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -586,7 +588,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale Adattivo con avvio immediato a latenza zero
+    /// Banner Canale Adattivo (Compatta vs Comoda)
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
@@ -1007,23 +1009,31 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
-    /// Avvia la riproduzione live del canale utilizzando le stesse identiche chiamate di Home/Standalone,
-    /// garantendo l'avvio immediato ed automatico del player a schermo intero (anche se aperto come modale da ChannelGridView).
+    /// Avvia la riproduzione live del canale in modo deterministico e pulito.
+    /// - Se invocato da `ChannelGridView` (modale Live TV con `onPlayLive` passato):
+    ///   1. Chiude prima la scheda di dettaglio se aperta (`selectedProgram = nil`).
+    ///   2. Chiude `EPGGridView` (`dismiss()`).
+    ///   3. Esegue un dispatch asincrono di `onPlayLive(stream)` sul MainActor per attendere
+    ///      che la transizione di chiusura modale sia terminata, consentendo al player di ChannelGridView
+    ///      di presentarsi ed avviare automaticamente il flusso senza conflitti o blocchi.
+    /// - Se aperto in modalità autonoma (es. da Home senza `onPlayLive`):
+    ///   Avvia istantaneamente `AdaptivePlayerView` in full-screen cover locale.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
-        onPlayLive?(stream)
-
-        guard let streamURL = makeLiveStreamURL(for: stream) else { return }
-
-        if dismissSheetFirst && selectedProgram != nil {
+        if dismissSheetFirst {
             selectedProgram = nil
+        }
+
+        if let onPlayLive {
+            dismiss()
             Task { @MainActor in
-                // Attesa fluida per completare il dismiss del ProgramDetailSheet prima di presentare il player
-                try? await Task.sleep(nanoseconds: 180_000_000)
+                try? await Task.sleep(nanoseconds: 220_000_000)
                 guard !Task.isCancelled else { return }
-                self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
+                onPlayLive(stream)
             }
         } else {
-            self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
+            if let streamURL = makeLiveStreamURL(for: stream) {
+                self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
+            }
         }
     }
 
