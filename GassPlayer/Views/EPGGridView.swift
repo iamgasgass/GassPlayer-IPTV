@@ -27,7 +27,8 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 /// - Vista "Comoda": vista spaziosa e ricca (rowHeight 96, banner 86x76, tile 82pt, layout su 3 righe dedicate canale/ora/titolo con corner radius 18pt).
 /// - Colori Pastello e Dinamici Adattivi con rendering nativo (.original) per i banner e le tile con riempimento live differenziato.
 /// - Voce dedicata "Aspetto EPG" inserita nel menu '…' in alto a destra con persistenza UserDefaults.
-/// - Avvio streaming a latenza zero e auto-start garantito: utilizza la pipeline di riproduzione nativa immediata (identica alla Home/Standalone) sia per banner canale che per la vista modale di Live TV.
+/// - Avvio streaming nativo istantaneo a latenza zero sia da Home/Standalone che da sezione Live TV di ChannelGridView,
+///   con gestione pulita della transizione modale per garantire l'avvio automatico immediato del flusso.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -586,7 +587,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale Adattivo: Avvio istantaneo e identico al player Home/Standalone
+    /// Banner Canale Adattivo (Compatta vs Comoda)
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
@@ -1007,22 +1008,25 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
-    /// Avvia la riproduzione live del canale utilizzando esattamente le stesse chiamate dirette native
-    /// dell'EPG Home/Standalone, garantendo avvio istantaneo e auto-play senza blocchi.
+    /// Avvia la riproduzione live del canale in modo deterministico e nativo con le medesime chiamate di Home/Standalone:
+    /// - Al tap su banner canale (`dismissSheetFirst: false`): notifica `onPlayLive` e imposta `livePlayback` all'istante
+    ///   avviando `AdaptivePlayerView` in full-screen cover senza ritardi.
+    /// - Da dettaglio programma (`dismissSheetFirst: true`): chiude la scheda di dettaglio e avvia il player evitando conflitti di transizione.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         onPlayLive?(stream)
 
         guard let streamURL = makeLiveStreamURL(for: stream) else { return }
+        let playbackItem = LivePlaybackItem(stream: stream, url: streamURL)
 
-        if dismissSheetFirst && selectedProgram != nil {
+        if dismissSheetFirst {
             selectedProgram = nil
             Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 120_000_000)
+                try? await Task.sleep(nanoseconds: 80_000_000)
                 guard !Task.isCancelled else { return }
-                self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
+                self.livePlayback = playbackItem
             }
         } else {
-            self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
+            self.livePlayback = playbackItem
         }
     }
 
