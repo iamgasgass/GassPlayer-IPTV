@@ -8,9 +8,6 @@ private enum SourceSortMode: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// Icona usata dalla pillola flottante in `.principal` per riflettere
-    /// l'ordinamento attivo, con lo stesso linguaggio visivo dell'icona di
-    /// `homeMenuSelection` in `HomeView`.
     var systemImage: String {
         switch self {
         case .manual: return "hand.draw.fill"
@@ -191,14 +188,6 @@ struct SourcesView: View {
 
     // MARK: - Toolbar
 
-    /// FIX MANIACALE — "floating tab separate come in HomeView": prima
-    /// qui c'era solo un'icona (`arrow.up.arrow.down.circle`) in trailing,
-    /// senza alcuna pillola flottante. Ora la selezione dell'ordinamento
-    /// è la stessa identica pillola "Liquid Glass" di `HomeView`
-    /// (`GlassMenuPillLabel`, condivisa e non duplicata), posizionata in
-    /// `.principal` esattamente come il menu Home. Il Menu che la ospita
-    /// resta identico nel comportamento (Picker interno), cambia solo la
-    /// veste grafica del pulsante che lo apre.
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
@@ -246,9 +235,6 @@ struct SourcesView: View {
         }
     }
 
-    /// Pillola flottante per l'ordinamento: stesso componente, stessa
-    /// dimensione minima/massima e stesso `Menu` con `Picker(.inline)`
-    /// interno usato da `HomeView` per il proprio menu Home.
     private var sortPill: some View {
         Menu {
             Picker("Ordina per", selection: $sortMode) {
@@ -280,9 +266,23 @@ struct SourcesView: View {
     }
 
     // MARK: - Sezioni
+    //
+    // FIX MANIACALE — "le tab devono essere esattamente distanziate come
+    // tra 'Live TV' e 'Guarda tutte le liste insieme'": in ciascuna sezione
+    // qui sotto, l'etichetta (ex `header:`) e l'eventuale nota (ex
+    // `footer:`) sono ora righe vere e proprie con `.glassHeaderRow()` /
+    // `.glassFooterRow()`, non più parametri `header:`/`footer:` di
+    // `Section`. Questo garantisce che OGNI distacco verticale nella lista
+    // — header→card, card→card, card→footer, e persino sezione→sezione
+    // grazie a `.listSectionSpacing()` in `glassListContainer()` — derivi
+    // dalla stessa identica costante (16pt), non da due sistemi di
+    // spaziatura diversi che il sistema renderizza "quasi" uguali.
 
     private var liveAggregationSection: some View {
         Section {
+            GlassSectionHeader(title: "Live TV")
+                .glassHeaderRow()
+
             GlassSettingsRow(
                 icon: "square.stack.3d.up.fill",
                 title: "Guarda tutte le liste insieme",
@@ -293,17 +293,27 @@ struct SourcesView: View {
                 showAllSourcesLive = true
             }
             .glassListRow()
-        } header: {
-            GlassSectionHeader(title: "Live TV")
-        } footer: {
+
             if !canOpenAllSourcesLive {
                 Text("Aggiungi e abilita almeno una sorgente Xtream per unire i canali Live TV.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .glassFooterRow()
             }
         }
     }
 
     private var sourcesSection: some View {
         Section {
+            HStack {
+                GlassSectionHeader(title: "Le mie sorgenti")
+                Spacer()
+                Text(sourceCountText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .glassHeaderRow()
+
             addPlaylistRow
                 .glassListRow()
 
@@ -332,18 +342,13 @@ struct SourcesView: View {
                 }
                 .onDelete(perform: deleteSources)
                 .onMove(perform: moveSources)
-            }
-        } header: {
-            HStack {
-                GlassSectionHeader(title: "Le mie sorgenti")
-                Spacer()
-                Text(sourceCountText)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-        } footer: {
-            if !isManualOrderingAvailable && !displayedSources.isEmpty {
-                Text("Per modificare l’ordine, seleziona “Personalizzato” e svuota la ricerca.")
+
+                if !isManualOrderingAvailable {
+                    Text("Per modificare l’ordine, seleziona “Personalizzato” e svuota la ricerca.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .glassFooterRow()
+                }
             }
         }
     }
@@ -375,6 +380,9 @@ struct SourcesView: View {
 
     private var mergedPlaylistsSection: some View {
         Section {
+            GlassSectionHeader(title: "Playlist unite")
+                .glassHeaderRow()
+
             if contentManagement.mergedPlaylists.isEmpty {
                 Text("Unisci più sorgenti in una sola playlist.")
                     .foregroundStyle(.secondary)
@@ -420,15 +428,19 @@ struct SourcesView: View {
                 showMergeSheet = true
             }
             .glassListRow()
-        } header: {
-            GlassSectionHeader(title: "Playlist unite")
-        } footer: {
+
             Text("Sono necessarie almeno due sorgenti per creare una playlist unita.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .glassFooterRow()
         }
     }
 
     private var favoritesSection: some View {
         Section {
+            GlassSectionHeader(title: "Preferiti")
+                .glassHeaderRow()
+
             if contentManagement.favorites.isEmpty {
                 Text("I tuoi contenuti preferiti appariranno qui.")
                     .foregroundStyle(.secondary)
@@ -444,13 +456,14 @@ struct SourcesView: View {
                     .glassListRow()
                 }
             }
-        } header: {
-            GlassSectionHeader(title: "Preferiti")
         }
     }
 
     private var backupSection: some View {
         Section {
+            GlassSectionHeader(title: "Backup")
+                .glassHeaderRow()
+
             if let payload = try? SourceBackupCodec.encodeAsString(
                 sourceManager.sources
             ) {
@@ -489,10 +502,11 @@ struct SourcesView: View {
                 Task { await verifyAllSources() }
             }
             .glassListRow()
-        } header: {
-            GlassSectionHeader(title: "Backup")
-        } footer: {
+
             Text("Il file JSON può contenere credenziali e token. Condividilo solo tramite servizi affidabili.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .glassFooterRow()
         }
     }
 
@@ -818,19 +832,12 @@ struct AddPlaylistView: View {
     @State private var username = ""
     @State private var password = ""
 
-    /// Stesso set di icone mostrato nel riferimento per "Aggiungi playlist"
-    /// (schermo, mezzaluna, fumetto, pellicola, tornado, eject, biglietto,
-    /// pace, chiave): identificativo, non incide sulla logica della sorgente.
     static let iconChoices = [
         "laptopcomputer", "circle.lefthalf.filled", "bubble.left.fill",
         "film.fill", "tornado", "eject.fill", "ticket.fill",
         "peacesign", "key.fill"
     ]
 
-    /// Ordine dei tipi esattamente come nel riferimento: M3U8, Xtream, Plex,
-    /// Jellyfin, Emby (diverso dall'ordine di dichiarazione dell'enum, che
-    /// resta invariato altrove per non alterare l'ordinamento già in uso
-    /// in `MediaSourceType.allCases`).
     private static let orderedTypes: [MediaSourceType] = [.m3u8, .xtream, .plex, .jellyfin, .emby]
 
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -972,9 +979,6 @@ struct AddPlaylistView: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
-    /// Nome breve del tipo (senza la parte tra parentesi di
-    /// `MediaSourceType.rawValue`), per restare fedele al riferimento
-    /// ("Xtream", non "Xtream Codes").
     private func candidateTitle(_ candidate: MediaSourceType) -> String {
         switch candidate {
         case .xtream: return "Xtream"
