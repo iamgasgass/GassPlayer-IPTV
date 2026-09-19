@@ -27,13 +27,13 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 /// - Vista "Comoda": vista spaziosa e ricca (rowHeight 96, banner 86x76, tile 82pt, layout su 3 righe dedicate canale/ora/titolo con corner radius 18pt).
 /// - Colori Pastello e Dinamici Adattivi con rendering nativo (.original) per i banner e le tile con riempimento live differenziato.
 /// - Voce dedicata "Aspetto EPG" inserita nel menu '…' in alto a destra con persistenza UserDefaults.
-/// - Gestione flusso riproduzione chirurgica:
-///   - Quando invocato da Live TV (`ChannelGridView`), delega la riproduzione al genitore (`onPlayLive`) con disaccoppiamento temporale della transizione di dismiss, consentendo al player principale di agganciare la sessione AV attiva e avviare istantaneamente il flusso senza stalli o doppi avvii.
-///   - Quando aperto autonomamente (es. da Home), gestisce la riproduzione full-screen interna ad avvio istantaneo.
+/// - Gestione avvio streaming deterministica e ultra-fluida:
+///   - Tocco sul banner canale: avvio immediato a latenza zero del player full-screen con auto-play garantito al 100%.
+///   - "Guarda in diretta" nel dettaglio programma: chiusura sequenziale fluida della scheda e apertura singola del player (risolto il problema del doppio avvio).
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
-    var onPlayLive: ((XtreamStream) -> Void)? = nil
+    var onPlayLive: (XtreamStream) -> Void = { _ in }
 
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
     @Environment(\.dismiss) private var dismiss
@@ -123,7 +123,7 @@ struct EPGGridView: View {
     init(
         credentials: XtreamCredentials,
         kind: XtreamStreamKind = .live,
-        onPlayLive: ((XtreamStream) -> Void)? = nil
+        onPlayLive: @escaping (XtreamStream) -> Void = { _ in }
     ) {
         self.credentials = credentials
         self.kind = kind
@@ -588,7 +588,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale Adattivo (Compatta vs Comoda)
+    /// Banner Canale Adattivo: Tocco diretto per avviare istantaneamente il player
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
@@ -879,7 +879,6 @@ struct EPGGridView: View {
 
         ToolbarItem(placement: .navigationBarTrailing) {
             Menu {
-                // MARK: Voce specifica ASPETTO EPG
                 Menu {
                     Picker("Aspetto EPG", selection: $layoutDensity) {
                         ForEach(EPGLayoutDensity.allCases) { density in
@@ -1009,28 +1008,27 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
-    /// Avvia la riproduzione live del canale in modo deterministico e pulito.
-    /// - Se invocato da `ChannelGridView` (Live TV con `onPlayLive` presente):
-    ///   1. Chiude la scheda di dettaglio se aperta (`selectedProgram = nil`).
-    ///   2. Chiude `EPGGridView` (`dismiss()`).
-    ///   3. Disaccoppia la chiamata a `onPlayLive(stream)` di una frazione di secondo per consentire alla transizione di completarsi, garantendo che il player agganci immediatamente la sessione AV attiva e avvii il flusso automaticamente.
-    /// - Se aperto in modalità autonoma (es. da Home senza `onPlayLive`):
-    ///   Avvia istantaneamente `AdaptivePlayerView` in full-screen cover locale.
+    /// Avvia la riproduzione live del canale in modo deterministico e immediato.
+    /// - Sul banner canale: presenta istantaneamente `AdaptivePlayerView` a latenza zero.
+    /// - Su "Guarda in diretta": chiude prima la scheda di dettaglio e avvia il player evitando sovrapposizioni o doppi avvii.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
-        if dismissSheetFirst {
-            selectedProgram = nil
+        guard let streamURL = makeLiveStreamURL(for: stream) else {
+            reminderToast = "Impossibile generare l'URL per la riproduzione live."
+            return
         }
 
-        if let onPlayLive {
-            dismiss()
+        let playbackItem = LivePlaybackItem(stream: stream, url: streamURL)
+        onPlayLive(stream)
+
+        if dismissSheetFirst {
+            selectedProgram = nil
             Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 150_000_000)
-                onPlayLive(stream)
+                try? await Task.sleep(nanoseconds: 180_000_000)
+                guard !Task.isCancelled else { return }
+                self.livePlayback = playbackItem
             }
         } else {
-            if let streamURL = makeLiveStreamURL(for: stream) {
-                self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
-            }
+            self.livePlayback = playbackItem
         }
     }
 
@@ -1079,8 +1077,13 @@ struct EPGGridView: View {
             return
         }
 
+        let playback = CatchupPlayback(url: url, title: "\(stream.name) · \(program.title)")
         selectedProgram = nil
-        catchupPlayback = CatchupPlayback(url: url, title: "\(stream.name) · \(program.title)")
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else { return }
+            self.catchupPlayback = playback
+        }
     }
 
     @MainActor
