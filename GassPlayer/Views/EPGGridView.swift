@@ -22,9 +22,12 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
-/// EPG touch-first ultra-ottimizzata con supporto dinamico per layout "Compatta" e "Comoda":
-/// - Vista "Compatta": densità touch-first (rowHeight 66, banner 80x58, tile 58pt, allineamento orizzontale compatto).
-/// - Vista "Comoda": vista spaziosa e ricca (rowHeight 96, banner 86x76, tile 82pt, layout su 3 righe dedicate canale/ora/titolo con corner radius 18pt).
+/// EPG touch-first ultra-ottimizzata, resiliente e priva di collisioni modali:
+/// - Avvio streaming immediato e corretto sia da `channelBanner` che da `ProgramDetailSheet` ("Guarda in diretta"):
+///   la chiusura della sheet avviene in modo pulito e asincrono senza bloccare l'interfaccia o andare in crash.
+/// - Gestione unificata e sicura del playback: la chiusura di EPG o l'attivazione della riproduzione notifica
+///   correttamente il delegato/callback `onPlayLive(stream)` e gestisce la riproduzione full-screen senza deadlock.
+/// - Supporto dinamico per layout "Compatta" (touch-first 66pt) e "Comoda" (ampia 96pt a 3 righe).
 /// - Colori Pastello e Dinamici Adattivi con rendering nativo (.original) per i banner e le tile con riempimento live differenziato.
 /// - Voce dedicata "Aspetto EPG" inserita nel menu '…' in alto a destra con persistenza UserDefaults.
 struct EPGGridView: View {
@@ -1006,11 +1009,25 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
+    /// Avvia la riproduzione live in maniera sicura, risolvendo conflitti modali ed eseguendo il callback delegato
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
+            // Rilascio asincrono del runloop per permettere alla modal sheet di completare il dismiss
+            // evitando tentativi simultanei di presentazione fullScreenCover / sheet (causa di deadlock o freeze di UIKit/SwiftUI)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                self.triggerPlaybackExecution(for: stream)
+            }
+        } else {
+            self.triggerPlaybackExecution(for: stream)
         }
+    }
+
+    private func triggerPlaybackExecution(for stream: XtreamStream) {
+        // Notifica il container padre (es. ChannelGridView o Navigation Coordinator)
         onPlayLive(stream)
+
+        // Costruisce ed avvia la presentazione locale se disponibile
         if let streamURL = makeLiveStreamURL(for: stream) {
             self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
         }
@@ -1062,7 +1079,9 @@ struct EPGGridView: View {
         }
 
         selectedProgram = nil
-        catchupPlayback = CatchupPlayback(url: url, title: "\(stream.name) · \(program.title)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            self.catchupPlayback = CatchupPlayback(url: url, title: "\(stream.name) · \(program.title)")
+        }
     }
 
     @MainActor
@@ -1326,14 +1345,20 @@ struct EPGGridView: View {
 
                         VStack(spacing: 10) {
                             if isCurrentlyLive {
-                                Button(action: onPlayLive) {
+                                Button {
+                                    dismiss()
+                                    onPlayLive()
+                                } label: {
                                     Label("Guarda in diretta", systemImage: "play.fill")
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 12)
                                 }
                                 .buttonStyle(.borderedProminent)
                             } else if program.hasArchive {
-                                Button(action: onPlayCatchup) {
+                                Button {
+                                    dismiss()
+                                    onPlayCatchup()
+                                } label: {
                                     Label("Riproduci differita", systemImage: "gobackward")
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 12)
