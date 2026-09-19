@@ -1,84 +1,22 @@
 import SwiftUI
 
-/// Estensioni che portano l'estetica Liquid Glass di `GlassCard` /
-/// `SourceManageView` dentro una `List` di sistema, per le schermate che —
-/// come `SourcesView` — hanno bisogno delle funzioni native della lista
-/// (`.searchable`, `.swipeActions`, `.onMove`, `EditButton`) ma devono
-/// avere lo stesso identico linguaggio visivo delle schermate custom
-/// dell'app (in particolare `HomeView`).
-///
-/// Costante unica di ritmo verticale: metà spazio sopra + metà sotto ogni
-/// riga (card, header o footer) = questo valore raddoppiato è il distacco
-/// visibile tra due elementi consecutivi qualsiasi della lista. Usata da
-/// `glassListRow()`, `glassHeaderRow()` e `glassFooterRow()` così i tre
-/// distacchi (card→card, header→card, card→footer) sono *matematicamente*
-/// identici, non solo visivamente simili.
-private let glassRowVerticalInset: CGFloat = 8
-
+/// Estensioni che portano l'estetica Liquid Glass di `GlassCard` dentro
+/// layout custom (`ScrollView` + `VStack`, come `HomeView`) e — per le
+/// schermate che avessero ancora bisogno di una `List` di sistema — dentro
+/// una `List`. `SourcesView` non usa più la parte "List" da quando è stata
+/// convertita a `ScrollView`, ma questi helper restano qui per eventuali
+/// altre schermate dell'app che si affidano ancora a una `List` nativa.
 extension View {
     /// Sfondo "vetro" per una riga di `List`: stesso identico rendering di
-    /// `GlassCardBackground` (usato da `GlassCard` in `HomeView`), non una
-    /// sua imitazione.
+    /// `GlassCardBackground` (usato da `GlassCard`), non una sua imitazione.
     func glassListRow(cornerRadius: CGFloat = 16) -> some View {
-        listRowInsets(
-            EdgeInsets(
-                top: glassRowVerticalInset,
-                leading: 16,
-                bottom: glassRowVerticalInset,
-                trailing: 16
-            )
-        )
-        .listRowSeparator(.hidden)
-        .listRowBackground(GlassListRowBackground(cornerRadius: cornerRadius))
-    }
-
-    /// Riga "header" in stile Liquid Glass: stesso identico ritmo verticale
-    /// (8pt sopra + 8pt sotto = 16pt) delle card prodotte da
-    /// `.glassListRow()`, ma senza sfondo/vetro proprio — è solo
-    /// un'etichetta di sezione, non una card.
-    ///
-    /// FIX MANIACALE — "le tab devono essere esattamente distanziate come
-    /// tra 'Live TV' e 'Guarda tutte le liste insieme'": prima l'etichetta
-    /// di sezione veniva passata al parametro `header:` di `Section`, che
-    /// in una `List` riceve un padding verticale **proprio**, gestito dal
-    /// sistema e indipendente dai `listRowInsets` delle righe. Il distacco
-    /// header→prima card poteva quindi differire, anche di poco, dal
-    /// distacco card→card. Rendendo l'etichetta una riga vera e propria con
-    /// gli stessi identici insets delle card (e rimuovendo il parametro
-    /// `header:` da `Section`), il distacco è ora lo stesso identico
-    /// calcolo (8+8=16pt) in entrambi i casi: non più un'approssimazione.
-    func glassHeaderRow() -> some View {
-        listRowInsets(
-            EdgeInsets(
-                top: glassRowVerticalInset,
-                leading: 16,
-                bottom: glassRowVerticalInset,
-                trailing: 16
-            )
-        )
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-    }
-
-    /// Variante per i footer di sezione (note/avvertenze sotto l'ultima
-    /// card): stesso principio di `glassHeaderRow()`, stesso ritmo
-    /// verticale, per lo stesso motivo — coerenza totale del distacco in
-    /// ogni punto della lista, non solo tra header e prima card.
-    func glassFooterRow() -> some View {
-        listRowInsets(
-            EdgeInsets(
-                top: glassRowVerticalInset,
-                leading: 16,
-                bottom: glassRowVerticalInset,
-                trailing: 16
-            )
-        )
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
+        listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            .listRowSeparator(.hidden)
+            .listRowBackground(GlassListRowBackground(cornerRadius: cornerRadius))
     }
 
     /// Sfondo di schermata coerente con `SourceManageView`, `EPGManageView`,
-    /// `TraktConnectView` e `HomeView`: stesso identico gradiente.
+    /// `TraktConnectView` **e** `HomeView`: stesso identico gradiente.
     func glassScreenBackground() -> some View {
         background(
             LinearGradient(
@@ -94,32 +32,24 @@ extension View {
         )
     }
 
-    /// Da applicare alla `List` stessa (non alle righe): stile piatto senza
-    /// il raggruppamento automatico di sistema, sfondo nativo nascosto,
-    /// gradiente Liquid Glass e distacco tra sezioni uguale (16pt) al
-    /// distacco tra le righe, per lo stesso motivo di `glassHeaderRow()`:
-    /// un'unica costante di ritmo verticale per tutta la lista, così ogni
-    /// "tab" flottante — che sia una card, un'etichetta o il passaggio da
-    /// una sezione all'altra — è distanziata esattamente allo stesso modo.
+    /// Da applicare a una `List` (non più usata da `SourcesView`, mantenuta
+    /// per compatibilità con altre schermate che si affidano ancora a una
+    /// `List` nativa con lo stesso linguaggio visivo).
     func glassListContainer() -> some View {
         listStyle(.plain)
             .scrollContentBackground(.hidden)
             .glassScreenBackground()
-            .modifier(GlassListSectionSpacing())
     }
-}
 
-/// Applica `.listSectionSpacing(_:)` (disponibile da iOS 17) con lo stesso
-/// valore (16pt = 2×`glassRowVerticalInset`) usato per il distacco tra le
-/// righe, così il passaggio da una `Section` all'altra non introduce un
-/// quarto valore di spaziatura diverso dai tre già unificati sopra.
-private struct GlassListSectionSpacing: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 17.0, *) {
-            content.listSectionSpacing(glassRowVerticalInset * 2)
-        } else {
-            content
-        }
+    /// Sfondo "vetro" per una riga **fuori da una `List`** (dentro un
+    /// `VStack`/`ScrollView`, come in `HomeView` e nella nuova
+    /// `SourcesView`): stesso identico `GlassCardBackground` di `GlassCard`,
+    /// applicato direttamente al contenuto della riga invece che passato a
+    /// `.listRowBackground`. È l'equivalente "senza List" di
+    /// `.glassListRow()`.
+    func glassRow(cornerRadius: CGFloat = 16) -> some View {
+        padding(.horizontal, 14)
+            .modifier(GlassCardBackground(cornerRadius: cornerRadius))
     }
 }
 
@@ -151,9 +81,6 @@ private struct GlassListRowBackground: View {
 
 /// Etichetta di sezione in maiuscolo, stessa tipografia usata da
 /// `EPGManageView`/`SourceManagerView` per intestare i gruppi di card.
-/// Va sempre usata insieme a `.glassHeaderRow()` (non più passata al
-/// parametro `header:` di `Section`) per garantire il ritmo verticale
-/// unificato descritto sopra.
 struct GlassSectionHeader: View {
     let title: String
 
@@ -162,6 +89,68 @@ struct GlassSectionHeader: View {
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
             .textCase(.uppercase)
+    }
+}
+
+// MARK: - Blocco di sezione senza List (fix spaziatura header→tab)
+
+/// Blocco "sezione" per layout `ScrollView`/`VStack` (non `List`): titolo +
+/// contenuto, con una distanza header→primo elemento **fissa e identica in
+/// tutta l'app**.
+///
+/// FIX MANIACALE — spaziatura header→tab incoerente: prima `SourcesView`
+/// usava una `List` di sistema con `Section`. UIKit calcola la distanza tra
+/// l'header di una sezione e la sua prima riga in modo automatico e NON
+/// costante: dipende da footer presenti/assenti, da header con più
+/// sottoview (es. `HStack { GlassSectionHeader; Spacer(); Text(count) }`),
+/// dal numero di righe. Il risultato percepito era che la sezione "Live
+/// TV" → "Guarda tutte le liste insieme" (una sola riga, header semplice)
+/// aveva una distanza diversa dalle altre sezioni con header composti o
+/// più righe.
+///
+/// Rimuovendo la `List` e introducendo questo blocco, la distanza
+/// header→primo elemento è la stessa identica costante (`headerSpacing`)
+/// per **ogni** sezione, senza eccezioni: non c'è più alcun calcolo
+/// automatico di sistema che possa farla divergere.
+///
+/// Il valore di `headerSpacing` (8pt) è scelto per non alterare la
+/// distanza percepita: era esattamente il valore di `top` in
+/// `EdgeInsets(top: 8, ...)` che `.glassListRow()` applicava come inset
+/// superiore della prima riga — cioè lo stesso spazio che la sezione "Live
+/// TV" mostrava già prima di questa modifica. Non è quindi un aumento di
+/// spaziatura, ma la stessa distanza resa costante ovunque.
+struct GlassSectionBlock<Content: View>: View {
+    static let headerSpacing: CGFloat = 8
+
+    let title: String
+    var trailingText: String? = nil
+    var footer: String? = nil
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Self.headerSpacing) {
+            HStack {
+                GlassSectionHeader(title: title)
+
+                if let trailingText {
+                    Spacer()
+                    Text(trailingText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            VStack(spacing: 10) {
+                content
+            }
+
+            if let footer {
+                Text(footer)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+            }
+        }
     }
 }
 
@@ -231,8 +220,9 @@ extension MediaSourceType {
 // MARK: - Pillola flottante condivisa (floating tab)
 
 /// Pillola "Liquid Glass" flottante da usare in `.principal` nella toolbar,
-/// come selettore/menu a tendina. Condivisa carattere per carattere da
-/// `HomeView` e `SourcesView`.
+/// come selettore/menu a tendina. Condivisa da `HomeView` e `SourcesView`:
+/// un'unica fonte di verità per il "floating tab" Liquid Glass di tutta
+/// l'app.
 struct GlassMenuPillLabel: View {
     let systemImage: String
     let title: String
