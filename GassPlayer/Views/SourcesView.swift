@@ -104,29 +104,30 @@ struct SourcesView: View {
         return count == 1 ? "1 sorgente" : "\(count) sorgenti"
     }
 
-    // FIX MANIACALE — "risultano ancora come prima": il tentativo precedente
-    // rendeva identici gli `listRowInsets` di header/card/footer, ma li
-    // teneva dentro `Section { }`. Anche senza passare nulla a `header:` /
-    // `footer:`, una `Section` in una `List` — specialmente con il motore
-    // di rendering Liquid Glass di iOS 26 — riserva comunque un margine di
-    // confine "tra gruppi" distinto dal margine "tra righe della stessa
-    // Section": è un SECONDO sistema di spaziatura che i soli
-    // `listRowInsets` non intercettano. Qui sotto non esiste più alcuna
-    // `Section`: la `List` è un'unica sequenza piatta di righe (etichette,
-    // card, note), tutte con lo stesso identico `.glassHeaderRow()` /
-    // `.glassListRow()` / `.glassFooterRow()`. Senza un confine di sezione,
-    // non può esistere un margine "di confine" nascosto: il distacco è ora
-    // per costruzione lo stesso identico valore ovunque nella lista.
     var body: some View {
         NavigationStack {
-            List {
-                liveAggregationGroup
-                sourcesGroup
-                mergedPlaylistsGroup
-                favoritesGroup
-                backupGroup
+            ScrollView {
+                // FIX MANIACALE — spaziatura header→tab incoerente: la
+                // `List` è stata rimossa del tutto (richiesta esplicita).
+                // Ogni sezione è ora un `GlassSectionBlock`, che applica la
+                // STESSA identica distanza (8pt) tra il proprio titolo e la
+                // prima riga — esattamente la distanza che la sezione
+                // "Live TV" → "Guarda tutte le liste insieme" aveva già.
+                // Nessuna sezione può più avere uno spazio diverso, perché
+                // non c'è più alcun calcolo automatico di `List`/`Section`
+                // che possa farle divergere.
+                VStack(alignment: .leading, spacing: 28) {
+                    liveAggregationSection
+                    sourcesSection
+                    mergedPlaylistsSection
+                    favoritesSection
+                    backupSection
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 32)
             }
-            .glassListContainer()
+            .glassScreenBackground()
             .navigationTitle("Sorgenti")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchQuery, prompt: "Cerca sorgenti")
@@ -219,13 +220,6 @@ struct SourcesView: View {
             }
 
             ToolbarItem(placement: .navigationBarTrailing) {
-                EditButton()
-                    .disabled(!isManualOrderingAvailable)
-            }
-
-            ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
-
-            ToolbarItem(placement: .navigationBarTrailing) {
                 addSourceButton
             }
         } else {
@@ -235,11 +229,6 @@ struct SourcesView: View {
 
             ToolbarItem(placement: .navigationBarLeading) {
                 GlassSettingsButton()
-            }
-
-            ToolbarItem(placement: .navigationBarTrailing) {
-                EditButton()
-                    .disabled(!isManualOrderingAvailable)
             }
 
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -278,84 +267,70 @@ struct SourcesView: View {
         .accessibilityLabel("Aggiungi sorgente")
     }
 
-    // MARK: - Gruppi (ex-Section, ora righe piatte senza confine)
+    // MARK: - Sezioni
 
-    @ViewBuilder
-    private var liveAggregationGroup: some View {
-        GlassSectionHeader(title: "Live TV")
-            .glassHeaderRow()
-
-        GlassSettingsRow(
-            icon: "square.stack.3d.up.fill",
-            title: "Guarda tutte le liste insieme",
-            tint: .red,
-            showChevron: false,
-            isDisabled: !canOpenAllSourcesLive
+    private var liveAggregationSection: some View {
+        GlassSectionBlock(
+            title: "Live TV",
+            footer: canOpenAllSourcesLive ? nil : "Aggiungi e abilita almeno una sorgente Xtream per unire i canali Live TV."
         ) {
-            showAllSourcesLive = true
-        }
-        .glassListRow()
-
-        if !canOpenAllSourcesLive {
-            Text("Aggiungi e abilita almeno una sorgente Xtream per unire i canali Live TV.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .glassFooterRow()
+            GlassSettingsRow(
+                icon: "square.stack.3d.up.fill",
+                title: "Guarda tutte le liste insieme",
+                tint: .red,
+                showChevron: false,
+                isDisabled: !canOpenAllSourcesLive
+            ) {
+                showAllSourcesLive = true
+            }
+            .glassRow()
         }
     }
 
-    @ViewBuilder
-    private var sourcesGroup: some View {
-        HStack {
-            GlassSectionHeader(title: "Le mie sorgenti")
-            Spacer()
-            Text(sourceCountText)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-        }
-        .glassHeaderRow()
+    private var sourcesSection: some View {
+        GlassSectionBlock(
+            title: "Le mie sorgenti",
+            trailingText: sourceCountText,
+            footer: (!isManualOrderingAvailable && !displayedSources.isEmpty)
+                ? "Per riordinare manualmente, seleziona “Personalizzato” e svuota la ricerca."
+                : nil
+        ) {
+            addPlaylistRow
+                .glassRow()
 
-        addPlaylistRow
-            .glassListRow()
+            manageSourcesRow
+                .glassRow()
 
-        manageSourcesRow
-            .glassListRow()
-
-        if displayedSources.isEmpty {
-            ContentUnavailableView(
-                searchQuery.isEmpty
-                    ? "Nessuna sorgente configurata"
-                    : "Nessun risultato",
-                systemImage: searchQuery.isEmpty
-                    ? "square.stack.3d.up"
-                    : "magnifyingglass",
-                description: Text(
+            if displayedSources.isEmpty {
+                ContentUnavailableView(
                     searchQuery.isEmpty
-                        ? "Tocca “Aggiungi playlist” per collegare una playlist M3U o un account supportato."
-                        : "Prova a cercare con un altro nome, host o tipo."
+                        ? "Nessuna sorgente configurata"
+                        : "Nessun risultato",
+                    systemImage: searchQuery.isEmpty
+                        ? "square.stack.3d.up"
+                        : "magnifyingglass",
+                    description: Text(
+                        searchQuery.isEmpty
+                            ? "Tocca “Aggiungi playlist” per collegare una playlist M3U o un account supportato."
+                            : "Prova a cercare con un altro nome, host o tipo."
+                    )
                 )
-            )
-            .listRowBackground(Color.clear)
-        } else {
-            ForEach(displayedSources) { source in
-                sourceRow(source)
-                    .glassListRow()
-            }
-            .onDelete(perform: deleteSources)
-            .onMove(perform: moveSources)
-
-            if !isManualOrderingAvailable {
-                Text("Per modificare l’ordine, seleziona “Personalizzato” e svuota la ricerca.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .glassFooterRow()
+                .padding(.vertical, 12)
+            } else {
+                ForEach(Array(displayedSources.enumerated()), id: \.element.id) { index, source in
+                    sourceRow(
+                        source,
+                        canMoveUp: isManualOrderingAvailable && index > 0,
+                        canMoveDown: isManualOrderingAvailable && index < displayedSources.count - 1
+                    )
+                    .glassRow()
+                }
             }
         }
     }
 
     /// Voce "Aggiungi playlist": stessa azione del pulsante "+" in toolbar,
-    /// ma come riga esplicita della sezione Sorgenti (richiesta esplicita:
-    /// deve comparire come voce dell'elenco, non solo come pulsante).
+    /// ma come riga esplicita della sezione Sorgenti.
     private var addPlaylistRow: some View {
         GlassSettingsRow(
             icon: "plus.circle.fill",
@@ -378,137 +353,178 @@ struct SourcesView: View {
         .disabled(sourceManager.sources.isEmpty)
     }
 
-    @ViewBuilder
-    private var mergedPlaylistsGroup: some View {
-        GlassSectionHeader(title: "Playlist unite")
-            .glassHeaderRow()
+    private var mergedPlaylistsSection: some View {
+        GlassSectionBlock(
+            title: "Playlist unite",
+            footer: "Sono necessarie almeno due sorgenti per creare una playlist unita."
+        ) {
+            if contentManagement.mergedPlaylists.isEmpty {
+                Text("Unisci più sorgenti in una sola playlist.")
+                    .foregroundStyle(.secondary)
+                    .glassRow()
+            } else {
+                ForEach(Array(contentManagement.mergedPlaylists.enumerated()), id: \.element.id) { index, mergedPlaylist in
+                    mergedPlaylistRow(
+                        mergedPlaylist,
+                        canMoveUp: index > 0,
+                        canMoveDown: index < contentManagement.mergedPlaylists.count - 1
+                    )
+                    .glassRow()
+                }
+            }
 
-        if contentManagement.mergedPlaylists.isEmpty {
-            Text("Unisci più sorgenti in una sola playlist.")
-                .foregroundStyle(.secondary)
-                .glassListRow()
-        } else {
-            ForEach(contentManagement.mergedPlaylists) { mergedPlaylist in
-                HStack(spacing: 12) {
-                    GlassSourceIcon(systemImage: "square.stack.3d.up.fill", tint: .purple, size: 36)
+            GlassSettingsRow(
+                icon: "plus.square.on.square",
+                title: "Crea playlist unita",
+                tint: .purple,
+                showChevron: false,
+                isDisabled: sourceManager.sources.count < 2
+            ) {
+                showMergeSheet = true
+            }
+            .glassRow()
+        }
+    }
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(mergedPlaylist.name)
-                            .font(.headline)
-                        Text("\(mergedPlaylist.memberSourceIds.count) sorgenti unite")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+    private func mergedPlaylistRow(
+        _ mergedPlaylist: MergedPlaylist,
+        canMoveUp: Bool,
+        canMoveDown: Bool
+    ) -> some View {
+        HStack(spacing: 12) {
+            GlassSourceIcon(systemImage: "square.stack.3d.up.fill", tint: .purple, size: 36)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(mergedPlaylist.name)
+                    .font(.headline)
+                Text("\(mergedPlaylist.memberSourceIds.count) sorgenti unite")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Menu {
+                if canMoveUp {
+                    Button {
+                        moveMergedPlaylist(mergedPlaylist, up: true)
+                    } label: {
+                        Label("Sposta su", systemImage: "arrow.up")
                     }
                 }
-                .padding(.vertical, 6)
-                .glassListRow()
-            }
-            .onDelete { offsets in
-                let playlistsToDelete = offsets.map {
-                    contentManagement.mergedPlaylists[$0]
+
+                if canMoveDown {
+                    Button {
+                        moveMergedPlaylist(mergedPlaylist, up: false)
+                    } label: {
+                        Label("Sposta giù", systemImage: "arrow.down")
+                    }
                 }
 
-                playlistsToDelete.forEach(contentManagement.removeMergedPlaylist)
-            }
-            .onMove { offsets, destination in
-                contentManagement.reorderMergedPlaylists(
-                    fromOffsets: offsets,
-                    toOffset: destination
-                )
-            }
-        }
-
-        GlassSettingsRow(
-            icon: "plus.square.on.square",
-            title: "Crea playlist unita",
-            tint: .purple,
-            showChevron: false,
-            isDisabled: sourceManager.sources.count < 2
-        ) {
-            showMergeSheet = true
-        }
-        .glassListRow()
-
-        Text("Sono necessarie almeno due sorgenti per creare una playlist unita.")
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .glassFooterRow()
-    }
-
-    @ViewBuilder
-    private var favoritesGroup: some View {
-        GlassSectionHeader(title: "Preferiti")
-            .glassHeaderRow()
-
-        if contentManagement.favorites.isEmpty {
-            Text("I tuoi contenuti preferiti appariranno qui.")
-                .foregroundStyle(.secondary)
-                .glassListRow()
-        } else {
-            ForEach(contentManagement.favorites) { favorite in
-                HStack(spacing: 12) {
-                    GlassSourceIcon(systemImage: "star.fill", tint: .yellow, size: 36)
-                    Text(favorite.title)
-                        .font(.body.weight(.medium))
+                Button(role: .destructive) {
+                    contentManagement.removeMergedPlaylist(mergedPlaylist)
+                } label: {
+                    Label("Elimina", systemImage: "trash")
                 }
-                .padding(.vertical, 6)
-                .glassListRow()
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+            }
+            .accessibilityLabel("Azioni per \(mergedPlaylist.name)")
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func moveMergedPlaylist(_ mergedPlaylist: MergedPlaylist, up: Bool) {
+        guard let currentIndex = contentManagement.mergedPlaylists.firstIndex(where: { $0.id == mergedPlaylist.id }) else {
+            return
+        }
+
+        let targetIndex = up ? currentIndex - 1 : currentIndex + 1
+
+        guard targetIndex >= 0, targetIndex < contentManagement.mergedPlaylists.count else { return }
+
+        let destination = up ? targetIndex : targetIndex + 1
+        contentManagement.reorderMergedPlaylists(
+            fromOffsets: IndexSet(integer: currentIndex),
+            toOffset: destination
+        )
+    }
+
+    private var favoritesSection: some View {
+        GlassSectionBlock(title: "Preferiti") {
+            if contentManagement.favorites.isEmpty {
+                Text("I tuoi contenuti preferiti appariranno qui.")
+                    .foregroundStyle(.secondary)
+                    .glassRow()
+            } else {
+                ForEach(contentManagement.favorites) { favorite in
+                    HStack(spacing: 12) {
+                        GlassSourceIcon(systemImage: "star.fill", tint: .yellow, size: 36)
+                        Text(favorite.title)
+                            .font(.body.weight(.medium))
+                    }
+                    .padding(.vertical, 6)
+                    .glassRow()
+                }
             }
         }
     }
 
-    @ViewBuilder
-    private var backupGroup: some View {
-        GlassSectionHeader(title: "Backup")
-            .glassHeaderRow()
-
-        if let payload = try? SourceBackupCodec.encodeAsString(
-            sourceManager.sources
+    private var backupSection: some View {
+        GlassSectionBlock(
+            title: "Backup",
+            footer: "Il file JSON può contenere credenziali e token. Condividilo solo tramite servizi affidabili."
         ) {
-            ShareLink(
-                item: payload,
-                preview: SharePreview("Backup sorgenti GassPlayer")
+            if let payload = try? SourceBackupCodec.encodeAsString(
+                sourceManager.sources
             ) {
-                GlassSourceRowLabel(
-                    icon: "square.and.arrow.up",
-                    title: "Esporta sorgenti (JSON)",
-                    tint: .blue
-                )
+                ShareLink(
+                    item: payload,
+                    preview: SharePreview("Backup sorgenti GassPlayer")
+                ) {
+                    GlassSourceRowLabel(
+                        icon: "square.and.arrow.up",
+                        title: "Esporta sorgenti (JSON)",
+                        tint: .blue
+                    )
+                }
+                .glassRow()
             }
-            .glassListRow()
-        }
 
-        GlassSettingsRow(
-            icon: "square.and.arrow.down",
-            title: "Importa sorgenti (JSON)",
-            tint: .blue,
-            showChevron: false
-        ) {
-            importText = ""
-            showImportSheet = true
-        }
-        .glassListRow()
+            GlassSettingsRow(
+                icon: "square.and.arrow.down",
+                title: "Importa sorgenti (JSON)",
+                tint: .blue,
+                showChevron: false
+            ) {
+                importText = ""
+                showImportSheet = true
+            }
+            .glassRow()
 
-        GlassSettingsRow(
-            icon: "checkmark.shield",
-            title: "Verifica tutte le sorgenti Xtream",
-            tint: .green,
-            showChevron: false,
-            showsProgress: isCheckingAll,
-            isDisabled: verifiableSourceCount == 0
-        ) {
-            Task { await verifyAllSources() }
+            GlassSettingsRow(
+                icon: "checkmark.shield",
+                title: "Verifica tutte le sorgenti Xtream",
+                tint: .green,
+                showChevron: false,
+                showsProgress: isCheckingAll,
+                isDisabled: verifiableSourceCount == 0
+            ) {
+                Task { await verifyAllSources() }
+            }
+            .glassRow()
         }
-        .glassListRow()
-
-        Text("Il file JSON può contenere credenziali e token. Condividilo solo tramite servizi affidabili.")
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .glassFooterRow()
     }
 
     @ViewBuilder
-    private func sourceRow(_ source: MediaSourceConfig) -> some View {
+    private func sourceRow(
+        _ source: MediaSourceConfig,
+        canMoveUp: Bool,
+        canMoveDown: Bool
+    ) -> some View {
         HStack(spacing: 12) {
             GlassSourceIcon(
                 systemImage: source.iconName ?? source.type.systemImage,
@@ -571,111 +587,120 @@ struct SourcesView: View {
                 .accessibilityLabel(
                     source.isEnabled ? "Sorgente abilitata" : "Sorgente disabilitata"
                 )
+
+            sourceActionsMenu(source, canMoveUp: canMoveUp, canMoveDown: canMoveDown)
         }
         .contentShape(Rectangle())
         .onTapGesture {
             sourceManager.setActive(source)
         }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button {
-                newName = source.name
-                renamingSource = source
-            } label: {
-                Label("Rinomina", systemImage: "pencil")
-            }
-            .tint(.blue)
-
-            Button {
-                duplicate(source)
-            } label: {
-                Label("Duplica", systemImage: "plus.square.on.square")
-            }
-            .tint(.indigo)
-
-            Button {
-                sourceManager.setEnabled(source, isEnabled: !source.isEnabled)
-            } label: {
-                Label(
-                    source.isEnabled ? "Disabilita" : "Abilita",
-                    systemImage: source.isEnabled ? "pause.circle" : "play.circle"
-                )
-            }
-            .tint(.gray)
-        }
-        .swipeActions(edge: .leading, allowsFullSwipe: false) {
-            if source.type == .xtream {
-                Button {
-                    Task {
-                        await testConnection(source)
-                    }
-                } label: {
-                    Label("Verifica", systemImage: "checkmark.shield")
-                }
-                .tint(.green)
-            }
-
-            Button {
-                sourceManager.togglePinned(source)
-            } label: {
-                Label(
-                    source.isPinned ? "Rimuovi pin" : "Fissa in alto",
-                    systemImage: source.isPinned ? "pin.slash" : "pin"
-                )
-            }
-            .tint(.orange)
-        }
         .contextMenu {
-            Button {
-                sourceManager.togglePinned(source)
-            } label: {
-                Label(source.isPinned ? "Rimuovi pin" : "Fissa in alto", systemImage: "pin")
-            }
-
-            Button {
-                sourceManager.setEnabled(source, isEnabled: !source.isEnabled)
-            } label: {
-                Label(source.isEnabled ? "Disabilita" : "Abilita", systemImage: "power")
-            }
-
-            if source.type == .xtream {
-                Button {
-                    Task { await testConnection(source) }
-                } label: {
-                    Label("Verifica connessione", systemImage: "checkmark.shield")
-                }
-            }
-
-            Button {
-                duplicate(source)
-            } label: {
-                Label("Duplica", systemImage: "plus.square.on.square")
-            }
-
-            Button(role: .destructive) {
-                sourceManager.remove(source)
-            } label: {
-                Label("Elimina", systemImage: "trash")
-            }
+            sourceContextMenuItems(source, canMoveUp: canMoveUp, canMoveDown: canMoveDown)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(source.name)
         .accessibilityHint("Tocca per impostare questa sorgente come attiva")
     }
 
-    // MARK: - Azioni
+    /// Menu "•••" per riga: sostituisce le `swipeActions` che esistevano
+    /// solo dentro una `List`. Espone le stesse identiche azioni (rinomina,
+    /// duplica, abilita/disabilita, verifica, pin, elimina), più il
+    /// riordino manuale su/giù quando l'ordinamento è "Personalizzato" e
+    /// la ricerca è vuota — l'equivalente di `onMove`/`EditButton` senza
+    /// bisogno di una `List`.
+    @ViewBuilder
+    private func sourceActionsMenu(
+        _ source: MediaSourceConfig,
+        canMoveUp: Bool,
+        canMoveDown: Bool
+    ) -> some View {
+        Menu {
+            sourceContextMenuItems(source, canMoveUp: canMoveUp, canMoveDown: canMoveDown)
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 32, height: 32)
+        }
+        .accessibilityLabel("Azioni per \(source.name)")
+    }
 
-    private func deleteSources(at offsets: IndexSet) {
-        let sourcesToDelete = offsets.map { displayedSources[$0] }
+    @ViewBuilder
+    private func sourceContextMenuItems(
+        _ source: MediaSourceConfig,
+        canMoveUp: Bool,
+        canMoveDown: Bool
+    ) -> some View {
+        if canMoveUp {
+            Button {
+                moveSource(source, up: true)
+            } label: {
+                Label("Sposta su", systemImage: "arrow.up")
+            }
+        }
 
-        sourcesToDelete.forEach { source in
+        if canMoveDown {
+            Button {
+                moveSource(source, up: false)
+            } label: {
+                Label("Sposta giù", systemImage: "arrow.down")
+            }
+        }
+
+        Button {
+            newName = source.name
+            renamingSource = source
+        } label: {
+            Label("Rinomina", systemImage: "pencil")
+        }
+
+        Button {
+            sourceManager.togglePinned(source)
+        } label: {
+            Label(source.isPinned ? "Rimuovi pin" : "Fissa in alto", systemImage: "pin")
+        }
+
+        Button {
+            sourceManager.setEnabled(source, isEnabled: !source.isEnabled)
+        } label: {
+            Label(source.isEnabled ? "Disabilita" : "Abilita", systemImage: "power")
+        }
+
+        if source.type == .xtream {
+            Button {
+                Task { await testConnection(source) }
+            } label: {
+                Label("Verifica connessione", systemImage: "checkmark.shield")
+            }
+        }
+
+        Button {
+            duplicate(source)
+        } label: {
+            Label("Duplica", systemImage: "plus.square.on.square")
+        }
+
+        Button(role: .destructive) {
             sourceManager.remove(source)
+        } label: {
+            Label("Elimina", systemImage: "trash")
         }
     }
 
-    private func moveSources(from offsets: IndexSet, to destination: Int) {
-        guard isManualOrderingAvailable else { return }
+    // MARK: - Azioni
 
-        sourceManager.move(fromOffsets: offsets, toOffset: destination)
+    private func moveSource(_ source: MediaSourceConfig, up: Bool) {
+        guard isManualOrderingAvailable else { return }
+        guard let currentIndex = sourceManager.sources.firstIndex(where: { $0.id == source.id }) else { return }
+
+        let targetIndex = up ? currentIndex - 1 : currentIndex + 1
+        guard targetIndex >= 0, targetIndex < sourceManager.sources.count else { return }
+
+        let destination = up ? targetIndex : targetIndex + 1
+        sourceManager.move(
+            fromOffsets: IndexSet(integer: currentIndex),
+            toOffset: destination
+        )
     }
 
     private func renameSelectedSource() {
@@ -808,14 +833,9 @@ struct SourcesView: View {
 
 // MARK: - Aggiungi playlist
 
-/// Schermata "Aggiungi playlist", riproduce esattamente il riferimento
-/// fornito: prima si sceglie il tipo di playlist da un elenco a scelta
-/// singola (M3U8 / Xtream / Plex / Jellyfin / Emby, con indicatore radio),
-/// poi — una volta scelto — l'elenco si richiude su un'unica riga con il
-/// tipo selezionato e sotto compaiono nome, icona identificativa (carosello
-/// Liquid Glass) e i campi di connessione specifici del tipo.
-/// Toccando di nuovo la riga del tipo selezionato l'elenco si riapre per
-/// cambiare scelta, prima di premere "Salva".
+/// Schermata "Aggiungi playlist": invariata rispetto alla versione
+/// precedente (usa già `ScrollView` + `GlassCard`, non `List`, quindi non
+/// era interessata dal problema di spaziatura header→tab).
 struct AddPlaylistView: View {
     let onSave: (MediaSourceConfig) -> Void
 
@@ -925,8 +945,6 @@ struct AddPlaylistView: View {
         }
     }
 
-    // MARK: - Selezione del tipo
-
     private var typeSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Seleziona il tipo di playlist")
@@ -1005,8 +1023,6 @@ struct AddPlaylistView: View {
         case .emby: return "key.fill"
         }
     }
-
-    // MARK: - Icona e campi
 
     private var iconPicker: some View {
         VStack(alignment: .leading, spacing: 12) {
