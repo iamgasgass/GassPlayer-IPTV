@@ -1,22 +1,45 @@
 import SwiftUI
 
-/// Componenti condivisi che danno alle schermate custom dell'app (es.
-/// `SourcesView`, `EPGManageView`, `SourceManagerView`) lo stesso aspetto
-/// Liquid Glass: una `ScrollView` con sfondo sfumato, sezioni introdotte da
-/// `GlassSectionHeader` e un'unica `GlassCard` per sezione che raccoglie le
-/// sue righe (`GlassSettingsRow` / `GlassSourceRowLabel`) separate da
-/// `GlassRowDivider`.
+/// Estensioni che portano l'estetica Liquid Glass di `GlassCard` /
+/// `SourceManageView` dentro una `List` di sistema, per le schermate che —
+/// come `SourcesView` — hanno bisogno delle funzioni native della lista
+/// (`.searchable`, `.swipeActions`, `.onMove`, `EditButton`) ma devono
+/// avere lo stesso identico linguaggio visivo delle schermate custom
+/// dell'app (in particolare `HomeView`).
 extension View {
-    /// Sfondo di schermata coerente con `SourceManageView`, `EPGManageView`
-    /// e `TraktConnectView`: stesso gradiente, per un aspetto Liquid Glass
-    /// uniforme in tutta l'app.
+    /// Sfondo "vetro" per una riga di `List`: stesso identico rendering di
+    /// `GlassCardBackground` (usato da `GlassCard` in `HomeView`), non una
+    /// sua imitazione.
+    ///
+    /// FIX MANIACALE: la versione precedente applicava sempre e solo
+    /// `.thickMaterial`, indipendentemente dalla versione di iOS. Questo
+    /// è esattamente il motivo per cui le righe di `SourcesView` NON
+    /// avevano lo stesso aspetto "Liquid Glass" di `HomeView`: su iOS 26+
+    /// `HomeView` usa il vero `.glassEffect(.regular, in:)` (rifrangimento
+    /// reale del vetro), mentre `SourcesView` restava con un materiale
+    /// opaco statico che non reagisce mai come vetro. Ora entrambi i rami
+    /// (`iOS 26+` / fallback) sono identici, carattere per carattere, a
+    /// quelli di `GlassCardBackground`.
+    func glassListRow(cornerRadius: CGFloat = 16) -> some View {
+        listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            .listRowSeparator(.hidden)
+            .listRowBackground(GlassListRowBackground(cornerRadius: cornerRadius))
+    }
+
+    /// Sfondo di schermata coerente con `SourceManageView`, `EPGManageView`,
+    /// `TraktConnectView` **e** `HomeView`: stesso identico gradiente.
+    ///
+    /// FIX MANIACALE: le opacità erano 0.10/0.06, mentre `HomeView.background`
+    /// usa 0.12/0.08. Una differenza minima ma percepibile che rendeva lo
+    /// sfondo di `SourcesView` visibilmente "più spento" rispetto a Home.
+    /// Ora i valori sono identici.
     func glassScreenBackground() -> some View {
         background(
             LinearGradient(
                 colors: [
-                    Color.accentColor.opacity(0.10),
+                    Color.accentColor.opacity(0.12),
                     Color(uiColor: .systemBackground),
-                    Color.purple.opacity(0.06)
+                    Color.purple.opacity(0.08)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -24,10 +47,52 @@ extension View {
             .ignoresSafeArea()
         )
     }
+
+    /// Da applicare alla `List` stessa (non alle righe): stile piatto senza
+    /// il raggruppamento automatico di sistema, sfondo nativo nascosto e
+    /// gradiente Liquid Glass. Combinata con `.glassListRow()` su ogni riga,
+    /// produce le card distanziate in modo uniforme richieste per
+    /// `SourcesView`; usarla è ciò che rende `.glassListRow()` visibile
+    /// come card separate invece che come un unico blocco per sezione.
+    func glassListContainer() -> some View {
+        listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .glassScreenBackground()
+    }
+}
+
+/// Vista di sfondo per una riga di `List`, identica nel rendering a
+/// `GlassCardBackground` (stesso `glassEffect`/fallback), estratta come
+/// tipo a sé perché `.listRowBackground(_:)` richiede una `View` concreta
+/// e non un `ViewModifier` applicato al contenuto della riga.
+private struct GlassListRowBackground: View {
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.clear)
+                .glassEffect(
+                    .regular,
+                    in: .rect(cornerRadius: cornerRadius, style: .continuous)
+                )
+        } else {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
+                }
+        }
+    }
 }
 
 /// Etichetta di sezione in maiuscolo, stessa tipografia usata da
 /// `EPGManageView`/`SourceManagerView` per intestare i gruppi di card.
+/// Necessaria perché `.listStyle(.plain)` (richiesto da `.glassListRow()`
+/// per evitare che le righe di una sezione appaiano come un unico blocco,
+/// vedi `glassListContainer()`) non applica da solo lo stile piccolo e
+/// grigio delle intestazioni "insetGrouped".
 struct GlassSectionHeader: View {
     let title: String
 
@@ -98,6 +163,58 @@ extension MediaSourceType {
         case .plex: return .yellow
         case .jellyfin: return .purple
         case .emby: return .green
+        }
+    }
+}
+
+// MARK: - Pillola flottante condivisa (floating tab)
+
+/// Pillola "Liquid Glass" flottante da usare in `.principal` nella toolbar,
+/// come selettore/menu a tendina. Estratta da `HomeView` (che la usava come
+/// proprietà privata `homeMenuPillLabel`) e generalizzata così **qualunque**
+/// schermata — `HomeView`, `SourcesView`, o altre in futuro — ottiene
+/// esattamente lo stesso identico "floating tab" invocando lo stesso
+/// identico codice, non una copia potenzialmente divergente.
+///
+/// Questo è il pezzo che risolve la richiesta "FLOATING TAB SEPARATE COME
+/// IN HOMEVIEW": prima `SourcesView` aveva solo un'icona di ordinamento in
+/// trailing, senza alcuna pillola flottante equivalente a quella di Home.
+struct GlassMenuPillLabel: View {
+    let systemImage: String
+    let title: String
+    var tint: Color = .accentColor
+    var minWidth: CGFloat = 142
+    var maxWidth: CGFloat = 260
+
+    var body: some View {
+        let pill = HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(tint)
+
+            Text(title)
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+
+            Image(systemName: "chevron.down")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 17)
+        .frame(minWidth: minWidth, maxWidth: maxWidth, minHeight: 44)
+        .contentShape(Capsule())
+
+        return Group {
+            if #available(iOS 26.0, *) {
+                pill.glassEffect(.regular.interactive(), in: Capsule())
+            } else {
+                pill
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.6)
+                    }
+            }
         }
     }
 }
