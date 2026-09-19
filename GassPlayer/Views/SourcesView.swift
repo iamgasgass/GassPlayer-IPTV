@@ -49,16 +49,7 @@ struct SourcesView: View {
     }
 
     /// UNICA spaziatura usata per OGNI gap del layout: header→tab,
-    /// tab→tab, tab→header successivo. Calibrata sul gap che esisteva già
-    /// tra l'header "Live TV" e la riga "Guarda tutte le liste insieme"
-    /// (il più piccolo presente nella schermata), così nessun gap viene
-    /// aumentato: tutti gli altri vengono invece riportati a questo stesso
-    /// valore. Cambiare un solo numero qui cambia la spaziatura ovunque,
-    /// in modo garantito uniforme — questo è esattamente il motivo per cui
-    /// il contenitore `List` (che impone regole di spaziatura diverse tra
-    /// header di sezione, riga e sezione successiva, non unificabili) è
-    /// stato rimosso a favore di un unico `VStack` a spaziatura fissa,
-    /// come in `HomeView`.
+    /// tab→tab, tab→header successivo.
     private let glassTabSpacing: CGFloat = 12
 
     private var displayedSources: [MediaSourceConfig] {
@@ -116,22 +107,13 @@ struct SourcesView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                // FIX RICHIESTO: un solo VStack, un solo valore di spacing
-                // (`glassTabSpacing`) per l'intera schermata. Ogni header
-                // e ogni "tab" Liquid Glass sono semplici fratelli diretti
-                // di questo VStack: la distanza tra un header e il tab
-                // sotto di lui è identica alla distanza tra due tab
-                // consecutivi ed è identica alla distanza tra l'ultimo tab
-                // di un gruppo e l'header del gruppo successivo. Nessuna
-                // `List`, nessuna `Section`: quelle imponevano spaziature
-                // diverse (e non allineabili tra loro) per header e righe.
                 VStack(alignment: .leading, spacing: glassTabSpacing) {
                     liveAggregationHeader
                     liveAggregationRow
 
                     sourcesHeader
                     addPlaylistRow.glassTab()
-                    manageSourcesRow.glassTab()
+                    manageSourcesRow
                     sourcesContent
                     sourcesFooter
 
@@ -347,13 +329,27 @@ struct SourcesView: View {
     /// Voce "Gestisci sorgenti": apre l'hub dedicato che elenca tutte le
     /// sorgenti e permette di entrare direttamente nella scheda di gestione
     /// (`SourceManageView`) di ciascuna.
+    ///
+    /// FIX — testo blu invece di bianco: `NavigationLink`, fuori da una
+    /// `List`, applica di default il tint di sistema (blu) all'intera
+    /// label, sovrascrivendo il `.foregroundStyle(.primary)` già impostato
+    /// dentro `GlassSourceRowLabel`. `.buttonStyle(.plain)` disattiva quello
+    /// stile automatico e lascia che il colore del testo sia quello
+    /// impostato dalla label stessa (bianco in dark mode, come le altre tab).
+    ///
+    /// FIX — disallineamento: rimosso il `.padding(.horizontal, 16)`
+    /// manuale che avevo aggiunto per errore dentro la label; `.glassTab()`
+    /// applicato esternamente fornisce già lo stesso identico padding
+    /// orizzontale delle altre tab, quindi quello interno duplicava
+    /// l'inset e spostava icona/testo fuori asse rispetto al resto.
     private var manageSourcesRow: some View {
         NavigationLink {
             SourceManagerView()
         } label: {
             GlassSourceRowLabel(icon: "gearshape.2.fill", title: "Gestisci sorgenti", tint: .indigo)
-                .padding(.horizontal, 16)
         }
+        .buttonStyle(.plain)
+        .glassTab()
         .disabled(sourceManager.sources.isEmpty)
     }
 
@@ -473,6 +469,12 @@ struct SourcesView: View {
         GlassSectionHeader(title: "Backup")
     }
 
+    /// Voce "Esporta sorgenti (JSON)".
+    ///
+    /// FIX — stesse due correzioni di `manageSourcesRow`: `.buttonStyle(.plain)`
+    /// su `ShareLink` (che, come `NavigationLink`, tinge di blu la label di
+    /// default fuori da una `List`) e rimozione del padding orizzontale
+    /// duplicato.
     @ViewBuilder
     private var exportRow: some View {
         if let payload = try? SourceBackupCodec.encodeAsString(sourceManager.sources) {
@@ -485,8 +487,8 @@ struct SourcesView: View {
                     title: "Esporta sorgenti (JSON)",
                     tint: .blue
                 )
-                .padding(.horizontal, 16)
             }
+            .buttonStyle(.plain)
             .glassTab()
         }
     }
@@ -526,12 +528,6 @@ struct SourcesView: View {
 
     // MARK: - Riga sorgente
 
-    /// FIX RICHIESTO DALLA RIMOZIONE DI `List`: `.swipeActions` esiste solo
-    /// dentro `List`. Tutte le azioni che prima erano su swipe (Rinomina,
-    /// Duplica, Abilita/Disabilita, Verifica, Fissa in alto) sono ora
-    /// raccolte nel `.contextMenu` (tocco prolungato), insieme a quelle
-    /// che già c'erano. Nessuna azione è stata rimossa, solo spostata da
-    /// gesto swipe a gesto long-press.
     @ViewBuilder
     private func sourceRow(_ source: MediaSourceConfig) -> some View {
         HStack(spacing: 12) {
@@ -778,14 +774,6 @@ struct SourcesView: View {
 
 // MARK: - Aggiungi playlist
 
-/// Schermata "Aggiungi playlist", riproduce esattamente il riferimento
-/// fornito: prima si sceglie il tipo di playlist da un elenco a scelta
-/// singola (M3U8 / Xtream / Plex / Jellyfin / Emby, con indicatore radio),
-/// poi — una volta scelto — l'elenco si richiude su un'unica riga con il
-/// tipo selezionato e sotto compaiono nome, icona identificativa (carosello
-/// Liquid Glass) e i campi di connessione specifici del tipo.
-/// Toccando di nuovo la riga del tipo selezionato l'elenco si riapre per
-/// cambiare scelta, prima di premere "Salva".
 struct AddPlaylistView: View {
     let onSave: (MediaSourceConfig) -> Void
 
