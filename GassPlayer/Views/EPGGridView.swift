@@ -22,18 +22,17 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
-/// EPG touch-first ultra-ottimizzata con supporto dinamico per layout "Compatta" e "Comoda":
+/// EPG touch-first ultra-ottimizzata con avvio streaming istantaneo ad autoplay automatico (latenza 0):
 /// - Vista "Compatta": densità touch-first (rowHeight 66, banner 80x58, tile 58pt, allineamento orizzontale compatto).
 /// - Vista "Comoda": vista spaziosa e ricca (rowHeight 96, banner 86x76, tile 82pt, layout su 3 righe dedicate canale/ora/titolo con corner radius 18pt).
 /// - Colori Pastello e Dinamici Adattivi con rendering nativo (.original) per i banner e le tile con riempimento live differenziato.
 /// - Voce dedicata "Aspetto EPG" inserita nel menu '…' in alto a destra con persistenza UserDefaults.
-/// - Gestione chirurgica della transizione di riproduzione:
-///   - Quando invocato da Live TV (`ChannelGridView`), disimpegna la transizione di dismiss prima di notificare `onPlayLive(stream)`, garantendo l'avvio automatico immediato del flusso senza collisioni o doppi player.
-///   - Quando aperto autonomamente (es. da Home), gestisce la riproduzione full-screen interna ad avvio istantaneo.
+/// - Avvio streaming a latenza zero immediato: sia dal banner canale che da "Guarda in diretta", il player full-screen
+///   avvia il flusso in autoplay automatico istantaneo senza delay, blocchi di transizione o doppi avvii.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
-    var onPlayLive: ((XtreamStream) -> Void)? = nil
+    var onPlayLive: (XtreamStream) -> Void = { _ in }
 
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
     @Environment(\.dismiss) private var dismiss
@@ -123,7 +122,7 @@ struct EPGGridView: View {
     init(
         credentials: XtreamCredentials,
         kind: XtreamStreamKind = .live,
-        onPlayLive: ((XtreamStream) -> Void)? = nil
+        onPlayLive: @escaping (XtreamStream) -> Void = { _ in }
     ) {
         self.credentials = credentials
         self.kind = kind
@@ -588,7 +587,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale Adattivo (Compatta vs Comoda)
+    /// Banner Canale Adattivo (Compatta vs Comoda): Tocco per avvio streaming istantaneo ad autoplay 0 latenza
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
@@ -1007,43 +1006,26 @@ struct EPGGridView: View {
         .padding(.bottom, layoutDensity == .compact ? 16 : 18)
     }
 
-    // MARK: - Gestione Dati e Riproduzione Live Istantanea
+    // MARK: - Gestione Dati e Riproduzione Live Istantanea (Autoplay 0 Latenza)
 
-    /// Avvia la riproduzione live del canale in modo deterministico, fluido e privo di collisioni modali.
-    /// - Se invocato da `ChannelGridView` (Live TV con `onPlayLive` passato):
-    ///   1. Chiude la scheda di dettaglio se aperta (`selectedProgram = nil`).
-    ///   2. Chiude `EPGGridView` (`dismiss()`).
-    ///   3. Invia `onPlayLive(stream)` dopo il disimpegno della transizione per consentire a `ChannelGridView`
-    ///      di presentare il player su una gerarchia di finestre pulita, garantendo l'avvio automatico immediato del flusso.
-    /// - Se aperto in modalità autonoma (es. da Home senza `onPlayLive`):
-    ///   Presenta istantaneamente `AdaptivePlayerView` in full-screen cover locale.
+    /// Avvia la riproduzione live del canale all'istante a latenza zero con autoplay automatico.
+    /// - Invoca `onPlayLive(stream)` per notificare il contenitore genitore.
+    /// - Presenta immediatamente `AdaptivePlayerView` tramite `livePlayback` a schermo intero garantendo autoplay immediato.
+    /// - Se la scheda dettaglio è aperta (`selectedProgram != nil`), chiude la sheet e monta il player in modo fluido
+    ///   evitando collisioni tra modali e doppi avvii.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
-        if let onPlayLive {
-            if dismissSheetFirst {
-                selectedProgram = nil
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 120_000_000)
-                    guard !Task.isCancelled else { return }
-                    dismiss()
-                    try? await Task.sleep(nanoseconds: 80_000_000)
-                    guard !Task.isCancelled else { return }
-                    onPlayLive(stream)
-                }
-            } else {
-                dismiss()
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 80_000_000)
-                    guard !Task.isCancelled else { return }
-                    onPlayLive(stream)
-                }
+        onPlayLive(stream)
+
+        guard let streamURL = makeLiveStreamURL(for: stream) else { return }
+        let playbackItem = LivePlaybackItem(stream: stream, url: streamURL)
+
+        if dismissSheetFirst && selectedProgram != nil {
+            selectedProgram = nil
+            Task { @MainActor in
+                self.livePlayback = playbackItem
             }
         } else {
-            if dismissSheetFirst {
-                selectedProgram = nil
-            }
-            if let streamURL = makeLiveStreamURL(for: stream) {
-                self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
-            }
+            self.livePlayback = playbackItem
         }
     }
 
