@@ -7,6 +7,17 @@ private enum SourceSortMode: String, CaseIterable, Identifiable {
     case type = "Tipo"
 
     var id: String { rawValue }
+
+    /// Icona usata dalla pillola flottante in `.principal` per riflettere
+    /// l'ordinamento attivo, con lo stesso linguaggio visivo dell'icona di
+    /// `homeMenuSelection` in `HomeView`.
+    var systemImage: String {
+        switch self {
+        case .manual: return "hand.draw.fill"
+        case .name: return "textformat.abc"
+        case .type: return "square.grid.2x2.fill"
+        }
+    }
 }
 
 private struct ConnectionCheckResult: Identifiable {
@@ -74,6 +85,7 @@ struct SourcesView: View {
             if lhs.isPinned != rhs.isPinned {
                 return lhs.isPinned && !rhs.isPinned
             }
+
             return false
         }
     }
@@ -106,6 +118,7 @@ struct SourcesView: View {
             }
             .glassListContainer()
             .navigationTitle("Sorgenti")
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchQuery, prompt: "Cerca sorgenti")
             .toolbar {
                 toolbarContent
@@ -176,8 +189,22 @@ struct SourcesView: View {
         }
     }
 
+    // MARK: - Toolbar
+
+    /// FIX MANIACALE — "floating tab separate come in HomeView": prima
+    /// qui c'era solo un'icona (`arrow.up.arrow.down.circle`) in trailing,
+    /// senza alcuna pillola flottante. Ora la selezione dell'ordinamento
+    /// è la stessa identica pillola "Liquid Glass" di `HomeView`
+    /// (`GlassMenuPillLabel`, condivisa e non duplicata), posizionata in
+    /// `.principal` esattamente come il menu Home. Il Menu che la ospita
+    /// resta identico nel comportamento (Picker interno), cambia solo la
+    /// veste grafica del pulsante che lo apre.
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            sortPill
+        }
+
         if #available(iOS 26.0, *) {
             ToolbarItem(placement: .navigationBarLeading) {
                 GlassSearchButton()
@@ -188,12 +215,6 @@ struct SourcesView: View {
             ToolbarItem(placement: .navigationBarLeading) {
                 GlassSettingsButton()
             }
-
-            ToolbarItem(placement: .navigationBarTrailing) {
-                sortMenu
-            }
-
-            ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
 
             ToolbarItem(placement: .navigationBarTrailing) {
                 EditButton()
@@ -215,10 +236,6 @@ struct SourcesView: View {
             }
 
             ToolbarItem(placement: .navigationBarTrailing) {
-                sortMenu
-            }
-
-            ToolbarItem(placement: .navigationBarTrailing) {
                 EditButton()
                     .disabled(!isManualOrderingAvailable)
             }
@@ -229,18 +246,28 @@ struct SourcesView: View {
         }
     }
 
-    private var sortMenu: some View {
+    /// Pillola flottante per l'ordinamento: stesso componente, stessa
+    /// dimensione minima/massima e stesso `Menu` con `Picker(.inline)`
+    /// interno usato da `HomeView` per il proprio menu Home.
+    private var sortPill: some View {
         Menu {
             Picker("Ordina per", selection: $sortMode) {
                 ForEach(SourceSortMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+                    Label(mode.rawValue, systemImage: mode.systemImage).tag(mode)
                 }
             }
+            .pickerStyle(.inline)
         } label: {
-            Image(systemName: "arrow.up.arrow.down.circle")
+            GlassMenuPillLabel(
+                systemImage: sortMode.systemImage,
+                title: sortMode.rawValue,
+                tint: .accentColor
+            )
         }
-        .accessibilityLabel("Ordina sorgenti")
-        .accessibilityHint("Scegli l’ordinamento delle sorgenti")
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Ordina sorgenti: \(sortMode.rawValue)")
+        .accessibilityHint("Tocca per cambiare l'ordinamento delle sorgenti")
     }
 
     private var addSourceButton: some View {
@@ -251,6 +278,8 @@ struct SourcesView: View {
         }
         .accessibilityLabel("Aggiungi sorgente")
     }
+
+    // MARK: - Sezioni
 
     private var liveAggregationSection: some View {
         Section {
@@ -358,7 +387,6 @@ struct SourcesView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(mergedPlaylist.name)
                                 .font(.headline)
-
                             Text("\(mergedPlaylist.memberSourceIds.count) sorgenti unite")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -484,6 +512,7 @@ struct SourcesView: View {
                             .font(.caption2)
                             .foregroundStyle(.orange)
                     }
+
                     Text(source.name)
                         .font(.headline)
                 }
@@ -617,8 +646,12 @@ struct SourcesView: View {
                 Label("Elimina", systemImage: "trash")
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(source.name)
         .accessibilityHint("Tocca per impostare questa sorgente come attiva")
     }
+
+    // MARK: - Azioni
 
     private func deleteSources(at offsets: IndexSet) {
         let sourcesToDelete = offsets.map { displayedSources[$0] }
@@ -1045,6 +1078,7 @@ struct AddPlaylistView: View {
                 iconName: iconName
             )
         )
+
         dismiss()
     }
 }
@@ -1088,6 +1122,7 @@ struct ImportSourcesSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Annulla") { dismiss() }
                 }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Importa", action: onImport)
                         .disabled(!canImport)

@@ -364,7 +364,9 @@ struct HomeView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSearchButton()
             }
+
             ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSettingsButton()
             }
@@ -372,45 +374,32 @@ struct HomeView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSearchButton()
             }
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSettingsButton()
             }
         }
     }
 
-    /// Pillola "Liquid Glass" per il menu Home, costruita esattamente come
-    /// `groupPillLabel` in `EPGGridView` (stessa struttura, stesso
-    /// `glassEffect`/fallback `.ultraThinMaterial`) così l'aspetto è identico
-    /// alla lista gruppi della guida programmi.
+    /// Pillola "Liquid Glass" per il menu Home.
+    ///
+    /// FIX MANIACALE: prima questa proprietà costruiva la pillola inline,
+    /// duplicando esattamente lo stesso codice che serviva anche a
+    /// `SourcesView` per il proprio "floating tab" di ordinamento. Codice
+    /// duplicato in due file significa che una modifica futura fatta in un
+    /// solo posto li fa divergere silenziosamente (esattamente il tipo di
+    /// bug "l'aspetto non è più esattamente lo stesso" che ha causato
+    /// questa richiesta). Ora entrambe le viste chiamano lo stesso identico
+    /// componente `GlassMenuPillLabel` (definito in `GlassListStyle.swift`):
+    /// un'unica fonte di verità per il "floating tab" Liquid Glass di tutta
+    /// l'app.
     @ViewBuilder
     private var homeMenuPillLabel: some View {
-        let pill = HStack(spacing: 10) {
-            Image(systemName: homeMenuSelection.systemImage)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(homeMenuSelection.tint)
-
-            Text(homeMenuSelection.title)
-                .font(.system(size: 18, weight: .semibold, design: .rounded))
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
-
-            Image(systemName: "chevron.down")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 17)
-        .frame(minWidth: 142, maxWidth: 260, minHeight: 44)
-        .contentShape(Capsule())
-
-        if #available(iOS 26.0, *) {
-            pill.glassEffect(.regular.interactive(), in: Capsule())
-        } else {
-            pill
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.6)
-                }
-        }
+        GlassMenuPillLabel(
+            systemImage: homeMenuSelection.systemImage,
+            title: homeMenuSelection.title,
+            tint: homeMenuSelection.tint
+        )
     }
 
     private var heading: some View {
@@ -526,6 +515,7 @@ struct HomeView: View {
                       let source = sourceManager.sources.first(where: { $0.id == newValue }) else {
                     return
                 }
+
                 sourceManager.setActive(source)
             }
         )
@@ -642,6 +632,7 @@ struct HomeView: View {
         guard sourceManager.activeSource?.xtreamCredentials != nil else {
             return "Richiede una sorgente Xtream attiva"
         }
+
         return epgManager.autoUpdateEnabled
             ? "Programmi e orari · Aggiornamento automatico attivo"
             : "Programmi e orari dei canali Live TV"
@@ -826,7 +817,9 @@ struct EmptyLibraryView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSearchButton()
             }
+
             ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSettingsButton()
             }
@@ -834,6 +827,7 @@ struct EmptyLibraryView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSearchButton()
             }
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSettingsButton()
             }
