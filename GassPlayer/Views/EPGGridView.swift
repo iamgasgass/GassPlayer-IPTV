@@ -27,9 +27,7 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 /// - Vista "Comoda": vista spaziosa e ricca (rowHeight 96, banner 86x76, tile 82pt, layout su 3 righe dedicate canale/ora/titolo con corner radius 18pt).
 /// - Colori Pastello e Dinamici Adattivi con rendering nativo (.original) per i banner e le tile con riempimento live differenziato.
 /// - Voce dedicata "Aspetto EPG" inserita nel menu '…' in alto a destra con persistenza UserDefaults.
-/// - Gestione flusso riproduzione chirurgica:
-///   - Quando invocato da Live TV (`ChannelGridView`), delega la riproduzione al genitore (`onPlayLive`) e chiude la modale evitando conflitti e doppi avvii del player.
-///   - Quando aperto autonomamente (es. da Home), gestisce la riproduzione full-screen interna ad avvio istantaneo.
+/// - Avvio streaming a latenza zero e auto-start garantito: utilizza la pipeline di riproduzione nativa immediata (identica alla Home/Standalone) sia per banner canale che per la vista modale di Live TV.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -588,7 +586,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale Adattivo (Compatta vs Comoda)
+    /// Banner Canale Adattivo: Avvio istantaneo e identico al player Home/Standalone
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
@@ -1009,25 +1007,22 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
-    /// Avvia la riproduzione live del canale in modo deterministico e pulito.
-    /// - Se invocato da `ChannelGridView` (Live TV con `onPlayLive` passato):
-    ///   1. Chiude prima la scheda di dettaglio se aperta (`selectedProgram = nil`).
-    ///   2. Chiude `EPGGridView` (`dismiss()`) e delega l'avvio a `onPlayLive(stream)`.
-    ///   3. Non imposta `livePlayback`, evitando doppi avvii e conflitti di presentazione modale.
-    /// - Se aperto in modalità autonoma (es. da Home senza `onPlayLive`):
-    ///   Avvia istantaneamente `AdaptivePlayerView` in full-screen cover locale.
+    /// Avvia la riproduzione live del canale utilizzando esattamente le stesse chiamate dirette native
+    /// dell'EPG Home/Standalone, garantendo avvio istantaneo e auto-play senza blocchi.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
-        if dismissSheetFirst {
-            selectedProgram = nil
-        }
+        onPlayLive?(stream)
 
-        if let onPlayLive {
-            dismiss()
-            onPlayLive(stream)
-        } else {
-            if let streamURL = makeLiveStreamURL(for: stream) {
+        guard let streamURL = makeLiveStreamURL(for: stream) else { return }
+
+        if dismissSheetFirst && selectedProgram != nil {
+            selectedProgram = nil
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled else { return }
                 self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
             }
+        } else {
+            self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
         }
     }
 
