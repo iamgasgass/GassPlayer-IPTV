@@ -22,11 +22,19 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
-/// EPG touch-first ultra-ottimizzata con riproduzione nativa immediata a latenza zero:
-/// - Avvio streaming istantaneo su banner canale: elimina ogni ritardo, dispatch o transizione modale ridondante.
-/// - Il tocco sul banner canale attiva direttamente `livePlayback` (`AdaptivePlayerView`) a latenza zero, esattamente come in EPG da Home.
-/// - Supporto per entrambe le densità di layout: "Compatta" (rowHeight 66, banner 80x58) e "Comoda" (rowHeight 96, banner 86x76).
-/// - Colori pastello adattivi, avanzamento live coordinato e voce di menu dedicata "Aspetto EPG".
+/// EPG touch-first ultra-ottimizzata con caricamento playlist/EPG resiliente e privo di memory leaks o stalli:
+/// 1. Risoluzione Cache EPG:
+///   - TTL deterministico (30 minuti) e divieto di memorizzare array vuoti `[]` come risposte permanenti.
+///   - Invalidate e clear dello scope su refresh forzato.
+/// 2. Gestione Robusta dei Task e Rimozione Leaks `loadingStreamIDs`:
+///   - Pulizia infallibile dei canali in caricamento (`loadingStreamIDs`) anche in caso di cancellazione del task o switch categoria.
+///   - Gestione dei filtri `pending` con ri-tentativo automatico per i canali temporaneamente non disponibili.
+/// 3. Inizializzazione Catalogo:
+///   - Trigger automatico di refresh catalogo se `streams` è vuoto con stato `.idle` al primo rendering.
+/// 4. Riproduzione Live a Latenza Zero:
+///   - Avvio immediato e automatico su banner canale e pulsante "Guarda in diretta".
+/// 5. Supporto Layout Dinamico:
+///   - Modalità "Compatta" e "Comoda" con colori pastello adattivi e menu dedicato "Aspetto EPG".
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -417,11 +425,17 @@ struct EPGGridView: View {
                 .onAppear {
                     guard !didAppear else { return }
                     didAppear = true
+                    // Se il catalogo stream è ancora vuoto, richiedi il refresh
+                    if streams.isEmpty && xtreamCatalog.state == .idle {
+                        Task {
+                            await xtreamCatalog.refresh(credentials: credentials, kind: kind)
+                        }
+                    }
                     scheduleReload()
                 }
-                .onChange(of: streams.map(\.streamId)) { _, _ in
-                    if currentStreamData.paged.isEmpty {
-                        renderLimit = min(renderPageSize, max(streams.count, 1))
+                .onChange(of: streams.map(\.streamId)) { _, newIDs in
+                    if !newIDs.isEmpty && currentStreamData.paged.isEmpty {
+                        renderLimit = min(renderPageSize, max(newIDs.count, 1))
                     }
                     scheduleReload()
                 }
@@ -1003,9 +1017,7 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea a Latenza Zero
 
-    /// Avvia la riproduzione live del canale in modo istantaneo a latenza zero:
-    /// - Apre direttamente `AdaptivePlayerView` in fullScreenCover sopra l'EPG, esattamente come avviene da Home.
-    /// - Nessuna animazione di chiusura modale intermedia, nessun ritardo o chiamata asincrona ridondante.
+    /// Avvia la riproduzione live del canale in modo istantaneo a latenza zero
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
@@ -1079,6 +1091,10 @@ struct EPGGridView: View {
     }
 
     private func refreshAll() async {
+        EPGMemoryCache.shared.clear(scope: cacheScope)
+        programsByStream.removeAll()
+        failedStreamIDs.removeAll()
+        loadingStreamIDs.removeAll()
         await xtreamCatalog.refresh(credentials: credentials, kind: kind)
         await reloadEPG(forceRefresh: true)
     }
@@ -1098,7 +1114,7 @@ struct EPGGridView: View {
     private func hydrateVisibleProgramsFromCache(for targetStreams: [XtreamStream]) {
         let scope = cacheScope
         for stream in targetStreams {
-            guard let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId) else {
+            guard let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId), !cached.isEmpty else {
                 continue
             }
             programsByStream[stream.streamId] = cached
@@ -1121,10 +1137,16 @@ struct EPGGridView: View {
             return
         }
 
-        hydrateVisibleProgramsFromCache(for: targets)
+        if !forceRefresh {
+            hydrateVisibleProgramsFromCache(for: targets)
+        }
 
         let pending = targets.filter { stream in
-            forceRefresh || programsByStream[stream.streamId] == nil
+            if forceRefresh { return true }
+            guard let existing = programsByStream[stream.streamId] else {
+                return !failedStreamIDs.contains(stream.streamId)
+            }
+            return existing.isEmpty && !failedStreamIDs.contains(stream.streamId)
         }
 
         guard !pending.isEmpty else {
@@ -1140,7 +1162,12 @@ struct EPGGridView: View {
             }
         }
 
-        failedStreamIDs.subtract(Set(pending.map(\.streamId)))
+        if forceRefresh {
+            failedStreamIDs.removeAll()
+        } else {
+            failedStreamIDs.subtract(Set(pending.map(\.streamId)))
+        }
+
         let service = EPGService(credentials: credentials)
         let scope = cacheScope
 
@@ -1171,17 +1198,17 @@ struct EPGGridView: View {
                 }
 
                 for await (streamID, result) in group {
-                    guard !Task.isCancelled else { continue }
                     loadingStreamIDs.remove(streamID)
+                    guard !Task.isCancelled else { continue }
 
                     switch result {
                     case .success(let programs):
                         programsByStream[streamID] = programs
-                        EPGMemoryCache.shared.store(scope: scope, streamId: streamID, programs: programs)
                         if programs.isEmpty {
                             failedStreamIDs.insert(streamID)
                         } else {
                             failedStreamIDs.remove(streamID)
+                            EPGMemoryCache.shared.store(scope: scope, streamId: streamID, programs: programs)
                         }
                     case .failure(let error):
                         failedStreamIDs.insert(streamID)
@@ -1191,6 +1218,11 @@ struct EPGGridView: View {
                         )
                     }
                 }
+            }
+
+            // Pulizia di sicurezza per tutti i canali del batch
+            for stream in batch {
+                loadingStreamIDs.remove(stream.streamId)
             }
         }
 
@@ -1233,20 +1265,34 @@ struct EPGGridView: View {
 
         private struct Entry {
             let programs: [EPGProgram]
+            let timestamp: Date
         }
 
         private var storage: [String: Entry] = [:]
+        private let ttl: TimeInterval = 60 * 30 // Validità 30 minuti
 
         private func key(scope: String, streamId: Int) -> String {
             "\(scope)#\(streamId)"
         }
 
         func programs(scope: String, streamId: Int) -> [EPGProgram]? {
-            storage[key(scope: scope, streamId: streamId)]?.programs
+            guard let entry = storage[key(scope: scope, streamId: streamId)] else {
+                return nil
+            }
+            if Date().timeIntervalSince(entry.timestamp) > ttl {
+                storage.removeValue(forKey: key(scope: scope, streamId: streamId))
+                return nil
+            }
+            return entry.programs
         }
 
         func store(scope: String, streamId: Int, programs: [EPGProgram]) {
-            storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs)
+            guard !programs.isEmpty else { return }
+            storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs, timestamp: Date())
+        }
+
+        func clear(scope: String) {
+            storage = storage.filter { !$0.key.hasPrefix("\(scope)#") }
         }
     }
 
