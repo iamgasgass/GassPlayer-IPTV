@@ -27,9 +27,10 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 /// - Vista "Comoda": vista spaziosa e ricca (rowHeight 96, banner 86x76, tile 82pt, layout su 3 righe dedicate canale/ora/titolo con corner radius 18pt).
 /// - Colori Pastello e Dinamici Adattivi con rendering nativo (.original) per i banner e le tile con riempimento live differenziato.
 /// - Voce dedicata "Aspetto EPG" inserita nel menu '…' in alto a destra con persistenza UserDefaults.
-/// - Gestione flusso riproduzione chirurgica:
-///   - Quando invocato da Live TV (`ChannelGridView`), chiude la modale con sincronizzazione della transizione ed esegue `onPlayLive` consentendo al player di avviare automaticamente il flusso streaming live senza pause o stalli.
-///   - Quando aperto autonomamente (es. da Home), gestisce la riproduzione full-screen interna ad avvio istantaneo.
+/// - Risoluzione chirurgica e definitiva avvio streaming da Live TV (ChannelGridView):
+///   - Al tocco sul banner canale o su "Guarda in diretta", chiude la modale EPG (`dismiss()`) e dispaccia in modo asincrono e protetto `onPlayLive(stream)` sul MainActor.
+///   - Questo previene qualsiasi collisione di transizione tra la chiusura della modale EPG e l'apertura del player di sistema, garantendo che AVPlayer non entri in pausa e avvii automaticamente e istantaneamente la riproduzione del flusso.
+///   - In modalità autonoma (es. da Home), avvia direttamente `AdaptivePlayerView` locale full-screen cover a latenza zero.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -1009,15 +1010,13 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
-    /// Avvia la riproduzione live del canale in modo deterministico, fluido e con autoplay immediato.
-    /// - Se invocato da `ChannelGridView` (Live TV con `onPlayLive` passato):
-    ///   1. Chiude la scheda di dettaglio se aperta (`selectedProgram = nil`).
-    ///   2. Chiude la vista EPG (`dismiss()`).
-    ///   3. Esegue `onPlayLive(stream)` sul ciclo di runloop successivo (100ms) per garantire
-    ///      la stabilizzazione della gerarchia delle finestre UIKit, permettendo al player di
-    ///      avviare l'autoplay del flusso streaming istantaneamente senza rimanere in pausa o sul fotogramma iniziale.
-    /// - Se aperto in modalità autonoma (es. da Home senza `onPlayLive`):
-    ///   Avvia istantaneamente `AdaptivePlayerView` in full-screen cover locale.
+    /// Avvia la riproduzione live del canale garantendo che il player avvii subito il flusso streaming:
+    /// - Quando aperto da ChannelGridView (Live TV con `onPlayLive` presente):
+    ///   1. Chiude la modale di dettaglio se aperta (`selectedProgram = nil`).
+    ///   2. Chiude la modale EPG (`dismiss()`).
+    ///   3. Esegue `onPlayLive(stream)` asincronamente sul MainActor per evitare collisioni di ciclo di vita con UIKit/AVPlayer.
+    /// - Quando aperto autonomamente (senza `onPlayLive`):
+    ///   Crea l'URL e presenta `AdaptivePlayerView` internamente tramite `livePlayback`.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
@@ -1025,8 +1024,7 @@ struct EPGGridView: View {
 
         if let onPlayLive {
             dismiss()
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 100_000_000)
+            DispatchQueue.main.async {
                 onPlayLive(stream)
             }
         } else {
