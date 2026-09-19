@@ -28,8 +28,8 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 /// - Colori Pastello e Dinamici Adattivi con rendering nativo (.original) per i banner e le tile con riempimento live differenziato.
 /// - Voce dedicata "Aspetto EPG" inserita nel menu '…' in alto a destra con persistenza UserDefaults.
 /// - Gestione flusso riproduzione chirurgica:
-///   - Quando invocato da Live TV (`ChannelGridView`), delega la riproduzione al genitore (`onPlayLive`) e chiude la modale evitando conflitti e doppi avvii del player.
-///   - Quando aperto autonomamente (es. da Home), gestisce la riproduzione full-screen interna ad avvio istantaneo.
+///   - Quando invocato da Live TV (`ChannelGridView`), delega la riproduzione direttamente a `onPlayLive(stream)` senza conflitti o collisioni di dismiss concorrenti, garantendo l'avvio automatico e immediato del flusso.
+///   - Quando aperto autonomamente (es. da Home senza callback esterna), gestisce la riproduzione full-screen interna ad avvio istantaneo.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -58,19 +58,6 @@ struct EPGGridView: View {
     @State private var renderLimit = 32
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
-
-    /// Origine X (nel coordinate space del viewport) del contenuto scrollabile
-    /// orizzontale della griglia oraria. È l'UNICA fonte di verità dello scroll:
-    /// tutte le tile di tutte le righe leggono questo stesso valore per calcolare
-    /// il proprio "aggancio" (sticky) al bordo della colonna canali. Prima ogni
-    /// tile calcolava la propria posizione con un `GeometryReader` indipendente:
-    /// con decine di tile visibili contemporaneamente ciò produceva altrettanti
-    /// layout pass per singolo frame di scroll, con rischio di micro-sfasamenti
-    /// fra una riga e l'altra (l'effetto "sembra ferma" segnalato, con i bordi
-    /// che si muovevano ma il contenuto non sempre sincronizzato). Con un'unica
-    /// `@State` aggiornata una sola volta per frame tramite `PreferenceKey`,
-    /// tutte le righe e la sezione orari restano perfettamente sincronizzate.
-    @State private var scrollContentOriginX: CGFloat = 0
 
     private let renderPageSize = 32
     private let hardRenderCap = 250
@@ -116,6 +103,10 @@ struct EPGGridView: View {
     /// Larghezza della colonna fissa laterale
     private var bannerColumnWidth: CGFloat {
         bannerInset + channelBannerWidth + bannerInset
+    }
+
+    private var bannerContentWidth: CGFloat {
+        bannerColumnWidth - (bannerInset * 2)
     }
 
     /// Finestra temporale: 30 minuti passati, 3 ore future.
@@ -498,16 +489,6 @@ struct EPGGridView: View {
 
     // MARK: - Superficie EPG (HStack Principale)
 
-    /// Riporta l'origine X del contenuto scrollabile orizzontale, misurata una
-    /// sola volta per l'intera superficie (non per singola tile). Vedi
-    /// `scrollContentOriginX` per il razionale completo.
-    private struct EPGScrollOffsetPreferenceKey: PreferenceKey {
-        static var defaultValue: CGFloat = 0
-        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-            value = nextValue()
-        }
-    }
-
     private func epgSurface(pagedStreams: [XtreamStream]) -> some View {
         HStack(alignment: .top, spacing: 0) {
             fixedDayAndChannelColumn(pagedStreams: pagedStreams)
@@ -522,22 +503,7 @@ struct EPGGridView: View {
                         timelineRow(for: stream)
                     }
                 }
-                .background {
-                    // Un'unica misurazione geometrica per l'intero contenuto
-                    // scrollabile, invece di una per ogni tile: aggiorna
-                    // `scrollContentOriginX` in sync con il gesto di scroll,
-                    // un solo layout pass per frame per l'intera griglia.
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: EPGScrollOffsetPreferenceKey.self,
-                            value: proxy.frame(in: .named("epgViewportCoordinateSpace")).minX
-                        )
-                    }
-                }
             }
-        }
-        .onPreferenceChange(EPGScrollOffsetPreferenceKey.self) { newValue in
-            scrollContentOriginX = newValue
         }
     }
 
@@ -596,10 +562,6 @@ struct EPGGridView: View {
                     .foregroundStyle(.white)
                     .frame(width: arrowGlyphWidth, height: timelineHeaderHeight, alignment: .center)
                     .offset(x: liveAxisX - arrowGlyphWidth / 2)
-                    // Comportamento dinamico dell'indicatore: quando `now`
-                    // avanza (ogni minuto) la freccia scivola fluidamente
-                    // verso la nuova posizione invece di "scattare" di colpo.
-                    .animation(.easeInOut(duration: 0.6), value: liveAxisX)
                     .accessibilityLabel("Ora corrente: \(Self.timeFormatter.string(from: windowCenter))")
             }
         }
@@ -626,7 +588,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale Adattivo (Compatta vs Comoda)
+    /// Banner Canale Adattivo (Compatta vs Comoda): Tocco rapido con avvio istantaneo garantito
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
@@ -734,93 +696,87 @@ struct EPGGridView: View {
         let width = max(32, endX - startX)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
-        // Posizione reale della tile nel viewport = origine del contenuto
-        // scrollabile (condivisa, un solo valore per l'intera griglia) +
-        // l'offset della tile all'interno del canvas orario. Equivalente
-        // matematicamente a quanto restituiva in precedenza il
-        // `GeometryReader` per-tile, ma calcolato una sola volta per frame
-        // per TUTTA la griglia invece che una volta per ogni singola tile:
-        // questo è ciò che garantisce che il "bordo" della tile e il
-        // "riempimento" del nuovo programma restino sempre sincronizzati,
-        // riga dopo riga, durante lo scroll.
-        let tileMinX = scrollContentOriginX + startX
+        return GeometryReader { geo in
+            let frameInViewport = geo.frame(in: .named("epgViewportCoordinateSpace"))
+            let tileMinX = frameInViewport.minX
 
-        let overlap = max(0, bannerColumnWidth - tileMinX)
-        let maxSticky = max(0, width - (layoutDensity == .compact ? 120 : 130))
-        let stickyX = min(overlap, maxSticky)
+            let overlap = max(0, bannerColumnWidth - tileMinX)
+            let maxSticky = max(0, width - (layoutDensity == .compact ? 120 : 130))
+            let stickyX = min(overlap, maxSticky)
 
-        let transitionProgress = max(0, min(1, (overlap - maxSticky) / 30))
-        let nameSlideOffset = stickyX
-        let timeEntranceOpacity = max(0.2, 1.0 - Double(transitionProgress))
+            let transitionProgress = max(0, min(1, (overlap - maxSticky) / 30))
+            let nameSlideOffset = stickyX
+            let timeEntranceOpacity = max(0.2, 1.0 - Double(transitionProgress))
 
-        return Button {
-            selectedProgram = SelectedProgram(program: program, stream: stream)
-        } label: {
-            Group {
-                if layoutDensity == .compact {
-                    // MARK: Vista Compatta (Allineamento centrato verticale)
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
+            Button {
+                selectedProgram = SelectedProgram(program: program, stream: stream)
+            } label: {
+                Group {
+                    if layoutDensity == .compact {
+                        // MARK: Vista Compatta (Allineamento centrato verticale)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Text(stream.name)
+                                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+
+                                Text(program.start.formatted(date: .omitted, time: .shortened))
+                                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                                    .foregroundStyle(.white.opacity(0.60))
+                                    .lineLimit(1)
+                                    .opacity(timeEntranceOpacity)
+                            }
+
+                            Text(program.title)
+                                .font(.system(size: 14, weight: .regular, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.92))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        .padding(.horizontal, 10)
+                        .offset(x: nameSlideOffset)
+                        .frame(width: width, height: blockHeight, alignment: .leading)
+                    } else {
+                        // MARK: Vista Comoda (Layout a 3 righe ampie)
+                        VStack(alignment: .leading, spacing: 3) {
                             Text(stream.name)
-                                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.white)
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.70))
                                 .lineLimit(1)
 
                             Text(program.start.formatted(date: .omitted, time: .shortened))
-                                .font(.system(size: 13, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.60))
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.55))
                                 .lineLimit(1)
                                 .opacity(timeEntranceOpacity)
+
+                            Text(program.title)
+                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+
+                            Spacer(minLength: 0)
                         }
-
-                        Text(program.title)
-                            .font(.system(size: 14, weight: .regular, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.92))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 8)
+                        .offset(x: stickyX)
+                        .frame(width: width, height: blockHeight, alignment: .topLeading)
                     }
-                    .padding(.horizontal, 10)
-                    .offset(x: nameSlideOffset)
-                    .frame(width: width, height: blockHeight, alignment: .leading)
-                } else {
-                    // MARK: Vista Comoda (Layout a 3 righe ampie)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(stream.name)
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.70))
-                            .lineLimit(1)
-
-                        Text(program.start.formatted(date: .omitted, time: .shortened))
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.55))
-                            .lineLimit(1)
-                            .opacity(timeEntranceOpacity)
-
-                        Text(program.title)
-                            .font(.system(size: 16, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 8)
-                    .offset(x: stickyX)
-                    .frame(width: width, height: blockHeight, alignment: .topLeading)
                 }
             }
+            .buttonStyle(.plain)
+            .background {
+                programTileBackground(
+                    stream: stream,
+                    program: program,
+                    tileStartX: startX,
+                    tileWidth: width
+                )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
-        .buttonStyle(.plain)
-        .background {
-            programTileBackground(
-                stream: stream,
-                program: program,
-                tileStartX: startX,
-                tileWidth: width
-            )
-        }
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .frame(width: width, height: blockHeight)
         .offset(x: startX)
         .accessibilityLabel(
@@ -851,11 +807,6 @@ struct EPGGridView: View {
                 Rectangle()
                     .fill(channelColor.opacity(layoutDensity == .compact ? 0.38 : 0.45))
                     .frame(width: brightWidth)
-                    // Riempimento "in onda ora" sincronizzato con l'avanzare
-                    // del tempo (stesso ritmo dell'indicatore in header):
-                    // avanza con una dissolvenza fluida invece di scattare
-                    // ad ogni aggiornamento di `now`.
-                    .animation(.easeInOut(duration: 0.6), value: brightWidth)
             }
         }
     }
@@ -1058,20 +1009,18 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
-    /// Avvia la riproduzione live del canale in modo deterministico e pulito.
-    /// - Se invocato da `ChannelGridView` (Live TV con `onPlayLive` passato):
-    ///   1. Chiude prima la scheda di dettaglio se aperta (`selectedProgram = nil`).
-    ///   2. Chiude `EPGGridView` (`dismiss()`) e delega l'avvio a `onPlayLive(stream)`.
-    ///   3. Non imposta `livePlayback`, evitando doppi avvii e conflitti di presentazione modale.
-    /// - Se aperto in modalità autonoma (es. da Home senza `onPlayLive`):
-    ///   Avvia istantaneamente `AdaptivePlayerView` in full-screen cover locale.
+    /// Avvia la riproduzione live del canale in modo deterministico a latenza zero:
+    /// - Quando fornito `onPlayLive` (aperto da ChannelGridView / Live TV):
+    ///   Invia immediatamente lo stream al gestore di ChannelGridView senza innescare `dismiss()` concorrenti
+    ///   né istanze duplicate, permettendo al player principale di agganciare il flusso AVPlayer e avviarlo automaticamente.
+    /// - Quando assente `onPlayLive` (aperto da Home):
+    ///   Avvia la riproduzione full-screen cover locale.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
         }
 
         if let onPlayLive {
-            dismiss()
             onPlayLive(stream)
         } else {
             if let streamURL = makeLiveStreamURL(for: stream) {
