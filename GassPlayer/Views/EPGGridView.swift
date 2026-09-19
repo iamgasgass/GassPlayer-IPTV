@@ -27,8 +27,7 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 /// - Vista "Comoda": vista spaziosa e ricca (rowHeight 96, banner 86x76, tile 82pt, layout su 3 righe dedicate canale/ora/titolo con corner radius 18pt).
 /// - Colori Pastello e Dinamici Adattivi con rendering nativo (.original) per i banner e le tile con riempimento live differenziato.
 /// - Voce dedicata "Aspetto EPG" inserita nel menu '…' in alto a destra con persistenza UserDefaults.
-/// - Avvio streaming nativo istantaneo a latenza zero sia da Home/Standalone che da sezione Live TV di ChannelGridView,
-///   con gestione pulita della transizione modale per garantire l'avvio automatico immediato del flusso.
+/// - Avvio streaming nativo istantaneo a latenza zero unificato (stesse identiche chiamate Home/Standalone e Live TV di ChannelGridView con adattamento modale).
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -587,7 +586,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale Adattivo (Compatta vs Comoda)
+    /// Banner Canale Adattivo con avvio immediato a latenza zero
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
@@ -1008,25 +1007,23 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea
 
-    /// Avvia la riproduzione live del canale in modo deterministico e nativo con le medesime chiamate di Home/Standalone:
-    /// - Al tap su banner canale (`dismissSheetFirst: false`): notifica `onPlayLive` e imposta `livePlayback` all'istante
-    ///   avviando `AdaptivePlayerView` in full-screen cover senza ritardi.
-    /// - Da dettaglio programma (`dismissSheetFirst: true`): chiude la scheda di dettaglio e avvia il player evitando conflitti di transizione.
+    /// Avvia la riproduzione live del canale utilizzando le stesse identiche chiamate di Home/Standalone,
+    /// garantendo l'avvio immediato ed automatico del player a schermo intero (anche se aperto come modale da ChannelGridView).
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         onPlayLive?(stream)
 
         guard let streamURL = makeLiveStreamURL(for: stream) else { return }
-        let playbackItem = LivePlaybackItem(stream: stream, url: streamURL)
 
-        if dismissSheetFirst {
+        if dismissSheetFirst && selectedProgram != nil {
             selectedProgram = nil
             Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 80_000_000)
+                // Attesa fluida per completare il dismiss del ProgramDetailSheet prima di presentare il player
+                try? await Task.sleep(nanoseconds: 180_000_000)
                 guard !Task.isCancelled else { return }
-                self.livePlayback = playbackItem
+                self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
             }
         } else {
-            self.livePlayback = playbackItem
+            self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
         }
     }
 
