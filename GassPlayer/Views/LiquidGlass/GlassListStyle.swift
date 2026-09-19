@@ -6,33 +6,79 @@ import SwiftUI
 /// (`.searchable`, `.swipeActions`, `.onMove`, `EditButton`) ma devono
 /// avere lo stesso identico linguaggio visivo delle schermate custom
 /// dell'app (in particolare `HomeView`).
+///
+/// Costante unica di ritmo verticale: metà spazio sopra + metà sotto ogni
+/// riga (card, header o footer) = questo valore raddoppiato è il distacco
+/// visibile tra due elementi consecutivi qualsiasi della lista. Usata da
+/// `glassListRow()`, `glassHeaderRow()` e `glassFooterRow()` così i tre
+/// distacchi (card→card, header→card, card→footer) sono *matematicamente*
+/// identici, non solo visivamente simili.
+private let glassRowVerticalInset: CGFloat = 8
+
 extension View {
     /// Sfondo "vetro" per una riga di `List`: stesso identico rendering di
     /// `GlassCardBackground` (usato da `GlassCard` in `HomeView`), non una
     /// sua imitazione.
-    ///
-    /// FIX MANIACALE: la versione precedente applicava sempre e solo
-    /// `.thickMaterial`, indipendentemente dalla versione di iOS. Questo
-    /// è esattamente il motivo per cui le righe di `SourcesView` NON
-    /// avevano lo stesso aspetto "Liquid Glass" di `HomeView`: su iOS 26+
-    /// `HomeView` usa il vero `.glassEffect(.regular, in:)` (rifrangimento
-    /// reale del vetro), mentre `SourcesView` restava con un materiale
-    /// opaco statico che non reagisce mai come vetro. Ora entrambi i rami
-    /// (`iOS 26+` / fallback) sono identici, carattere per carattere, a
-    /// quelli di `GlassCardBackground`.
     func glassListRow(cornerRadius: CGFloat = 16) -> some View {
-        listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-            .listRowSeparator(.hidden)
-            .listRowBackground(GlassListRowBackground(cornerRadius: cornerRadius))
+        listRowInsets(
+            EdgeInsets(
+                top: glassRowVerticalInset,
+                leading: 16,
+                bottom: glassRowVerticalInset,
+                trailing: 16
+            )
+        )
+        .listRowSeparator(.hidden)
+        .listRowBackground(GlassListRowBackground(cornerRadius: cornerRadius))
+    }
+
+    /// Riga "header" in stile Liquid Glass: stesso identico ritmo verticale
+    /// (8pt sopra + 8pt sotto = 16pt) delle card prodotte da
+    /// `.glassListRow()`, ma senza sfondo/vetro proprio — è solo
+    /// un'etichetta di sezione, non una card.
+    ///
+    /// FIX MANIACALE — "le tab devono essere esattamente distanziate come
+    /// tra 'Live TV' e 'Guarda tutte le liste insieme'": prima l'etichetta
+    /// di sezione veniva passata al parametro `header:` di `Section`, che
+    /// in una `List` riceve un padding verticale **proprio**, gestito dal
+    /// sistema e indipendente dai `listRowInsets` delle righe. Il distacco
+    /// header→prima card poteva quindi differire, anche di poco, dal
+    /// distacco card→card. Rendendo l'etichetta una riga vera e propria con
+    /// gli stessi identici insets delle card (e rimuovendo il parametro
+    /// `header:` da `Section`), il distacco è ora lo stesso identico
+    /// calcolo (8+8=16pt) in entrambi i casi: non più un'approssimazione.
+    func glassHeaderRow() -> some View {
+        listRowInsets(
+            EdgeInsets(
+                top: glassRowVerticalInset,
+                leading: 16,
+                bottom: glassRowVerticalInset,
+                trailing: 16
+            )
+        )
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
+    /// Variante per i footer di sezione (note/avvertenze sotto l'ultima
+    /// card): stesso principio di `glassHeaderRow()`, stesso ritmo
+    /// verticale, per lo stesso motivo — coerenza totale del distacco in
+    /// ogni punto della lista, non solo tra header e prima card.
+    func glassFooterRow() -> some View {
+        listRowInsets(
+            EdgeInsets(
+                top: glassRowVerticalInset,
+                leading: 16,
+                bottom: glassRowVerticalInset,
+                trailing: 16
+            )
+        )
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 
     /// Sfondo di schermata coerente con `SourceManageView`, `EPGManageView`,
-    /// `TraktConnectView` **e** `HomeView`: stesso identico gradiente.
-    ///
-    /// FIX MANIACALE: le opacità erano 0.10/0.06, mentre `HomeView.background`
-    /// usa 0.12/0.08. Una differenza minima ma percepibile che rendeva lo
-    /// sfondo di `SourcesView` visibilmente "più spento" rispetto a Home.
-    /// Ora i valori sono identici.
+    /// `TraktConnectView` e `HomeView`: stesso identico gradiente.
     func glassScreenBackground() -> some View {
         background(
             LinearGradient(
@@ -49,15 +95,31 @@ extension View {
     }
 
     /// Da applicare alla `List` stessa (non alle righe): stile piatto senza
-    /// il raggruppamento automatico di sistema, sfondo nativo nascosto e
-    /// gradiente Liquid Glass. Combinata con `.glassListRow()` su ogni riga,
-    /// produce le card distanziate in modo uniforme richieste per
-    /// `SourcesView`; usarla è ciò che rende `.glassListRow()` visibile
-    /// come card separate invece che come un unico blocco per sezione.
+    /// il raggruppamento automatico di sistema, sfondo nativo nascosto,
+    /// gradiente Liquid Glass e distacco tra sezioni uguale (16pt) al
+    /// distacco tra le righe, per lo stesso motivo di `glassHeaderRow()`:
+    /// un'unica costante di ritmo verticale per tutta la lista, così ogni
+    /// "tab" flottante — che sia una card, un'etichetta o il passaggio da
+    /// una sezione all'altra — è distanziata esattamente allo stesso modo.
     func glassListContainer() -> some View {
         listStyle(.plain)
             .scrollContentBackground(.hidden)
             .glassScreenBackground()
+            .modifier(GlassListSectionSpacing())
+    }
+}
+
+/// Applica `.listSectionSpacing(_:)` (disponibile da iOS 17) con lo stesso
+/// valore (16pt = 2×`glassRowVerticalInset`) usato per il distacco tra le
+/// righe, così il passaggio da una `Section` all'altra non introduce un
+/// quarto valore di spaziatura diverso dai tre già unificati sopra.
+private struct GlassListSectionSpacing: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, *) {
+            content.listSectionSpacing(glassRowVerticalInset * 2)
+        } else {
+            content
+        }
     }
 }
 
@@ -89,10 +151,9 @@ private struct GlassListRowBackground: View {
 
 /// Etichetta di sezione in maiuscolo, stessa tipografia usata da
 /// `EPGManageView`/`SourceManagerView` per intestare i gruppi di card.
-/// Necessaria perché `.listStyle(.plain)` (richiesto da `.glassListRow()`
-/// per evitare che le righe di una sezione appaiano come un unico blocco,
-/// vedi `glassListContainer()`) non applica da solo lo stile piccolo e
-/// grigio delle intestazioni "insetGrouped".
+/// Va sempre usata insieme a `.glassHeaderRow()` (non più passata al
+/// parametro `header:` di `Section`) per garantire il ritmo verticale
+/// unificato descritto sopra.
 struct GlassSectionHeader: View {
     let title: String
 
@@ -170,15 +231,8 @@ extension MediaSourceType {
 // MARK: - Pillola flottante condivisa (floating tab)
 
 /// Pillola "Liquid Glass" flottante da usare in `.principal` nella toolbar,
-/// come selettore/menu a tendina. Estratta da `HomeView` (che la usava come
-/// proprietà privata `homeMenuPillLabel`) e generalizzata così **qualunque**
-/// schermata — `HomeView`, `SourcesView`, o altre in futuro — ottiene
-/// esattamente lo stesso identico "floating tab" invocando lo stesso
-/// identico codice, non una copia potenzialmente divergente.
-///
-/// Questo è il pezzo che risolve la richiesta "FLOATING TAB SEPARATE COME
-/// IN HOMEVIEW": prima `SourcesView` aveva solo un'icona di ordinamento in
-/// trailing, senza alcuna pillola flottante equivalente a quella di Home.
+/// come selettore/menu a tendina. Condivisa carattere per carattere da
+/// `HomeView` e `SourcesView`.
 struct GlassMenuPillLabel: View {
     let systemImage: String
     let title: String
