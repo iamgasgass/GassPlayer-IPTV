@@ -22,13 +22,13 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
-/// EPG touch-first ultra-ottimizzata, affidabile e ad alte prestazioni:
-/// - Caricamento playlist e guida EPG a prova di errore:
-///   1. Risolti i doppi trigger e cancellazioni ridondanti di reload unificando l'identity reattiva.
-///   2. Tracciamento accurato degli stream in caricamento (`loadingStreamIDs`) con spinner reattivo su ogni tile.
-///   3. Cache EPG in memoria (`EPGMemoryCache`) con scadenza TTL (20 minuti) e partizionamento temporale.
-///   4. Ordinamento cronologico rigoroso di `visiblePrograms` per prevenire glitch di rendering e sovrapposizioni.
-///   5. Gestione deterministica del cambio giorno (Ieri/Oggi/Domani) con ricaricamento forzato della finestra temporale.
+/// EPG touch-first ultra-ottimizzata, affidabile e con caricamento dati garantito:
+/// - Risoluzione definitiva problema "Dati non disponibili":
+///   1. Ciclo di vita unificato tramite `.task(id: identity)` nativo di SwiftUI: elimina le collisioni di cancellazione tra onAppear e onChange.
+///   2. Tracciamento accurato dello stato di caricamento: mostra `ProgressView` finché i programmi non sono arrivati invece di mostrare prematuramente "Dati non disponibili".
+///   3. Fallback intelligente per discrepanze di fuso orario/finestra temporale: visualizza sempre i programmi restituiti dall'API Xtream.
+///   4. Finestra temporale allargata a 1 ora nel passato e 4 ore nel futuro per coprire l'intera programmazione serale e notturna.
+///   5. Cache in memoria `EPGMemoryCache` con TTL di 20 minuti e partizionamento per giorno selezionato.
 /// - Supporto per entrambe le densità di layout: "Compatta" (66pt) e "Comoda" (96pt) con persistenza `@AppStorage`.
 /// - Colori pastello adattivi deterministici e rendering originale per banner canale.
 /// - Riproduzione live istantanea a latenza zero tramite `AdaptivePlayerView` in full-screen cover locale.
@@ -58,8 +58,6 @@ struct EPGGridView: View {
     @State private var catchupPlayback: CatchupPlayback?
     @State private var livePlayback: LivePlaybackItem?
     @State private var renderLimit = 32
-    @State private var reloadTaskBox = TaskBox()
-    @State private var didAppear = false
 
     private let renderPageSize = 32
     private let hardRenderCap = 250
@@ -111,9 +109,9 @@ struct EPGGridView: View {
         bannerColumnWidth - (bannerInset * 2)
     }
 
-    /// Finestra temporale: 30 minuti passati, 3 ore future.
-    private let pastWindow: TimeInterval = 30 * 60
-    private let futureWindow: TimeInterval = 180 * 60
+    /// Finestra temporale: 1 ora passata, 4 ore future (copre comodamente la timeline EPG)
+    private let pastWindow: TimeInterval = 60 * 60
+    private let futureWindow: TimeInterval = 240 * 60
 
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -133,10 +131,6 @@ struct EPGGridView: View {
         _favorites = StateObject(
             wrappedValue: EPGFavoritesStore(scopeKey: Self.scopeKey(for: credentials))
         )
-    }
-
-    private final class TaskBox {
-        var task: Task<Void, Never>?
     }
 
     private struct SelectedProgram: Identifiable {
@@ -421,20 +415,17 @@ struct EPGGridView: View {
                             }
                     }
                 }
-                .onAppear {
-                    guard !didAppear else { return }
-                    didAppear = true
-                    scheduleReload()
-                }
-                .onChange(of: currentStreamData.identity) { _, _ in
-                    let isDebounceNeeded = !searchQuery.isEmpty
-                    scheduleReload(debounced: isDebounceNeeded)
+                .task(id: currentStreamData.identity) {
+                    if !searchQuery.isEmpty {
+                        try? await Task.sleep(nanoseconds: searchDebounceNanoseconds)
+                        guard !Task.isCancelled else { return }
+                    }
+                    await reloadEPG(forceRefresh: false)
                 }
                 .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
                     now = date
                 }
                 .onDisappear {
-                    reloadTaskBox.task?.cancel()
                     loadingIndicatorTask?.cancel()
                 }
         }
@@ -631,25 +622,25 @@ struct EPGGridView: View {
     }
 
     private func unavailableBlock(for stream: XtreamStream) -> some View {
-        let loading = loadingStreamIDs.contains(stream.streamId)
-        let failed = failedStreamIDs.contains(stream.streamId)
+        let isFetching = loadingStreamIDs.contains(stream.streamId) || programsByStream[stream.streamId] == nil
+        let isFailed = failedStreamIDs.contains(stream.streamId)
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
         return HStack(spacing: 6) {
-            if loading {
+            if isFetching && !isFailed {
                 ProgressView()
                     .tint(.white)
                     .controlSize(.small)
                 Text("Caricamento EPG…")
-            } else if failed {
+            } else if isFailed {
                 Image(systemName: "exclamationmark.triangle.fill")
                 Text("EPG non disponibile")
             } else {
                 Text("Dati non disponibili")
             }
         }
-        .font(.system(size: layoutDensity == .compact ? 14 : 15, weight: .medium, design: .rounded))
+        .font(.system(size: layoutDensity == .compact ? 13 : 15, weight: .medium, design: .rounded))
         .foregroundStyle(.white.opacity(0.65))
         .padding(.horizontal, layoutDensity == .compact ? 14 : 18)
         .frame(height: blockHeight)
@@ -1015,10 +1006,17 @@ struct EPGGridView: View {
         return URL(string: urlString)
     }
 
+    /// Restituisce i programmi visibili per il canale con fallback intelligente
     private func visiblePrograms(for stream: XtreamStream) -> [EPGProgram] {
-        (programsByStream[stream.streamId] ?? [])
-            .filter { $0.end > windowStart && $0.start < windowEnd }
-            .sorted { $0.start < $1.start }
+        guard let all = programsByStream[stream.streamId], !all.isEmpty else { return [] }
+
+        let filtered = all.filter { $0.end > windowStart && $0.start < windowEnd }
+        if !filtered.isEmpty {
+            return filtered.sorted { $0.start < $1.start }
+        }
+
+        // Fallback: se i programmi dell'EPG cadono appena fuori dal range per fuso orario, li mostriamo ordinati
+        return all.sorted { $0.start < $1.start }
     }
 
     private static func groupIcon(for groupName: String) -> String {
@@ -1070,17 +1068,6 @@ struct EPGGridView: View {
         await reloadEPG(forceRefresh: true)
     }
 
-    private func scheduleReload(forceRefresh: Bool = false, debounced: Bool = false) {
-        reloadTaskBox.task?.cancel()
-        reloadTaskBox.task = Task { @MainActor in
-            if debounced {
-                try? await Task.sleep(nanoseconds: searchDebounceNanoseconds)
-                guard !Task.isCancelled else { return }
-            }
-            await reloadEPG(forceRefresh: forceRefresh)
-        }
-    }
-
     @MainActor
     private func hydrateVisibleProgramsFromCache(for targetStreams: [XtreamStream], dayOffset: Int) {
         let scope = cacheScope
@@ -1113,9 +1100,7 @@ struct EPGGridView: View {
 
         let pending = targets.filter { stream in
             if forceRefresh { return true }
-            guard let existing = programsByStream[stream.streamId] else { return true }
-            // Se la finestra temporale è cambiata e non ci sono programmi visibili, richiede il reload
-            return existing.isEmpty || !existing.contains { $0.end > windowStart && $0.start < windowEnd }
+            return programsByStream[stream.streamId] == nil
         }
 
         guard !pending.isEmpty else {
