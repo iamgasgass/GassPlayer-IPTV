@@ -94,41 +94,40 @@ struct GlassSectionHeader: View {
 
 // MARK: - Blocco di sezione senza List (fix spaziatura header→tab)
 
+/// Metriche del blocco di sezione, estratte in un tipo **non generico**
+/// perché Swift non ammette `static let` (stored property) dentro un tipo
+/// generico come `GlassSectionBlock<Content>`.
+///
+/// FIX BUILD — "static stored properties not supported in generic types":
+/// la build falliva perché `headerSpacing` era dichiarata `static let`
+/// direttamente dentro `GlassSectionBlock<Content: View>`. Le stored
+/// property statiche richiedono un layout di memoria fisso e univoco per
+/// tipo, cosa che un tipo generico non garantisce (ogni istanziazione
+/// `GlassSectionBlock<X>` sarebbe un tipo diverso a runtime). Spostando la
+/// costante in questo enum non generico il valore resta unico e condiviso
+/// da qualunque `GlassSectionBlock<Content>`, con zero impatto sul
+/// comportamento: 8pt esattamente come prima.
+private enum GlassSectionMetrics {
+    static let headerSpacing: CGFloat = 8
+}
+
 /// Blocco "sezione" per layout `ScrollView`/`VStack` (non `List`): titolo +
 /// contenuto, con una distanza header→primo elemento **fissa e identica in
-/// tutta l'app**.
-///
-/// FIX MANIACALE — spaziatura header→tab incoerente: prima `SourcesView`
-/// usava una `List` di sistema con `Section`. UIKit calcola la distanza tra
-/// l'header di una sezione e la sua prima riga in modo automatico e NON
-/// costante: dipende da footer presenti/assenti, da header con più
-/// sottoview (es. `HStack { GlassSectionHeader; Spacer(); Text(count) }`),
-/// dal numero di righe. Il risultato percepito era che la sezione "Live
-/// TV" → "Guarda tutte le liste insieme" (una sola riga, header semplice)
-/// aveva una distanza diversa dalle altre sezioni con header composti o
-/// più righe.
+/// tutta l'app** (vedi `GlassSectionMetrics.headerSpacing`).
 ///
 /// Rimuovendo la `List` e introducendo questo blocco, la distanza
-/// header→primo elemento è la stessa identica costante (`headerSpacing`)
-/// per **ogni** sezione, senza eccezioni: non c'è più alcun calcolo
-/// automatico di sistema che possa farla divergere.
-///
-/// Il valore di `headerSpacing` (8pt) è scelto per non alterare la
-/// distanza percepita: era esattamente il valore di `top` in
-/// `EdgeInsets(top: 8, ...)` che `.glassListRow()` applicava come inset
-/// superiore della prima riga — cioè lo stesso spazio che la sezione "Live
-/// TV" mostrava già prima di questa modifica. Non è quindi un aumento di
-/// spaziatura, ma la stessa distanza resa costante ovunque.
+/// header→primo elemento è la stessa identica costante per **ogni**
+/// sezione, senza eccezioni: non c'è più alcun calcolo automatico di
+/// sistema (`List`/`Section`) che possa farla divergere tra sezioni con
+/// header/footer diversi.
 struct GlassSectionBlock<Content: View>: View {
-    static let headerSpacing: CGFloat = 8
-
     let title: String
     var trailingText: String? = nil
     var footer: String? = nil
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Self.headerSpacing) {
+        VStack(alignment: .leading, spacing: GlassSectionMetrics.headerSpacing) {
             HStack {
                 GlassSectionHeader(title: title)
 
