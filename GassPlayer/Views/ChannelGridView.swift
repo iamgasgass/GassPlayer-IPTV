@@ -468,6 +468,21 @@ struct ChannelGridView: View {
             )
             .padding(.vertical, 32)
         } else {
+            // FIX GLITCH SCROLL SERIE TV:
+            // In precedenza questa griglia applicava una `.transaction`
+            // con animazione `.snappy(duration: 0.18)` su TUTTA la
+            // LazyVGrid. Con cataloghi ampi (Serie TV in particolare),
+            // ogni volta che una `SeriesTile` veniva riciclata/inserita
+            // durante lo scroll (tramite `.onAppear` per il prefetch, o
+            // per il caricamento asincrono del poster in
+            // `TMDBEnrichedPoster`), SwiftUI applicava quella curva di
+            // animazione anche al layout della cella, producendo
+            // pop-in/scatti visibili sui poster ("animazione glitched").
+            // `streamsGrid`, poco sotto, aveva già `animation = nil` per
+            // lo stesso identico motivo: questa incoerenza non era stata
+            // portata sulla sezione Serie TV. Ora il comportamento è
+            // allineato: nessuna animazione implicita sulla transazione
+            // di layout della griglia durante lo scroll.
             LazyVGrid(columns: columns, spacing: gridRowSpacing) {
                 ForEach(displayedSeries) { item in
                     SeriesTile(
@@ -477,6 +492,7 @@ struct ChannelGridView: View {
                     ) {
                         selectedSeries = item
                     }
+                    .id(item.seriesId)
                     .onAppear {
                         prefetchSeriesInfoIfNeeded(item)
                     }
@@ -484,9 +500,16 @@ struct ChannelGridView: View {
             }
             .padding(.horizontal, gridHorizontalPadding)
             .padding(.bottom)
-            .transaction {
-                $0.animation = .snappy(duration: 0.18)
+            .transaction { transaction in
+                transaction.animation = nil
+                transaction.disablesAnimations = true
             }
+            // Blocca esplicitamente qualunque animazione implicita che
+            // potrebbe propagarsi dal cambio di categoria (chip) o dal
+            // refresh del catalogo verso il layout dei poster durante lo
+            // scroll: solo il conteggio/ordine degli elementi mostrati fa
+            // scattare un ridisegno "silenzioso", senza curve animate.
+            .animation(nil, value: displayedSeries.map(\.seriesId))
         }
     }
 
@@ -519,8 +542,9 @@ struct ChannelGridView: View {
         }
         .padding(.horizontal, gridHorizontalPadding)
         .padding(.bottom)
-        .transaction {
-            $0.animation = nil
+        .transaction { transaction in
+            transaction.animation = nil
+            transaction.disablesAnimations = true
         }
     }
 
@@ -579,6 +603,11 @@ struct ChannelGridView: View {
         return Button {
             guard selectedCategory != selection else { return }
 
+            // L'animazione dei chip resta, ma ora è isolata al bottone
+            // stesso (colore/capsule) tramite `withAnimation` locale: non
+            // è più una `.transaction` che si propaga fino ai poster
+            // della griglia sottostante, evitando che il cambio categoria
+            // produca artefatti visivi sulle celle Serie TV.
             withAnimation(.snappy(duration: 0.16, extraBounce: 0.04)) {
                 selectedCategory = selection
             }
@@ -758,7 +787,7 @@ struct ChannelGridView: View {
     }
 }
 
-private struct ChannelTile: View {
+private struct ChannelTile: View, Equatable {
     let stream: XtreamStream
     let kind: XtreamStreamKind
     let channelNumber: Int?
@@ -769,6 +798,21 @@ private struct ChannelTile: View {
     let currentProgram: EPGProgram?
     let onTap: () -> Void
     let onFavoriteToggle: () -> Void
+
+    // `Equatable` sintetizzato ignorando le closure: permette a SwiftUI di
+    // saltare il re-render della cella quando i dati effettivi non sono
+    // cambiati durante il riciclo della LazyVGrid in scroll, riducendo
+    // ridiff/animazioni implicite indesiderate sul poster.
+    static func == (lhs: ChannelTile, rhs: ChannelTile) -> Bool {
+        lhs.stream.id == rhs.stream.id &&
+        lhs.kind == rhs.kind &&
+        lhs.channelNumber == rhs.channelNumber &&
+        lhs.isCompact == rhs.isCompact &&
+        lhs.artworkSize == rhs.artworkSize &&
+        lhs.moviePosterHeight == rhs.moviePosterHeight &&
+        lhs.isFavorite == rhs.isFavorite &&
+        lhs.currentProgram?.title == rhs.currentProgram?.title
+    }
 
     private var titleFont: Font {
         isCompact ? .caption2 : .caption
@@ -833,6 +877,12 @@ private struct ChannelTile: View {
                         image
                             .resizable()
                             .scaledToFit()
+                            // Disabilita la transizione di fase implicita
+                            // di AsyncImage: senza questo, ogni volta che
+                            // la cella viene riciclata durante lo scroll
+                            // l'immagine "fade-in" viene rianimata da zero,
+                            // producendo lo sfarfallio/glitch percepito.
+                            .transaction { $0.animation = nil }
 
                     default:
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -898,11 +948,31 @@ private struct ChannelTile: View {
     }
 }
 
-private struct SeriesTile: View {
+private struct SeriesTile: View, Equatable {
     let series: XtreamSeriesItem
     let artworkWidth: CGFloat
     let artworkHeight: CGFloat
     let onTap: () -> Void
+
+    // Come per `ChannelTile`: `Equatable` sintetizzato sui soli dati
+    // rilevanti per il rendering, ignorando la closure `onTap`. Questo è
+    // il fix chiave lato-cella per il glitch dei poster in Serie TV:
+    // durante lo scroll rapido, `LazyVGrid` continua a riciclare/ricreare
+    // istanze di `SeriesTile` per righe che rientrano nella viewport.
+    // Senza `Equatable`, SwiftUI non ha modo di sapere che una cella
+    // riciclata rappresenta esattamente la stessa serie con le stesse
+    // dimensioni, quindi la ridiffa e la ridisegna da capo — che con la
+    // transazione animata precedentemente attiva sulla griglia produceva
+    // l'animazione "glitched" segnalata. Con `Equatable` + transazione
+    // senza animazione, la cella viene semplicemente riusata senza alcun
+    // ridisegno/animazione spuria.
+    static func == (lhs: SeriesTile, rhs: SeriesTile) -> Bool {
+        lhs.series.seriesId == rhs.series.seriesId &&
+        lhs.series.name == rhs.series.name &&
+        lhs.series.cover == rhs.series.cover &&
+        lhs.artworkWidth == rhs.artworkWidth &&
+        lhs.artworkHeight == rhs.artworkHeight
+    }
 
     var body: some View {
         Button(action: onTap) {
@@ -914,6 +984,11 @@ private struct SeriesTile: View {
                     width: artworkWidth,
                     height: artworkHeight
                 )
+                // Blocca eventuali animazioni implicite generate
+                // internamente da `TMDBEnrichedPoster` (es. transizione
+                // placeholder → immagine caricata) quando la cella viene
+                // riciclata dalla griglia durante lo scroll.
+                .transaction { $0.animation = nil }
 
                 Text(series.name)
                     .font(.caption)
