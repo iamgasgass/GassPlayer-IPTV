@@ -22,19 +22,16 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
-/// EPG touch-first ultra-ottimizzata con caricamento playlist/EPG resiliente e privo di memory leaks o stalli:
-/// 1. Risoluzione Cache EPG:
-///   - TTL deterministico (30 minuti) e divieto di memorizzare array vuoti `[]` come risposte permanenti.
-///   - Invalidate e clear dello scope su refresh forzato.
-/// 2. Gestione Robusta dei Task e Rimozione Leaks `loadingStreamIDs`:
-///   - Pulizia infallibile dei canali in caricamento (`loadingStreamIDs`) anche in caso di cancellazione del task o switch categoria.
-///   - Gestione dei filtri `pending` con ri-tentativo automatico per i canali temporaneamente non disponibili.
-/// 3. Inizializzazione Catalogo:
-///   - Trigger automatico di refresh catalogo se `streams` è vuoto con stato `.idle` al primo rendering.
-/// 4. Riproduzione Live a Latenza Zero:
-///   - Avvio immediato e automatico su banner canale e pulsante "Guarda in diretta".
-/// 5. Supporto Layout Dinamico:
-///   - Modalità "Compatta" e "Comoda" con colori pastello adattivi e menu dedicato "Aspetto EPG".
+/// EPG touch-first ultra-ottimizzata, affidabile e ad alte prestazioni:
+/// - Caricamento playlist e guida EPG a prova di errore:
+///   1. Risolti i doppi trigger e cancellazioni ridondanti di reload unificando l'identity reattiva.
+///   2. Tracciamento accurato degli stream in caricamento (`loadingStreamIDs`) con spinner reattivo su ogni tile.
+///   3. Cache EPG in memoria (`EPGMemoryCache`) con scadenza TTL (20 minuti) e partizionamento temporale.
+///   4. Ordinamento cronologico rigoroso di `visiblePrograms` per prevenire glitch di rendering e sovrapposizioni.
+///   5. Gestione deterministica del cambio giorno (Ieri/Oggi/Domani) con ricaricamento forzato della finestra temporale.
+/// - Supporto per entrambe le densità di layout: "Compatta" (66pt) e "Comoda" (96pt) con persistenza `@AppStorage`.
+/// - Colori pastello adattivi deterministici e rendering originale per banner canale.
+/// - Riproduzione live istantanea a latenza zero tramite `AdaptivePlayerView` in full-screen cover locale.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -68,8 +65,8 @@ struct EPGGridView: View {
     private let hardRenderCap = 250
     private let maxConcurrentRequests = 24
     private let shortEPGLimit = 24
-    private let searchDebounceNanoseconds: UInt64 = 120_000_000
-    private let loadingIndicatorDelayNanoseconds: UInt64 = 150_000_000
+    private let searchDebounceNanoseconds: UInt64 = 150_000_000
+    private let loadingIndicatorDelayNanoseconds: UInt64 = 120_000_000
 
     // MARK: - Dimensioni & Geometria Dinamiche (Compatta vs Comoda)
 
@@ -260,7 +257,10 @@ struct EPGGridView: View {
     }
 
     private var groupSelectionBinding: Binding<String?> {
-        Binding(get: { normalizedSelectedGroupID }, set: { selectGroup($0) })
+        Binding(
+            get: { normalizedSelectedGroupID },
+            set: { selectGroup($0) }
+        )
     }
 
     private func selectGroup(_ groupID: String?) {
@@ -269,7 +269,6 @@ struct EPGGridView: View {
         searchQuery = ""
         showFavoritesOnly = false
         renderLimit = renderPageSize
-        scheduleReload()
     }
 
     private var streamData: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String) {
@@ -298,7 +297,7 @@ struct EPGGridView: View {
         let remaining = max(0, effectiveCap - renderLimit)
 
         let ids = paged.map(\.streamId).map(String.init).joined(separator: ",")
-        let identity = "\(groupID ?? "all")|\(selectedDayOffset)|\(ids)"
+        let identity = "\(groupID ?? "all")|\(selectedDayOffset)|\(query)|\(showFavoritesOnly)|\(ids)"
 
         return (totalFiltered, paged, canMore, remaining, identity)
     }
@@ -425,30 +424,11 @@ struct EPGGridView: View {
                 .onAppear {
                     guard !didAppear else { return }
                     didAppear = true
-                    // Se il catalogo stream è ancora vuoto, richiedi il refresh
-                    if streams.isEmpty && xtreamCatalog.state == .idle {
-                        Task {
-                            await xtreamCatalog.refresh(credentials: credentials, kind: kind)
-                        }
-                    }
-                    scheduleReload()
-                }
-                .onChange(of: streams.map(\.streamId)) { _, newIDs in
-                    if !newIDs.isEmpty && currentStreamData.paged.isEmpty {
-                        renderLimit = min(renderPageSize, max(newIDs.count, 1))
-                    }
                     scheduleReload()
                 }
                 .onChange(of: currentStreamData.identity) { _, _ in
-                    scheduleReload()
-                }
-                .onChange(of: searchQuery) { _, _ in
-                    renderLimit = renderPageSize
-                    scheduleReload(debounced: true)
-                }
-                .onChange(of: showFavoritesOnly) { _, _ in
-                    renderLimit = renderPageSize
-                    scheduleReload()
+                    let isDebounceNeeded = !searchQuery.isEmpty
+                    scheduleReload(debounced: isDebounceNeeded)
                 }
                 .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
                     now = date
@@ -523,7 +503,6 @@ struct EPGGridView: View {
             HStack(spacing: 4) {
                 Button {
                     selectedDayOffset = max(selectedDayOffset - 1, -7)
-                    scheduleReload()
                 } label: {
                     Text(dayTitle)
                         .font(
@@ -662,7 +641,7 @@ struct EPGGridView: View {
                 ProgressView()
                     .tint(.white)
                     .controlSize(.small)
-                Text("Caricamento EPG")
+                Text("Caricamento EPG…")
             } else if failed {
                 Image(systemName: "exclamationmark.triangle.fill")
                 Text("EPG non disponibile")
@@ -828,7 +807,6 @@ struct EPGGridView: View {
             )
             guard newLimit != renderLimit else { return }
             renderLimit = newLimit
-            scheduleReload()
         } label: {
             Label(
                 "Carica altri \(min(renderPageSize, remainingCount)) canali",
@@ -924,7 +902,6 @@ struct EPGGridView: View {
 
                 Button {
                     selectedDayOffset = -1
-                    scheduleReload()
                 } label: {
                     Label("Ieri", systemImage: "chevron.left")
                 }
@@ -932,14 +909,12 @@ struct EPGGridView: View {
                 Button {
                     selectedDayOffset = 0
                     now = Date()
-                    scheduleReload()
                 } label: {
                     Label("Oggi", systemImage: "calendar")
                 }
 
                 Button {
                     selectedDayOffset = 1
-                    scheduleReload()
                 } label: {
                     Label("Domani", systemImage: "chevron.right")
                 }
@@ -1041,9 +1016,9 @@ struct EPGGridView: View {
     }
 
     private func visiblePrograms(for stream: XtreamStream) -> [EPGProgram] {
-        (programsByStream[stream.streamId] ?? []).filter {
-            $0.end > windowStart && $0.start < windowEnd
-        }
+        (programsByStream[stream.streamId] ?? [])
+            .filter { $0.end > windowStart && $0.start < windowEnd }
+            .sorted { $0.start < $1.start }
     }
 
     private static func groupIcon(for groupName: String) -> String {
@@ -1091,10 +1066,6 @@ struct EPGGridView: View {
     }
 
     private func refreshAll() async {
-        EPGMemoryCache.shared.clear(scope: cacheScope)
-        programsByStream.removeAll()
-        failedStreamIDs.removeAll()
-        loadingStreamIDs.removeAll()
         await xtreamCatalog.refresh(credentials: credentials, kind: kind)
         await reloadEPG(forceRefresh: true)
     }
@@ -1111,10 +1082,10 @@ struct EPGGridView: View {
     }
 
     @MainActor
-    private func hydrateVisibleProgramsFromCache(for targetStreams: [XtreamStream]) {
+    private func hydrateVisibleProgramsFromCache(for targetStreams: [XtreamStream], dayOffset: Int) {
         let scope = cacheScope
         for stream in targetStreams {
-            guard let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId), !cached.isEmpty else {
+            guard let cached = EPGMemoryCache.shared.programs(scope: scope, streamId: stream.streamId, dayOffset: dayOffset) else {
                 continue
             }
             programsByStream[stream.streamId] = cached
@@ -1137,21 +1108,23 @@ struct EPGGridView: View {
             return
         }
 
-        if !forceRefresh {
-            hydrateVisibleProgramsFromCache(for: targets)
-        }
+        let currentDayOffset = selectedDayOffset
+        hydrateVisibleProgramsFromCache(for: targets, dayOffset: currentDayOffset)
 
         let pending = targets.filter { stream in
             if forceRefresh { return true }
-            guard let existing = programsByStream[stream.streamId] else {
-                return !failedStreamIDs.contains(stream.streamId)
-            }
-            return existing.isEmpty && !failedStreamIDs.contains(stream.streamId)
+            guard let existing = programsByStream[stream.streamId] else { return true }
+            // Se la finestra temporale è cambiata e non ci sono programmi visibili, richiede il reload
+            return existing.isEmpty || !existing.contains { $0.end > windowStart && $0.start < windowEnd }
         }
 
         guard !pending.isEmpty else {
             showLoadingIndicator = false
             return
+        }
+
+        for stream in pending {
+            loadingStreamIDs.insert(stream.streamId)
         }
 
         loadingIndicatorTask = Task { @MainActor in
@@ -1162,12 +1135,7 @@ struct EPGGridView: View {
             }
         }
 
-        if forceRefresh {
-            failedStreamIDs.removeAll()
-        } else {
-            failedStreamIDs.subtract(Set(pending.map(\.streamId)))
-        }
-
+        failedStreamIDs.subtract(Set(pending.map(\.streamId)))
         let service = EPGService(credentials: credentials)
         let scope = cacheScope
 
@@ -1176,10 +1144,6 @@ struct EPGGridView: View {
 
             let end = min(start + maxConcurrentRequests, pending.count)
             let batch = Array(pending[start..<end])
-
-            for stream in batch {
-                loadingStreamIDs.insert(stream.streamId)
-            }
 
             await withTaskGroup(of: (Int, Result<[EPGProgram], Error>).self) { group in
                 for stream in batch {
@@ -1198,17 +1162,22 @@ struct EPGGridView: View {
                 }
 
                 for await (streamID, result) in group {
-                    loadingStreamIDs.remove(streamID)
                     guard !Task.isCancelled else { continue }
+                    loadingStreamIDs.remove(streamID)
 
                     switch result {
                     case .success(let programs):
                         programsByStream[streamID] = programs
+                        EPGMemoryCache.shared.store(
+                            scope: scope,
+                            streamId: streamID,
+                            dayOffset: currentDayOffset,
+                            programs: programs
+                        )
                         if programs.isEmpty {
                             failedStreamIDs.insert(streamID)
                         } else {
                             failedStreamIDs.remove(streamID)
-                            EPGMemoryCache.shared.store(scope: scope, streamId: streamID, programs: programs)
                         }
                     case .failure(let error):
                         failedStreamIDs.insert(streamID)
@@ -1218,11 +1187,6 @@ struct EPGGridView: View {
                         )
                     }
                 }
-            }
-
-            // Pulizia di sicurezza per tutti i canali del batch
-            for stream in batch {
-                loadingStreamIDs.remove(stream.streamId)
             }
         }
 
@@ -1257,7 +1221,7 @@ struct EPGGridView: View {
         return String(digest, radix: 16)
     }
 
-    // MARK: - Cache & Stores
+    // MARK: - Cache & Stores con TTL e Partizionamento per Giorno
 
     @MainActor
     private final class EPGMemoryCache {
@@ -1265,34 +1229,29 @@ struct EPGGridView: View {
 
         private struct Entry {
             let programs: [EPGProgram]
-            let timestamp: Date
+            let createdAt: Date
         }
 
         private var storage: [String: Entry] = [:]
-        private let ttl: TimeInterval = 60 * 30 // Validità 30 minuti
+        private let ttl: TimeInterval = 20 * 60 // 20 minuti di validità cache
 
-        private func key(scope: String, streamId: Int) -> String {
-            "\(scope)#\(streamId)"
+        private func key(scope: String, streamId: Int, dayOffset: Int) -> String {
+            "\(scope)#\(streamId)#d\(dayOffset)"
         }
 
-        func programs(scope: String, streamId: Int) -> [EPGProgram]? {
-            guard let entry = storage[key(scope: scope, streamId: streamId)] else {
-                return nil
-            }
-            if Date().timeIntervalSince(entry.timestamp) > ttl {
-                storage.removeValue(forKey: key(scope: scope, streamId: streamId))
+        func programs(scope: String, streamId: Int, dayOffset: Int) -> [EPGProgram]? {
+            let k = key(scope: scope, streamId: streamId, dayOffset: dayOffset)
+            guard let entry = storage[k] else { return nil }
+            if Date().timeIntervalSince(entry.createdAt) > ttl {
+                storage.removeValue(forKey: k)
                 return nil
             }
             return entry.programs
         }
 
-        func store(scope: String, streamId: Int, programs: [EPGProgram]) {
-            guard !programs.isEmpty else { return }
-            storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs, timestamp: Date())
-        }
-
-        func clear(scope: String) {
-            storage = storage.filter { !$0.key.hasPrefix("\(scope)#") }
+        func store(scope: String, streamId: Int, dayOffset: Int, programs: [EPGProgram]) {
+            let k = key(scope: scope, streamId: streamId, dayOffset: dayOffset)
+            storage[k] = Entry(programs: programs, createdAt: Date())
         }
     }
 
