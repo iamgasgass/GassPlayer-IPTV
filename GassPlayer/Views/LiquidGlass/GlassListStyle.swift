@@ -1,31 +1,12 @@
 import SwiftUI
 
-/// Estensioni che portano l'estetica Liquid Glass di `GlassCard` /
-/// `SourceManageView` dentro una `List` di sistema, per le schermate che —
-/// come `SourcesView` — hanno bisogno delle funzioni native della lista
-/// (`.searchable`, `.swipeActions`, `.onMove`, `EditButton`) ma devono
-/// avere lo stesso linguaggio visivo delle schermate custom dell'app.
+/// Componenti condivisi che danno alle schermate custom dell'app (es.
+/// `SourcesView`, `EPGManageView`, `SourceManagerView`) lo stesso aspetto
+/// Liquid Glass: una `ScrollView` con sfondo sfumato, sezioni introdotte da
+/// `GlassSectionHeader` e un'unica `GlassCard` per sezione che raccoglie le
+/// sue righe (`GlassSettingsRow` / `GlassSourceRowLabel`) separate da
+/// `GlassRowDivider`.
 extension View {
-    /// Sfondo "vetro" per una riga di `List`: rettangolo arrotondato
-    /// traslucido al posto dello sfondo di sistema, separatore nascosto
-    /// (il distacco tra le righe è dato dal margine della card stessa).
-    /// Da usare insieme a `.listStyle(.plain)` + `.scrollContentBackground(.hidden)`
-    /// sulla `List` e a `.glassScreenBackground()` per il gradiente sullo
-    /// sfondo. Lo stile di lista predefinito di SwiftUI (".automatic", che
-    /// su iOS equivale a "insetGrouped" quando la lista ha più `Section`)
-    /// disegna le righe di una stessa sezione come un'unica card continua,
-    /// quindi senza `.listStyle(.plain)` queste card "vetro" per riga
-    /// risultano incollate l'una all'altra: le due modifiche vanno sempre
-    /// applicate insieme.
-    func glassListRow() -> some View {
-        listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-            .listRowSeparator(.hidden)
-            .listRowBackground(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(.thickMaterial)
-            )
-    }
-
     /// Sfondo di schermata coerente con `SourceManageView`, `EPGManageView`
     /// e `TraktConnectView`: stesso gradiente, per un aspetto Liquid Glass
     /// uniforme in tutta l'app.
@@ -43,26 +24,10 @@ extension View {
             .ignoresSafeArea()
         )
     }
-
-    /// Da applicare alla `List` stessa (non alle righe): stile piatto senza
-    /// il raggruppamento automatico di sistema, sfondo nativo nascosto e
-    /// gradiente Liquid Glass. Combinata con `.glassListRow()` su ogni riga,
-    /// produce le card distanziate in modo uniforme richieste per
-    /// `SourcesView`; usarla è ciò che rende `.glassListRow()` visibile
-    /// come card separate invece che come un unico blocco per sezione.
-    func glassListContainer() -> some View {
-        listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .glassScreenBackground()
-    }
 }
 
 /// Etichetta di sezione in maiuscolo, stessa tipografia usata da
 /// `EPGManageView`/`SourceManagerView` per intestare i gruppi di card.
-/// Necessaria perché `.listStyle(.plain)` (richiesto da `.glassListRow()`
-/// per evitare che le righe di una sezione appaiano come un unico blocco,
-/// vedi `glassListContainer()`) non applica da solo lo stile piccolo e
-/// grigio delle intestazioni "insetGrouped".
 struct GlassSectionHeader: View {
     let title: String
 
