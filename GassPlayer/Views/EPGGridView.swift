@@ -62,23 +62,25 @@ enum EPGTileAppearance: String, CaseIterable, Identifiable {
 /// FIX 2026-09-20 (ter) — "cannot convert value of type 'Int' to expected argument
 /// type 'CGFloat'": `contentLeadingInset` ora è tipizzata esplicitamente `CGFloat`.
 ///
-/// AGGIORNAMENTO 2026-09-21 (quater) — Aspetto "Schede": estensione tile↔banner ricalcolata
-/// dopo analisi completa di `epgSurface`/`fixedDayAndChannelColumn`/`channelBanner`/`programBlock`:
-/// 1) L'estensione della tile verso il banner NON deve più avere un proprio radius sul bordo
-///    sinistro: deve essere un rettangolo PIENO e SQUADRATO che attraversa completamente l'area
-///    dietro il banner, fino al punto esatto in cui inizia il radius del banner canale
-///    (x = bordo destro banner − `bannerCornerRadius`). Il radius visibile resta un unico arco:
-///    quello del banner stesso; la tile si limita a riempire pienamente lo spazio dietro di esso
-///    (prima la tile aveva un proprio arco speculare che "ritagliava" quello stesso spazio,
-///    lasciando un varco/gap visibile — bug ora corretto).
-/// 2) L'estensione è ora calcolata IN UN UNICO PASSAGGIO, dentro lo stesso `GeometryReader` che
-///    legge la posizione reale della tile (niente più maschera/`mask` applicata a posteriori,
-///    fonte dei precedenti artefatti visivi intermittenti): l'estensione è attiva SOLO quando la
-///    tile è effettivamente agganciata al banner (`tileMinX < bannerColumnWidth`) e si interrompe
-///    ESATTAMENTE e istantaneamente a quel confine (`tileMinX >= bannerColumnWidth` ⇒ estensione
-///    0, nessun residuo). Quando invece la tile è agganciata, l'estensione non supera comunque mai
-///    il bordo sinistro dello schermo (clamp a `tileMinX`), quindi non può mai comparire a sinistra
-///    del banner canale, in nessuna condizione di scroll/overscroll.
+/// RISOLUZIONE DEFINITIVA 2026-09-21 (quater) — Aspetto "Schede", giunzione tile↔banner.
+/// Dopo analisi completa dell'intero `HStack` (`epgSurface`): il tentativo precedente faceva
+/// "sanguinare" la tile scrollabile (sibling nello `HStack`, dentro la `ScrollView` orizzontale)
+/// dentro la colonna FISSA del banner tramite `scrollClipDisabled` + offset negativi + `zIndex`.
+/// Questa tecnica attraversa un confine tra due sibling di uno `HStack` e dipende da dettagli di
+/// compositing/clip non garantiti in modo affidabile per contenuto scrollabile: risultato, la
+/// tile non attraversava mai visibilmente il banner (bug 1) e, nei casi in cui qualcosa comunque
+/// filtrava, lo faceva in modo incoerente durante lo scroll (bug 2).
+/// Soluzione strutturale: l'elemento di giunzione ora vive DENTRO la colonna FISSA stessa
+/// (`channelBanner`, chiamato da `fixedDayAndChannelColumn`, MAI dentro la `ScrollView`
+/// orizzontale) — non scrolla, non è mai soggetto a clip cross-sibling, e il suo z-order rispetto
+/// al banner è garantito perché sono nello STESSO `ZStack`. È un rettangolo PIENO e SQUADRATO
+/// (nessun proprio radius), della stessa tinta di sfondo della tile, largo esattamente
+/// `bannerCornerRadius` e allineato al bordo destro della colonna: attraversa quindi per intero,
+/// SEMPRE, lo spazio dietro il banner fino al punto ESATTO in cui inizia il radius del banner —
+/// visibile unicamente nel ritaglio d'angolo trasparente che il banner stesso lascia scoperto.
+/// Le tile di programma nella `ScrollView` sono tornate ad essere card autonome, uniformemente
+/// arrotondate, SENZA alcuna estensione/offset verso sinistra: non potendo più sporgere, non
+/// possono più apparire a sinistra del banner in nessuna condizione di scroll o overscroll.
 /// Parametri di tempo e numero di caricamenti concorrenti INVARIATI rispetto alla versione precedente.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
@@ -165,22 +167,12 @@ struct EPGGridView: View {
         channelBannerWidth
     }
 
-    /// Raggio del corner radius del banner canale — UNICA fonte di verità condivisa sia dal
-    /// banner stesso (`channelBanner`) sia dalla profondità massima dell'estensione della tile
-    /// (`tileLeadingExtension`): la tile deve attraversare COMPLETAMENTE, come rettangolo pieno
-    /// e squadrato, lo spazio dietro il banner fino ESATTAMENTE al punto in cui inizia il radius
-    /// del banner (bordo destro banner − `bannerCornerRadius`). L'unico arco visibile resta
-    /// quello del banner: la tile non deve avere un proprio radius che ritagli quello spazio.
+    /// Raggio del corner radius del banner canale — UNICA fonte di verità, usata anche come
+    /// larghezza esatta dell'elemento di giunzione fisso `bannerLeadingFill` in "Schede": la
+    /// giunzione attraversa lo spazio dietro il banner esattamente fino al punto in cui il
+    /// bordo destro del banner comincia a curvare, né un pixel di più né di meno.
     private var bannerCornerRadius: CGFloat {
         layoutDensity == .compact ? 14 : 16
-    }
-
-    /// Profondità MASSIMA (non ancora vincolata dallo scroll) con cui, in "Schede", la tile può
-    /// attraversare lo spazio dietro il banner: esattamente `bannerCornerRadius`, cioè fino al
-    /// punto preciso in cui il bordo destro del banner comincia a curvare.
-    private var tileLeadingExtension: CGFloat {
-        guard tileAppearance == .cards else { return 0 }
-        return bannerCornerRadius
     }
 
     /// Finestra temporale: 30 minuti passati, 3 ore future. (INVARIATA)
@@ -596,7 +588,6 @@ struct EPGGridView: View {
                     }
                 }
             }
-            .scrollClipDisabled(tileAppearance == .cards)
         }
     }
 
@@ -690,6 +681,23 @@ struct EPGGridView: View {
         .clipped()
     }
 
+    /// Elemento di giunzione FISSO (non scrollabile) tra banner e tile, visibile solo in
+    /// "Schede". Vive nello STESSO `ZStack` del banner (dentro la colonna fissa, mai dentro
+    /// la `ScrollView` orizzontale): niente clip cross-sibling, niente scroll, niente artefatti.
+    /// È un rettangolo PIENO e SQUADRATO (nessun proprio radius) largo esattamente
+    /// `bannerCornerRadius`, allineato al bordo destro della colonna banner: attraversa quindi
+    /// SEMPRE per intero lo spazio dietro il banner fino al punto esatto in cui il banner
+    /// comincia a curvare — visibile solo nel ritaglio d'angolo che il banner lascia scoperto,
+    /// dando l'illusione che la tile del canale continui ininterrottamente dietro di esso.
+    private func bannerLeadingFill(channelColor: Color) -> some View {
+        ZStack {
+            Color(white: 0.10)
+            channelColor.opacity(layoutDensity == .compact ? 0.18 : 0.22)
+        }
+        .frame(width: bannerCornerRadius, height: rowHeight)
+        .frame(width: bannerColumnWidth, height: rowHeight, alignment: .trailing)
+    }
+
     /// Banner Canale Adattivo con avvio immediato a latenza zero
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
@@ -697,47 +705,53 @@ struct EPGGridView: View {
         return Button {
             playLiveStream(stream, dismissSheetFirst: false)
         } label: {
-            ZStack {
-                RoundedRectangle(cornerRadius: bannerCornerRadius, style: .continuous)
-                    .fill(channelColor)
+            ZStack(alignment: .trailing) {
+                if tileAppearance == .cards {
+                    bannerLeadingFill(channelColor: channelColor)
+                }
 
-                if let icon = stream.streamIcon, !icon.isEmpty {
-                    AsyncImage(url: URL(string: icon)) { phase in
-                        if case .success(let image) = phase {
-                            image
-                                .renderingMode(.original)
-                                .resizable()
-                                .scaledToFit()
-                                .padding(layoutDensity == .compact ? 8 : 12)
-                        } else {
-                            Image(systemName: "play.tv.fill")
-                                .renderingMode(.original)
-                                .font(.system(size: layoutDensity == .compact ? 22 : 26))
-                                .foregroundStyle(.white)
+                ZStack {
+                    RoundedRectangle(cornerRadius: bannerCornerRadius, style: .continuous)
+                        .fill(channelColor)
+
+                    if let icon = stream.streamIcon, !icon.isEmpty {
+                        AsyncImage(url: URL(string: icon)) { phase in
+                            if case .success(let image) = phase {
+                                image
+                                    .renderingMode(.original)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .padding(layoutDensity == .compact ? 8 : 12)
+                            } else {
+                                Image(systemName: "play.tv.fill")
+                                    .renderingMode(.original)
+                                    .font(.system(size: layoutDensity == .compact ? 22 : 26))
+                                    .foregroundStyle(.white)
+                            }
                         }
+                    } else {
+                        Image(systemName: "play.tv.fill")
+                            .renderingMode(.original)
+                            .font(.system(size: layoutDensity == .compact ? 22 : 26))
+                            .foregroundStyle(.white)
                     }
-                } else {
-                    Image(systemName: "play.tv.fill")
-                        .renderingMode(.original)
-                        .font(.system(size: layoutDensity == .compact ? 22 : 26))
-                        .foregroundStyle(.white)
-                }
 
-                if favorites.isFavorite(stream.streamId) {
-                    Image(systemName: "star.fill")
-                        .font(.system(size: layoutDensity == .compact ? 10 : 11, weight: .bold))
-                        .foregroundStyle(.yellow)
-                        .padding(4)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .padding(4)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    if favorites.isFavorite(stream.streamId) {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: layoutDensity == .compact ? 10 : 11, weight: .bold))
+                            .foregroundStyle(.yellow)
+                            .padding(4)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .padding(4)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    }
                 }
-            }
-            .frame(width: channelBannerWidth, height: bannerHeight)
-            .overlay(alignment: .trailing) {
-                if hasVisibleCatchup(for: stream) {
-                    catchupBadge
-                        .offset(x: channelBannerWidth * 0.14)
+                .frame(width: channelBannerWidth, height: bannerHeight)
+                .overlay(alignment: .trailing) {
+                    if hasVisibleCatchup(for: stream) {
+                        catchupBadge
+                            .offset(x: channelBannerWidth * 0.14)
+                    }
                 }
             }
             .frame(
@@ -768,59 +782,40 @@ struct EPGGridView: View {
             .accessibilityLabel("Contenuti in differita disponibili")
     }
 
-    /// Blocco "Dati non disponibili"/"Caricamento"/"EPG non disponibile" per l'intera riga.
-    /// In "Schede" attraversa lo spazio dietro il banner esattamente come le tile di programma:
-    /// stesso calcolo dinamico dell'estensione dentro `GeometryReader`, stesso bordo sinistro
-    /// squadrato (nessun radius proprio) fino al punto esatto in cui inizia il radius del banner.
     private func unavailableBlock(for stream: XtreamStream) -> some View {
         let loading = loadingStreamIDs.contains(stream.streamId)
         let failed = failedStreamIDs.contains(stream.streamId)
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
-        let maxExtension = tileLeadingExtension
 
-        return GeometryReader { geo in
-            let tileMinX = geo.frame(in: .named("epgViewportCoordinateSpace")).minX
-            // Attiva SOLO quando il blocco è realmente agganciato al banner (tileMinX < bannerColumnWidth);
-            // appena lo supera del tutto, l'estensione si interrompe esattamente in quel punto (nessun residuo).
-            // Quando agganciato, non supera comunque mai il bordo sinistro dello schermo (clamp a tileMinX).
-            let extensionWidth: CGFloat = tileMinX < bannerColumnWidth
-                ? max(0, min(maxExtension, tileMinX))
-                : 0
-            let isDockedUnderBanner = tileAppearance == .cards && extensionWidth > 0
-            let totalWidth = canvasWidth + extensionWidth
-
-            HStack(spacing: 6) {
-                if loading {
-                    ProgressView()
-                        .tint(.white)
-                        .controlSize(.small)
-                    Text("Caricamento EPG")
-                } else if failed {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                    Text("EPG non disponibile")
-                } else {
-                    Text("Dati non disponibili")
-                }
+        return HStack(spacing: 6) {
+            if loading {
+                ProgressView()
+                    .tint(.white)
+                    .controlSize(.small)
+                Text("Caricamento EPG")
+            } else if failed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text("EPG non disponibile")
+            } else {
+                Text("Dati non disponibili")
             }
-            .font(.system(size: layoutDensity == .compact ? 14 : 15, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.65))
-            .padding(
-                .leading,
-                (layoutDensity == .compact ? 14 : 18) + extensionWidth
-            )
-            .padding(.trailing, layoutDensity == .compact ? 14 : 18)
-            .frame(height: blockHeight)
-            .background {
-                ZStack {
-                    tileBackgroundFill(Color(white: 0.10), cornerRadius: cornerRadius, isDockedUnderBanner: isDockedUnderBanner)
-                    tileBackgroundFill(channelColor.opacity(0.12), cornerRadius: cornerRadius, isDockedUnderBanner: isDockedUnderBanner)
-                }
-            }
-            .frame(width: totalWidth, height: rowHeight, alignment: .leading)
-            .offset(x: -extensionWidth)
-            .epgTileClip(cornerRadius: cornerRadius, isDockedUnderBanner: isDockedUnderBanner)
         }
+        .font(.system(size: layoutDensity == .compact ? 14 : 15, weight: .medium, design: .rounded))
+        .foregroundStyle(.white.opacity(0.65))
+        .padding(.leading, layoutDensity == .compact ? 14 : 18)
+        .padding(.trailing, layoutDensity == .compact ? 14 : 18)
+        .frame(height: blockHeight)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color(white: 0.10))
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(channelColor.opacity(0.12))
+            }
+        }
+        .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 
     /// Layout scroll-linked della riga superiore in modalità Compatta.
@@ -885,15 +880,11 @@ struct EPGGridView: View {
         }
     }
 
-    /// Tile del programma con transizioni scroll-linked di nome canale e orari.
-    /// In "Schede", l'estensione verso il banner è calcolata IN UN UNICO PASSAGGIO dentro lo
-    /// stesso `GeometryReader` che legge la posizione reale della tile (`tileMinX`): è attiva
-    /// SOLO quando la tile è effettivamente agganciata al banner (`tileMinX < bannerColumnWidth`)
-    /// e si interrompe esattamente e istantaneamente a quel confine — nessun residuo visivo per
-    /// le tile già scorse oltre il banner. Quando agganciata, l'estensione è un rettangolo pieno
-    /// e squadrato (nessun radius proprio sul bordo sinistro) che attraversa completamente lo
-    /// spazio dietro il banner fino al punto esatto in cui inizia il radius del banner stesso, e
-    /// non supera comunque mai il bordo sinistro dello schermo (clamp a `tileMinX`).
+    /// Tile del programma con transizioni scroll-linked di nome canale e orari. Card autonoma,
+    /// uniformemente arrotondata su tutti i lati, SENZA alcuna estensione/offset verso il banner:
+    /// la giunzione visiva con il banner è ora interamente delegata a `bannerLeadingFill`
+    /// (elemento fisso nella colonna banner). Non potendo più sporgere verso sinistra, la tile
+    /// non può più apparire a sinistra del banner in nessuna condizione di scroll o overscroll.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -914,7 +905,6 @@ struct EPGGridView: View {
         }
 
         let width = max(32, endX - startX)
-        let maxExtension = tileLeadingExtension
         let visibleWidth = max(0, width - tileHorizontalGap)
         let contentLeadingInset: CGFloat = layoutDensity == .compact ? 10 : 13
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
@@ -925,19 +915,6 @@ struct EPGGridView: View {
             let stickyContentX = min(overlap, visibleWidth)
             let pinnedNameX = bannerColumnWidth - tileMinX
             let keepsNaturalCurrentPosition = isFirstVisibleProgram && tileMinX > bannerColumnWidth
-
-            // Estensione dinamica verso il banner: attiva SOLO quando la tile è realmente
-            // agganciata/dietro il banner (tileMinX < bannerColumnWidth). Appena la tile supera
-            // completamente il banner (tileMinX >= bannerColumnWidth) l'estensione si interrompe
-            // ESATTAMENTE e istantaneamente in quel punto: nessun residuo visivo. Quando invece la
-            // tile è agganciata, l'estensione non supera comunque mai il bordo sinistro dello
-            // schermo (clamp a tileMinX): non può quindi mai comparire a sinistra del banner,
-            // in nessuna condizione di scroll/overscroll.
-            let extensionWidth: CGFloat = tileMinX < bannerColumnWidth
-                ? max(0, min(maxExtension, tileMinX))
-                : 0
-            let isDockedUnderBanner = tileAppearance == .cards && extensionWidth > 0
-            let renderedWidth = visibleWidth + extensionWidth
 
             Button {
                 selectedProgram = SelectedProgram(program: program, stream: stream)
@@ -978,7 +955,6 @@ struct EPGGridView: View {
                         .padding(.leading, contentLeadingInset)
                         .padding(.trailing, 10)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
-                        .offset(x: extensionWidth)
 
                         compactProgramTitle(
                             nameParts: nameParts,
@@ -987,7 +963,6 @@ struct EPGGridView: View {
                         )
                         .offset(x: stickyContentX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
-                        .offset(x: extensionWidth)
                     } else {
                         comfortableProgramName(
                             nameParts: nameParts,
@@ -996,7 +971,6 @@ struct EPGGridView: View {
                         )
                         .offset(x: keepsNaturalCurrentPosition ? 0 : pinnedNameX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
-                        .offset(x: extensionWidth)
 
                         comfortableProgramTime(
                             nameParts: nameParts,
@@ -1005,7 +979,6 @@ struct EPGGridView: View {
                         )
                         .offset(x: stickyContentX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
-                        .offset(x: extensionWidth)
 
                         comfortableProgramTitle(
                             nameParts: nameParts,
@@ -1014,25 +987,21 @@ struct EPGGridView: View {
                         )
                         .offset(x: stickyContentX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
-                        .offset(x: extensionWidth)
                     }
                 }
-                .frame(width: renderedWidth, height: blockHeight, alignment: .topLeading)
+                .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
                 .background {
                     programTileBackground(
                         stream: stream,
                         program: program,
-                        tileStartX: startX - extensionWidth,
-                        tileWidth: renderedWidth,
-                        isDockedUnderBanner: isDockedUnderBanner,
-                        cornerRadius: cornerRadius
+                        tileStartX: startX,
+                        tileWidth: visibleWidth
                     )
                 }
-                .epgTileClip(cornerRadius: cornerRadius, isDockedUnderBanner: isDockedUnderBanner)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
             .buttonStyle(.plain)
-            .frame(width: renderedWidth, height: blockHeight, alignment: .leading)
-            .offset(x: -extensionWidth)
+            .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
         }
         .frame(width: width, height: blockHeight)
         .offset(x: startX)
@@ -1145,44 +1114,24 @@ struct EPGGridView: View {
             }
     }
 
-    /// Riempimento del corpo della tile. Quando `isDockedUnderBanner` è `true` (tile agganciata
-    /// dietro il banner, in "Schede"), il bordo sinistro NON ha alcun radius proprio (0, squadrato):
-    /// la tile deve riempire per intero, senza tagli ad arco, lo spazio dietro il banner fino al
-    /// punto esatto in cui inizia il radius del banner — l'unico arco visibile resta quello del
-    /// banner stesso. In tutti gli altri casi (card libera non agganciata, o "Griglie") il radius
-    /// resta uniforme su tutti i lati, come una normale card.
-    @ViewBuilder
-    private func tileBackgroundFill<S: ShapeStyle>(_ style: S, cornerRadius: CGFloat, isDockedUnderBanner: Bool) -> some View {
-        if isDockedUnderBanner {
-            UnevenRoundedRectangle(
-                topLeadingRadius: 0,
-                bottomLeadingRadius: 0,
-                bottomTrailingRadius: cornerRadius,
-                topTrailingRadius: cornerRadius,
-                style: .continuous
-            )
-            .fill(style)
-        } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(style)
-        }
-    }
-
+    /// Background adattivo della tile
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
         program: EPGProgram,
         tileStartX: CGFloat,
-        tileWidth: CGFloat,
-        isDockedUnderBanner: Bool,
-        cornerRadius: CGFloat
+        tileWidth: CGFloat
     ) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
         let brightWidth = isToday ? min(max(liveAxisX - tileStartX, 0), tileWidth) : 0
+        let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
         ZStack(alignment: .leading) {
-            tileBackgroundFill(Color(white: 0.10), cornerRadius: cornerRadius, isDockedUnderBanner: isDockedUnderBanner)
-            tileBackgroundFill(channelColor.opacity(layoutDensity == .compact ? 0.18 : 0.22), cornerRadius: cornerRadius, isDockedUnderBanner: isDockedUnderBanner)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Color(white: 0.10))
+
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(channelColor.opacity(layoutDensity == .compact ? 0.18 : 0.22))
 
             if brightWidth > 0 {
                 Rectangle()
@@ -1610,32 +1559,6 @@ struct EPGGridView: View {
             (partial ^ UInt64(byte)) &* UInt64(1_099_511_628_211)
         }
         return String(digest, radix: 16)
-    }
-}
-
-// MARK: - Utility di Clip per l'Aspetto "Schede"
-
-private extension View {
-    /// Applica il clip della tile. Quando `isDockedUnderBanner` è `true` (tile agganciata dietro
-    /// il banner, in "Schede"), il bordo sinistro non ha alcun radius proprio (squadrato): la tile
-    /// riempie per intero, senza tagli ad arco, lo spazio dietro il banner — l'unico arco visibile
-    /// resta quello del banner canale, che la tile attraversa completamente da dietro. In tutti gli
-    /// altri casi il radius resta uniforme su tutti i lati (card libera, o "Griglie").
-    @ViewBuilder
-    func epgTileClip(cornerRadius: CGFloat, isDockedUnderBanner: Bool) -> some View {
-        if isDockedUnderBanner {
-            self.clipShape(
-                UnevenRoundedRectangle(
-                    topLeadingRadius: 0,
-                    bottomLeadingRadius: 0,
-                    bottomTrailingRadius: cornerRadius,
-                    topTrailingRadius: cornerRadius,
-                    style: .continuous
-                )
-            )
-        } else {
-            self.clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        }
     }
 }
 
