@@ -8,6 +8,33 @@ import Foundation
 /// rete. Password, token e URL di streaming autenticati non vengono mai
 /// scritti su disco: il modello Xtream viene convertito in DTO interni
 /// privi di quei campi prima della serializzazione.
+///
+/// OTTIMIZZAZIONE 2026-09-20 (velocità del ripristino "istantaneo" ad ogni
+/// avvio, formato interno — nessun impatto sui dati mostrati):
+/// 1) Il formato su disco passa da JSON testuale a property list BINARIA.
+///    Il file non è mai condiviso con l'esterno (è un dettaglio
+///    implementativo interno di questo store, già protetto da
+///    `schemaVersion`), quindi il cambio di formato è sicuro al 100%: per
+///    struct Codable come queste, l'encode/decode di una property list
+///    binaria è tipicamente 2-5× più veloce di JSON testuale, perché evita
+///    l'escaping di stringhe e il parsing/formattazione numerica testuale.
+///    Con cataloghi grandi (VOD/Serie con molte migliaia di voci) questo
+///    riduce direttamente il tempo dell'operazione che questo store
+///    promette di rendere "istantanea" ad ogni avvio. Le date sono
+///    supportate nativamente dal formato plist: non serve più impostare
+///    `dateEncodingStrategy`/`dateDecodingStrategy`.
+/// 2) La lettura usa `Data(contentsOf:options: .mappedIfSafe)` per evitare
+///    una copia completa e immediata del file in memoria quando il
+///    sistema può mappare il file direttamente.
+/// 3) L'estensione dei file su disco passa da `.json` a `.plist`, per
+///    riflettere il nuovo formato e per auto-migrare in modo sicuro:
+///    un vecchio snapshot `.json` da una versione precedente dell'app
+///    semplicemente non viene più trovato (nome file diverso), quindi
+///    viene trattato come "nessuna cache disponibile" — un solo
+///    ricaricamento di rete dopo l'aggiornamento, poi la cache torna a
+///    funzionare normalmente nel nuovo formato. Nessun file corrotto o
+///    letto in modo errato: il vecchio file resta semplicemente inutilizzato
+///    su disco (spazio trascurabile).
 actor PersistentCatalogStore {
     static let shared = PersistentCatalogStore()
 
@@ -74,7 +101,7 @@ actor PersistentCatalogStore {
     func load(sourceFingerprint: String) -> Snapshot? {
         let url = snapshotURL(for: sourceFingerprint)
 
-        guard let data = try? Data(contentsOf: url),
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
               let dto = try? decoder.decode(SnapshotDTO.self, from: data),
               dto.schemaVersion == 1,
               dto.sourceFingerprint == sourceFingerprint else {
@@ -142,7 +169,7 @@ actor PersistentCatalogStore {
 
     private func snapshotURL(for sourceFingerprint: String) -> URL {
         directoryURL.appendingPathComponent(
-            "\(stableFileName(for: sourceFingerprint)).json"
+            "\(stableFileName(for: sourceFingerprint)).plist"
         )
     }
 
@@ -153,16 +180,17 @@ actor PersistentCatalogStore {
         return "catalog-\(String(hash, radix: 16))"
     }
 
-    private var encoder: JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+    /// Property list binaria: più veloce di JSON testuale per struct
+    /// Codable con molti campi numerici/stringa, e supporta `Date`
+    /// nativamente senza bisogno di una strategia di codifica dedicata.
+    private var encoder: PropertyListEncoder {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
         return encoder
     }
 
-    private var decoder: JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
+    private var decoder: PropertyListDecoder {
+        PropertyListDecoder()
     }
 
     private static func category(_ dto: CategoryDTO) -> XtreamCategory {

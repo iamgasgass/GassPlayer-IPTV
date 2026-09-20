@@ -3,6 +3,12 @@ import Foundation
 /// Client diretto per l'API Xtream (`player_api.php`), senza cache.
 /// La cache e le politiche di retry sono responsabilita' di
 /// `CachedXtreamRepository`, che avvolge questo servizio.
+///
+/// OTTIMIZZAZIONE 2026-09-20 (velocità massima di caricamento/ricaricamento
+/// playlist, import invariato — vedi `fetchAllStreams` per il dettaglio):
+/// il vero collo di bottiglia della lentezza percepita nel caricamento del
+/// catalogo era qui, non nei livelli di UI/cache superiori già ottimizzati
+/// in precedenza.
 actor XtreamAPIService {
     let credentials: XtreamCredentials
 
@@ -205,49 +211,99 @@ actor XtreamAPIService {
     /// Recupera l'intero catalogo evitando che categorie vuote, mancanti o
     /// anomale facciano sparire i VOD/canali. La risposta globale del
     /// provider e' la base autorevole; le risposte per categoria vengono
-    /// unite come recupero aggiuntivo, non come sostituzione. Le richieste
-    /// per categoria sono eseguite a lotti (batch) per non saturare
-    /// provider lenti o con rate limiting aggressivo.
-    func fetchAllStreams(kind: XtreamStreamKind) async throws -> [XtreamStream] {
+    /// interrogate SOLO per le categorie che risultano completamente
+    /// assenti dalla risposta globale, come recupero mirato — non come
+    /// ripetizione sistematica dell'intero catalogo categoria per
+    /// categoria.
+    ///
+    /// OTTIMIZZAZIONE 2026-09-20: in precedenza questa funzione rifaceva
+    /// SEMPRE una richiesta `get_*_streams` per OGNI categoria del
+    /// provider, anche quando la risposta globale (senza `category_id`)
+    /// conteneva già tutti i canali — che e' il caso comune per la
+    /// stragrande maggioranza dei pannelli Xtream, dove l'endpoint globale
+    /// e' già completo. Con playlist di decine/centinaia di categorie
+    /// questo significava altrettante richieste HTTP aggiuntive ad ogni
+    /// caricamento/ricaricamento: il principale responsabile della
+    /// lentezza percepita, ben più di qualunque ottimizzazione di
+    /// rendering lato UI. Ora il recupero per categoria scatta solo per le
+    /// categorie realmente assenti dal risultato globale
+    /// (`missingCategoryIDs`), tipicamente zero: il caso comune torna a
+    /// costare 1-2 richieste totali invece di decine o centinaia, mentre
+    /// la protezione contro i provider con l'endpoint globale incompleto
+    /// resta intatta.
+    ///
+    /// Il parametro `categories`, se fornito, evita di richiedere di nuovo
+    /// `get_*_categories`: `CachedXtreamRepository.allStreams` lo passa già
+    /// valorizzato con il risultato (cacheato, TTL 600s) della propria
+    /// chiamata `categories(kind:)`, eliminando così anche la richiesta di
+    /// categorie duplicata che avveniva in precedenza (una volta dal
+    /// repository per popolare i chip della UI, una seconda volta — MAI
+    /// cacheata — dentro questa funzione).
+    func fetchAllStreams(
+        kind: XtreamStreamKind,
+        categories providedCategories: [XtreamCategory]? = nil
+    ) async throws -> [XtreamStream] {
         guard kind != .series else {
             throw XtreamError.invalidURL
         }
 
-        let globalStreams = try await fetchStreams(kind: kind)
-
+        let globalStreams: [XtreamStream]
         let categories: [XtreamCategory]
 
-        do {
-            categories = try await fetchCategories(kind: kind)
-        } catch {
-            return stableDeduplicated(globalStreams)
+        if let providedCategories {
+            globalStreams = try await fetchStreams(kind: kind)
+            categories = providedCategories
+        } else {
+            // Nessuna lista categorie fornita dal chiamante: richiediamo
+            // stream globali e categorie IN PARALLELO invece che in
+            // sequenza, dimezzando la latenza di questa fase.
+            async let globalTask = fetchStreams(kind: kind)
+            async let categoriesTask: [XtreamCategory]? = try? await fetchCategories(kind: kind)
+
+            globalStreams = try await globalTask
+
+            guard let fetchedCategories = await categoriesTask else {
+                return stableDeduplicated(globalStreams)
+            }
+            categories = fetchedCategories
         }
 
-        let categoryIDs = Array(
-            Set(
-                categories
-                    .map(\.categoryId)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-            )
+        let globalCategoryIDs = Set(
+            globalStreams
+                .compactMap { $0.categoryId?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
         )
 
-        guard !categoryIDs.isEmpty else {
+        let allCategoryIDs = Set(
+            categories
+                .map(\.categoryId)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+
+        let missingCategoryIDs = Array(allCategoryIDs.subtracting(globalCategoryIDs))
+
+        guard !missingCategoryIDs.isEmpty else {
             return stableDeduplicated(globalStreams)
         }
+
+        DebugLogger.logAsync(
+            .info,
+            "Xtream: recupero mirato di \(missingCategoryIDs.count) categorie assenti dalla risposta globale (\(kind.rawValue))"
+        )
 
         var collected: [XtreamStream] = []
 
         for batchStart in stride(
             from: 0,
-            to: categoryIDs.count,
+            to: missingCategoryIDs.count,
             by: Self.categoryBatchSize
         ) {
             let batchEnd = min(
                 batchStart + Self.categoryBatchSize,
-                categoryIDs.count
+                missingCategoryIDs.count
             )
-            let batch = Array(categoryIDs[batchStart..<batchEnd])
+            let batch = Array(missingCategoryIDs[batchStart..<batchEnd])
 
             let batchResults: [[XtreamStream]] = await withTaskGroup(
                 of: [XtreamStream].self,

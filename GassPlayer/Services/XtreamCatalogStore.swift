@@ -3,6 +3,17 @@ import Combine
 
 /// Repository con cache per l'API Xtream: aggiunge TTL, retry selettivo e
 /// invalidazione granulare sopra `XtreamAPIService`, che resta senza stato.
+///
+/// OTTIMIZZAZIONE 2026-09-20 (coordinata con `XtreamAPIService.fetchAllStreams`):
+/// `allStreams(kind:)` ora recupera le categorie tramite `self.categories(kind:)`
+/// (che passa già dalla cache con TTL 600s) e le inoltra a
+/// `api.fetchAllStreams(kind:categories:)`. Prima, `fetchAllStreams` si
+/// procurava le categorie da solo con una chiamata di rete SEPARATA e MAI
+/// cacheata, duplicando una richiesta `get_*_categories` che il repository
+/// stesso stava già facendo (con cache) per popolare i chip categoria della
+/// UI. Passare le categorie già note elimina questa duplicazione in tutti i
+/// casi con cache calda (il caso piu' frequente: refresh periodici,
+/// riaperture entro il TTL).
 actor CachedXtreamRepository {
     private let api: XtreamAPIService
     private let cachePrefix: String
@@ -57,6 +68,9 @@ actor CachedXtreamRepository {
         return result
     }
 
+    /// Catalogo completo per `kind`, con recupero automatico e MIRATO delle
+    /// sole categorie eventualmente assenti dalla risposta globale del
+    /// provider (vedi doc di `XtreamAPIService.fetchAllStreams`).
     func allStreams(
         kind: XtreamStreamKind,
         forceRefresh: Bool = false
@@ -68,8 +82,14 @@ actor CachedXtreamRepository {
             return cached
         }
 
+        // Riusa le categorie (già cacheate con TTL 600s da `categories(kind:)`)
+        // invece di lasciare che `fetchAllStreams` le richieda di nuovo
+        // internamente: elimina la richiesta `get_*_categories` duplicata,
+        // mai cacheata, che avveniva prima ad ogni caricamento del catalogo.
+        let categories = try? await self.categories(kind: kind, forceRefresh: forceRefresh)
+
         let result = try await RetryPolicy.withRetry(shouldRetry: Self.shouldRetry) {
-            try await self.api.fetchAllStreams(kind: kind)
+            try await self.api.fetchAllStreams(kind: kind, categories: categories)
         }
 
         let ttl: TimeInterval = kind == .movie ? 900 : 300
@@ -199,6 +219,49 @@ actor CachedXtreamRepository {
 /// - Live, VOD e Serie sono trattate come sezioni indipendenti: un errore
 ///   in una sola sezione non invalida piu' lo stato delle altre sezioni
 ///   gia' caricate con successo.
+///
+/// OTTIMIZZAZIONE 2026-09-20 (velocità massima di caricamento/ricaricamento,
+/// import invariato):
+/// 1) `restoreThenLoad`: quando `settings.refreshOnLaunch == true` il fetch
+///    di rete e' comunque obbligatorio a prescindere dal contenuto dello
+///    snapshot su disco. Prima il codice attendeva SEMPRE il completamento
+///    della lettura/deserializzazione dello snapshot prima di decidere e
+///    avviare la rete, pagando quella latenza (I/O su disco + JSON decode)
+///    in serie davanti ad ogni avvio. Ora, in questo scenario specifico, il
+///    ripristino da disco e il fetch di rete partono IN PARALLELO: la rete
+///    non aspetta più nulla, e lo snapshot su disco viene comunque applicato
+///    per un primo paint istantaneo della UI, ma SOLO se il catalogo in
+///    memoria e' ancora completamente vuoto (`applyPersistedSnapshotIfStillEmpty`).
+///    La guardia e' atomica perché entrambe le scritture avvengono sullo
+///    stesso `@MainActor` senza alcun `await` fra il controllo e
+///    l'assegnazione: non esiste quindi una finestra in cui dati di rete
+///    già arrivati possano essere sovrascritti da uno snapshot più vecchio.
+///    Quando `refreshOnLaunch == false` il comportamento resta sequenziale
+///    e identico a prima (serve comunque conoscere la data dello snapshot
+///    per valutare `needsScheduledRefresh()`/`lastRefreshDate == nil`).
+/// 2) `refresh(...)`: l'invalidazione della cache e il fetch forzato della
+///    sezione (o dell'intero catalogo) ora partono in parallelo invece che
+///    in sequenza. `forceRefresh: true` fa già bypassare la lettura della
+///    cache in `CachedXtreamRepository`, quindi il dato mostrato all'utente
+///    non dipende in alcun modo dall'ordine di completamento fra le due
+///    operazioni: arriva sempre dal valore di ritorno diretto della
+///    chiamata di rete forzata. L'unico effetto collaterale accettato è che,
+///    in rari casi di interleaving sfavorevole, l'invalidazione può
+///    cancellare la voce di cache appena riscritta dal fetch: il prossimo
+///    accesso non forzato a quella chiave rifarebbe una richiesta di rete
+///    invece di leggere dalla cache, un costo trascurabile e autolimitato
+///    (si "guarisce" da solo al giro successivo), a fronte di un
+///    ricaricamento visibilmente più rapido per l'utente.
+/// 3) `CachedXtreamRepository.allStreams` ora riusa le categorie già
+///    cacheate invece di farle richiedere di nuovo (e senza cache) da
+///    `XtreamAPIService.fetchAllStreams`, che a sua volta interroga per
+///    categoria SOLO quelle assenti dalla risposta globale invece di
+///    ripetere sistematicamente l'intero catalogo categoria per categoria
+///    (vedi doc in `XtreamAPIService.swift`): questo è il fix con il
+///    maggiore impatto sulla velocità reale di caricamento/ricaricamento
+///    della playlist.
+/// Nessuna modifica a TTL, retry policy, fingerprint di sorgente o logica
+/// di deduplicazione delle serie.
 @MainActor
 final class XtreamCatalogStore: ObservableObject {
     enum LoadState: Equatable {
@@ -272,14 +335,19 @@ final class XtreamCatalogStore: ObservableObject {
             guard let self else { return }
 
             let repository = CachedXtreamRepository(credentials: credentials)
-            await repository.invalidate(kind: kind)
 
             if let kind {
-                await self.loadSection(
+                // Invalidazione cache e fetch forzato sono indipendenti:
+                // vedi nota di ottimizzazione in testa al file. Il dato
+                // mostrato all'utente arriva sempre dal fetch, non da una
+                // rilettura di cache.
+                async let invalidation: Void = repository.invalidate(kind: kind)
+                async let sectionLoad: Void = self.loadSection(
                     kind: kind,
                     credentials: credentials,
                     forceRefresh: true
                 )
+                _ = await (invalidation, sectionLoad)
 
                 if case .loaded = self.state {
                     self.loadedSourceFingerprint = fingerprint
@@ -288,11 +356,13 @@ final class XtreamCatalogStore: ObservableObject {
                     await self.persistSnapshot(fingerprint: fingerprint)
                 }
             } else {
-                await self.loadAll(
+                async let invalidation: Void = repository.invalidate(kind: nil)
+                async let allLoad: Void = self.loadAll(
                     credentials: credentials,
                     fingerprint: fingerprint,
                     forceRefresh: true
                 )
+                _ = await (invalidation, allLoad)
             }
         }
 
@@ -357,23 +427,28 @@ final class XtreamCatalogStore: ObservableObject {
         credentials: XtreamCredentials,
         fingerprint: String
     ) async {
-        if let snapshot = await persistentStore.load(sourceFingerprint: fingerprint) {
-            liveCategories = snapshot.liveCategories
-            vodCategories = snapshot.vodCategories
-            seriesCategories = snapshot.seriesCategories
-
-            liveStreams = snapshot.liveStreams
-            vodStreams = snapshot.vodStreams
-            seriesItems = snapshot.seriesItems
-
-            lastRefreshDate = snapshot.savedAt
-            loadedSourceFingerprint = fingerprint
-            state = .loaded
+        if settings.refreshOnLaunch {
+            // Il refresh di rete e' comunque obbligatorio: non ha senso
+            // aspettare la lettura dello snapshot per deciderlo. Le due
+            // operazioni partono in parallelo; lo snapshot viene applicato
+            // solo se il catalogo e' ancora vuoto quando la lettura da
+            // disco completa (guardia sicura, vedi doc in testa al file).
+            async let restoreTask: Void = applyPersistedSnapshotIfStillEmpty(
+                credentials: credentials,
+                fingerprint: fingerprint
+            )
+            async let loadTask: Void = loadAll(
+                credentials: credentials,
+                fingerprint: fingerprint,
+                forceRefresh: true
+            )
+            _ = await (restoreTask, loadTask)
+            return
         }
 
-        let shouldRefreshNow = settings.refreshOnLaunch
-            || settings.needsScheduledRefresh()
-            || lastRefreshDate == nil
+        await applyPersistedSnapshotIfStillEmpty(credentials: credentials, fingerprint: fingerprint)
+
+        let shouldRefreshNow = settings.needsScheduledRefresh() || lastRefreshDate == nil
 
         guard shouldRefreshNow else { return }
 
@@ -382,6 +457,40 @@ final class XtreamCatalogStore: ObservableObject {
             fingerprint: fingerprint,
             forceRefresh: true
         )
+    }
+
+    /// Applica lo snapshot su disco (se presente per questa sorgente) SOLO
+    /// se il catalogo in memoria e' ancora completamente vuoto. Il
+    /// controllo e l'assegnazione avvengono nello stesso contesto
+    /// `@MainActor` senza alcun punto di sospensione fra loro: nessun altro
+    /// codice puo' quindi mutare `liveStreams`/`vodStreams`/`seriesItems`
+    /// fra la verifica e la scrittura, rendendo la guardia atomica anche
+    /// quando questa funzione gira in parallelo con `loadAll`.
+    private func applyPersistedSnapshotIfStillEmpty(
+        credentials: XtreamCredentials,
+        fingerprint: String
+    ) async {
+        guard let snapshot = await persistentStore.load(sourceFingerprint: fingerprint) else {
+            return
+        }
+
+        guard liveStreams.isEmpty, vodStreams.isEmpty, seriesItems.isEmpty else {
+            // Dati di rete già arrivati nel frattempo: lo snapshot su disco
+            // sarebbe una regressione, quindi non lo applichiamo.
+            return
+        }
+
+        liveCategories = snapshot.liveCategories
+        vodCategories = snapshot.vodCategories
+        seriesCategories = snapshot.seriesCategories
+
+        liveStreams = snapshot.liveStreams
+        vodStreams = snapshot.vodStreams
+        seriesItems = snapshot.seriesItems
+
+        lastRefreshDate = snapshot.savedAt
+        loadedSourceFingerprint = fingerprint
+        state = .loaded
     }
 
     /// Carica Live, VOD e Serie come operazioni indipendenti. Un fallimento
