@@ -765,9 +765,77 @@ struct EPGGridView: View {
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
+    /// Layout scroll-linked della riga superiore in modalità Compatta.
+    /// L'orario della tile futura nasce sul suo margine iniziale e viene spinto
+    /// progressivamente nella posizione finale dalla comparsa del nome canale.
+    private struct SlidingCompactHeaderLayout: Layout {
+        let pinnedNameOffset: CGFloat
+        let keepsNaturalCurrentPosition: Bool
+        private let itemSpacing: CGFloat = 6
+
+        func sizeThatFits(
+            proposal: ProposedViewSize,
+            subviews: Subviews,
+            cache: inout ()
+        ) -> CGSize {
+            guard subviews.count == 2 else {
+                return proposal.replacingUnspecifiedDimensions()
+            }
+
+            let nameSize = subviews[0].sizeThatFits(.unspecified)
+            let timeSize = subviews[1].sizeThatFits(.unspecified)
+            return CGSize(
+                width: proposal.width ?? (nameSize.width + itemSpacing + timeSize.width),
+                height: max(nameSize.height, timeSize.height)
+            )
+        }
+
+        func placeSubviews(
+            in bounds: CGRect,
+            proposal: ProposedViewSize,
+            subviews: Subviews,
+            cache: inout ()
+        ) {
+            guard subviews.count == 2 else { return }
+
+            let nameSize = subviews[0].sizeThatFits(.unspecified)
+            let timeSize = subviews[1].sizeThatFits(.unspecified)
+            let finalTimeX = nameSize.width + itemSpacing
+
+            let nameX: CGFloat
+            let timeX: CGFloat
+
+            if keepsNaturalCurrentPosition && pinnedNameOffset < 0 {
+                // La prima tile è già corrente all'apertura: nome e orario restano
+                // immediatamente visibili nelle rispettive posizioni naturali.
+                nameX = 0
+                timeX = finalTimeX
+            } else if pinnedNameOffset < 0 {
+                // Tile futura: il nome è ancora oltre il bordo sinistro della tile.
+                // L'orario parte da zero e avanza esattamente della porzione di nome
+                // che entra, fino a raggiungere senza salto la posizione definitiva.
+                nameX = pinnedNameOffset
+                timeX = min(max(finalTimeX + pinnedNameOffset, 0), finalTimeX)
+            } else {
+                // Tile corrente: nome e orario sono agganciati insieme al bordo fisso.
+                nameX = pinnedNameOffset
+                timeX = pinnedNameOffset + finalTimeX
+            }
+
+            subviews[0].place(
+                at: CGPoint(x: bounds.minX + nameX, y: bounds.midY),
+                anchor: .leading,
+                proposal: ProposedViewSize(nameSize)
+            )
+            subviews[1].place(
+                at: CGPoint(x: bounds.minX + timeX, y: bounds.midY),
+                anchor: .leading,
+                proposal: ProposedViewSize(timeSize)
+            )
+        }
+    }
+
     /// Tile del programma con transizioni scroll-linked di nome canale e orari.
-    /// Il nome appartiene esclusivamente alla tile corrente; l'orario resta inoltre
-    /// leggibile nella propria tile futura e continua a partecipare al passaggio progressivo.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -794,20 +862,9 @@ struct EPGGridView: View {
         return GeometryReader { geo in
             let tileMinX = geo.frame(in: .named("epgViewportCoordinateSpace")).minX
             let overlap = max(0, bannerColumnWidth - tileMinX)
-
-            // Titolo e orario restano nel flusso della tile futura; raggiunto il bordo
-            // della colonna canali diventano sticky e conservano il clipping progressivo.
             let stickyContentX = min(overlap, visibleWidth)
-
-            // Il nome delle tile future resta parcheggiato sulla coordinata sticky e quindi
-            // completamente fuori dalla loro maschera. Diventa visibile solo quando la tile
-            // raggiunge il bordo corrente, attraversando bordo e gap senza salti.
-            // La prima tile visibile è già quella corrente all'apertura: prima di raggiungere
-            // tale coordinata mantiene il nome nella sua posizione naturale, sempre visibile.
             let pinnedNameX = bannerColumnWidth - tileMinX
-            let currentNameX = isFirstVisibleProgram && tileMinX > bannerColumnWidth
-                ? 0
-                : pinnedNameX
+            let keepsNaturalCurrentPosition = isFirstVisibleProgram && tileMinX > bannerColumnWidth
 
             Button {
                 selectedProgram = SelectedProgram(program: program, stream: stream)
@@ -816,27 +873,42 @@ struct EPGGridView: View {
 
                 ZStack(alignment: .topLeading) {
                     if layoutDensity == .compact {
-                        // Nome: una sola istanza visibile, esclusivamente nella tile corrente.
-                        compactProgramHeader(
-                            nameParts: nameParts,
-                            program: program,
-                            showName: true,
-                            showTime: false
-                        )
-                        .offset(x: currentNameX)
+                        // Nome e orario sono elementi distinti dello stesso layout: l'orario
+                        // futuro è sempre visibile all'inizio della tile e si sposta in modo
+                        // continuo mentre il nome viene progressivamente rivelato.
+                        VStack(alignment: .leading, spacing: 3) {
+                            SlidingCompactHeaderLayout(
+                                pinnedNameOffset: pinnedNameX,
+                                keepsNaturalCurrentPosition: keepsNaturalCurrentPosition
+                            ) {
+                                HStack(spacing: 6) {
+                                    Text(nameParts.name)
+                                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(.white)
+                                        .lineLimit(1)
+
+                                    if let badge = nameParts.badge {
+                                        qualityBadge(badge, fontSize: 11)
+                                    }
+                                }
+                                .fixedSize(horizontal: true, vertical: false)
+
+                                Text(program.start.formatted(date: .omitted, time: .shortened))
+                                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                                    .foregroundStyle(.white.opacity(0.60))
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+
+                            Text(program.title)
+                                .font(.system(size: 14, weight: .regular, design: .rounded))
+                                .lineLimit(1)
+                                .hidden()
+                        }
+                        .padding(.horizontal, 10)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
 
-                        // Orario: rimane visibile anche nelle tile future e conserva lo sticky.
-                        compactProgramHeader(
-                            nameParts: nameParts,
-                            program: program,
-                            showName: false,
-                            showTime: true
-                        )
-                        .offset(x: stickyContentX)
-                        .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
-
-                        // Titolo programma invariato.
+                        // Il titolo conserva posizione e sticky originali.
                         compactProgramTitle(
                             nameParts: nameParts,
                             program: program
@@ -844,15 +916,19 @@ struct EPGGridView: View {
                         .offset(x: stickyContentX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
                     } else {
-                        // Nome: una sola istanza visibile, esclusivamente nella tile corrente.
+                        // In modalità Comoda l'orario occupa già l'inizio della propria riga;
+                        // nome, orario e titolo mantengono le animazioni scroll-linked esistenti.
                         comfortableProgramName(
                             nameParts: nameParts,
                             program: program
                         )
-                        .offset(x: currentNameX)
+                        .offset(
+                            x: keepsNaturalCurrentPosition
+                                ? 0
+                                : pinnedNameX
+                        )
                         .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
 
-                        // Orario: rimane visibile anche nelle tile future e conserva lo sticky.
                         comfortableProgramTime(
                             nameParts: nameParts,
                             program: program
@@ -860,7 +936,6 @@ struct EPGGridView: View {
                         .offset(x: stickyContentX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
 
-                        // Titolo programma invariato.
                         comfortableProgramTitle(
                             nameParts: nameParts,
                             program: program
@@ -888,46 +963,6 @@ struct EPGGridView: View {
         .accessibilityLabel(
             "\(stream.name), \(program.title), dalle \(program.start.formatted(date: .omitted, time: .shortened)) alle \(program.end.formatted(date: .omitted, time: .shortened))"
         )
-    }
-
-    /// Riga superiore compatta. Gli elementi nascosti mantengono le coordinate originali,
-    /// consentendo a nome e orario di muoversi indipendentemente senza alterare il layout.
-    private func compactProgramHeader(
-        nameParts: (name: String, badge: String?),
-        program: EPGProgram,
-        showName: Bool,
-        showTime: Bool
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Group {
-                    Text(nameParts.name)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-
-                    if let badge = nameParts.badge {
-                        qualityBadge(badge, fontSize: 11)
-                    }
-                }
-                .opacity(showName ? 1 : 0)
-
-                Text(program.start.formatted(date: .omitted, time: .shortened))
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.60))
-                    .lineLimit(1)
-                    .opacity(showTime ? 1 : 0)
-            }
-            .fixedSize(horizontal: true, vertical: false)
-
-            Text(program.title)
-                .font(.system(size: 14, weight: .regular, design: .rounded))
-                .lineLimit(1)
-                .hidden()
-        }
-        .padding(.horizontal, 10)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 
     private func compactProgramTitle(
