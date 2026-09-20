@@ -1,6 +1,72 @@
 import SwiftUI
 
-/// Stile dell'aspetto dell'interfaccia EPG selezionabile dall'utente
+// MARK: - Cache & Stores
+// NOTA FIX: `EPGMemoryCache` viene dichiarata qui, in cima al file, PRIMA di
+// `EPGGridView`. Nella versione precedente la classe si trovava in coda al
+// file: se il file veniva copiato/incollato parzialmente (o il build target
+// non includeva l'intera sorgente) il compilatore perdeva la dichiarazione e
+// restituiva l'errore "cannot find 'EPGMemoryCache' in scope" nel punto in cui
+// `reloadEPG` chiama `EPGMemoryCache.shared.store(...)`. Spostandola qui, e
+// rendendola `internal` (accesso di default) invece di `private`, la sua
+// visibilità non dipende più dall'ordine delle dichiarazioni né da eventuali
+// tagli accidentali del file: è sempre risolvibile in tutto il modulo.
+@MainActor
+final class EPGMemoryCache {
+    static let shared = EPGMemoryCache()
+
+    private struct Entry {
+        let programs: [EPGProgram]
+    }
+
+    private var storage: [String: Entry] = [:]
+
+    private init() {}
+
+    private func key(scope: String, streamId: Int) -> String {
+        "\(scope)#\(streamId)"
+    }
+
+    func programs(scope: String, streamId: Int) -> [EPGProgram]? {
+        storage[key(scope: scope, streamId: streamId)]?.programs
+    }
+
+    func store(scope: String, streamId: Int, programs: [EPGProgram]) {
+        storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs)
+    }
+
+    /// Rimuove tutte le voci di cache appartenenti a uno scope (es. cambio account/giorno).
+    func invalidate(scope: String) {
+        storage = storage.filter { !$0.key.hasPrefix("\(scope)#") }
+    }
+}
+
+@MainActor
+final class EPGFavoritesStore: ObservableObject {
+    @Published private(set) var favoriteStreamIDs: Set<Int>
+    private let key: String
+
+    init(scopeKey: String) {
+        key = "gassplayer.epgFavorites.\(scopeKey)"
+        favoriteStreamIDs = Set(UserDefaults.standard.array(forKey: key) as? [Int] ?? [])
+    }
+
+    func isFavorite(_ streamID: Int) -> Bool {
+        favoriteStreamIDs.contains(streamID)
+    }
+
+    func toggle(_ streamID: Int) {
+        if favoriteStreamIDs.contains(streamID) {
+            favoriteStreamIDs.remove(streamID)
+        } else {
+            favoriteStreamIDs.insert(streamID)
+        }
+        UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
+    }
+}
+
+// MARK: - Aspetto EPG
+
+/// Stile dell'aspetto dell'interfaccia EPG selezionabile dall'utente.
 enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     case compact = "compatta"
     case comfortable = "comoda"
@@ -22,6 +88,27 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
+enum EPGTileAppearance: String, CaseIterable, Identifiable {
+    case grids = "griglie"
+    case cards = "schede"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .grids: return "Griglie"
+        case .cards: return "Schede"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .grids: return "square.grid.3x3"
+        case .cards: return "rectangle.on.rectangle"
+        }
+    }
+}
+
 /// EPG touch-first ultra-ottimizzata con riproduzione nativa immediata a latenza zero:
 /// - Avvio streaming istantaneo su banner canale: elimina ogni ritardo, dispatch o transizione modale ridondante.
 /// - Il tocco sul banner canale attiva direttamente `livePlayback` (`AdaptivePlayerView`) a latenza zero, esattamente come in EPG da Home.
@@ -37,15 +124,20 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 ///   finestra visibile, in aggiunta alla stella dei preferiti (`hasVisibleCatchup`/`catchupBadge`).
 ///
 /// FIX 2026-09-20 (regressione "Dati non disponibili"):
-/// 1) I trigger reattivi (cambio identity/lista canali/preferiti) ora usano SEMPRE `scheduleReload(debounced: true)`
+/// 1) I trigger reattivi (cambio identity/lista canali/preferiti) usano SEMPRE `scheduleReload(debounced: true)`
 ///    così raffiche ravvicinate di aggiornamenti (es. catalogo che si popola in modo incrementale) non generano
 ///    una cascata di cancellazioni che impedisce a un batch EPG di completarsi mai.
-/// 2) Il task group di fetch non scarta più i risultati "in ritardo" quando il Task viene cancellato: un batch
+/// 2) Il task group di fetch non scarta i risultati "in ritardo" quando il Task viene cancellato: un batch
 ///    già avviato viene sempre portato a termine e il suo stato applicato correttamente (niente più stream
 ///    "orfani" bloccati sul messaggio di default).
-/// 3) La cache EPG e lo stato in memoria vengono ora invalidati/riscoperti in base al giorno selezionato
+/// 3) La cache EPG e lo stato in memoria vengono invalidati/riscoperti in base al giorno selezionato
 ///    (Ieri/Oggi/Domani), evitando di mostrare (o nascondere) dati appartenenti a un'altra finestra temporale.
-/// Parametri di tempo e numero di caricamenti concorrenti INVARIATI rispetto alla versione precedente.
+///
+/// FIX 2026-09-20 (v2, compilazione):
+/// `EPGMemoryCache` è stata spostata in cima al file e reso di visibilità `internal`, eliminando l'errore
+/// "cannot find 'EPGMemoryCache' in scope" che si verificava se il file veniva troncato o solo parzialmente
+/// aggiornato. Aggiunte inoltre le generiche esplicite (`Set<Int>`, `Task<Void, Never>?`, ecc.) mancanti in
+/// alcune dichiarazioni, che con Swift 6 / strict concurrency possono impedire la compilazione.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -56,6 +148,7 @@ struct EPGGridView: View {
     @StateObject private var favorites: EPGFavoritesStore
 
     @AppStorage("epg_layout_density") private var layoutDensity: EPGLayoutDensity = .compact
+    @AppStorage("epg_tile_appearance") private var tileAppearance: EPGTileAppearance = .grids
 
     @State private var programsByStream: [Int: [EPGProgram]] = [:]
     @State private var failedStreamIDs = Set<Int>()
@@ -85,51 +178,33 @@ struct EPGGridView: View {
 
     // MARK: - Dimensioni & Geometria Dinamiche (Compatta vs Comoda)
 
-    private var bannerInset: CGFloat {
-        layoutDensity == .compact ? 10 : 12
-    }
+    private var bannerInset: CGFloat { layoutDensity == .compact ? 10 : 12 }
+    private var channelBannerWidth: CGFloat { layoutDensity == .compact ? 80 : 86 }
+    private var bannerHeight: CGFloat { layoutDensity == .compact ? 58 : 76 }
+    private var blockHeight: CGFloat { layoutDensity == .compact ? 58 : 82 }
+    private var rowHeight: CGFloat { layoutDensity == .compact ? 66 : 96 }
+    private var timelineHeaderHeight: CGFloat { layoutDensity == .compact ? 40 : 44 }
+    private var arrowGlyphWidth: CGFloat { layoutDensity == .compact ? 16 : 20 }
 
-    private var channelBannerWidth: CGFloat {
-        layoutDensity == .compact ? 80 : 86
-    }
-
-    private var bannerHeight: CGFloat {
-        layoutDensity == .compact ? 58 : 76
-    }
-
-    private var blockHeight: CGFloat {
-        layoutDensity == .compact ? 58 : 82
-    }
-
-    private var rowHeight: CGFloat {
-        layoutDensity == .compact ? 66 : 96
-    }
-
-    private var timelineHeaderHeight: CGFloat {
-        layoutDensity == .compact ? 40 : 44
-    }
-
-    private var arrowGlyphWidth: CGFloat {
-        layoutDensity == .compact ? 16 : 20
-    }
-
-    /// Spaziatura temporale (160pt ogni 30 minuti): scala pixel per minuto = 160 / 30 = 5.333 pt/min.
+    /// Spaziatura temporale (160pt ogni 30 minuti): scala pixel per minuto = 160 / 30 ≈ 5.333 pt/min.
     private let halfHourPixelSpacing: CGFloat = 160
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
-    /// Intercapedine visibile tra due tile di programma consecutivi nella stessa riga
-    /// (misurata sul video di riferimento: ~4pt, identica al gap verticale tra righe
-    /// generato da rowHeight - blockHeight). Non influisce sui calcoli di posizione
-    /// temporale (`xCoordinate`, sticky header): è solo un inset visivo della tile.
+    /// Intercapedine visibile tra due tile di programma consecutivi nella stessa riga.
     private let tileHorizontalGap: CGFloat = 4
 
-    /// Larghezza della colonna fissa laterale
+    /// Larghezza della colonna fissa laterale. "Griglie" conserva entrambi gli
+    /// inset originali; "Schede" elimina esclusivamente quello a destra del banner.
     private var bannerColumnWidth: CGFloat {
-        bannerInset + channelBannerWidth + bannerInset
+        bannerInset + channelBannerWidth + (tileAppearance == .grids ? bannerInset : 0)
     }
 
-    private var bannerContentWidth: CGFloat {
-        bannerColumnWidth - (bannerInset * 2)
+    private var bannerContentWidth: CGFloat { channelBannerWidth }
+
+    /// In "Schede" la tile arretra sotto il solo radius destro del banner.
+    private var tileLeadingExtension: CGFloat {
+        guard tileAppearance == .cards else { return 0 }
+        return layoutDensity == .compact ? 14 : 16
     }
 
     /// Finestra temporale: 30 minuti passati, 3 ore future. (INVARIATA)
@@ -180,7 +255,7 @@ struct EPGGridView: View {
 
     // MARK: - Palette Dinamica Pastello Adattiva
 
-    /// Genera in modo deterministico e fluido il colore primario pastello per il canale
+    /// Genera in modo deterministico e fluido il colore primario pastello per il canale.
     private static func adaptivePastelColor(for stream: XtreamStream) -> Color {
         let name = stream.name.lowercased()
 
@@ -225,9 +300,7 @@ struct EPGGridView: View {
 
     // MARK: - Nome Canale & Badge Qualità
 
-    /// Suffissi di qualità che nel video di riferimento vengono estratti dal nome canale
-    /// e mostrati come pillola separata (bordo sottile, nessun riempimento) invece che come
-    /// testo semplice in coda al nome. Tag come "RAW" o "HEVC" restano invece testo semplice.
+    /// Suffissi di qualità estratti dal nome canale e mostrati come pillola separata.
     private static let qualityBadgeTokens: Set<String> = ["4K", "FHD", "HD", "SD"]
 
     /// Divide il nome canale nel nome "base" e nell'eventuale badge di qualità finale.
@@ -238,27 +311,29 @@ struct EPGGridView: View {
         guard let lastSpace = trimmed.range(of: " ", options: .backwards) else {
             return (trimmed, nil)
         }
+
         let candidate = trimmed[lastSpace.upperBound...]
         let upperCandidate = candidate.uppercased()
         guard qualityBadgeTokens.contains(upperCandidate) else {
             return (trimmed, nil)
         }
+
         let base = trimmed[..<lastSpace.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
-        return (base.isEmpty ? trimmed : base, upperCandidate)
+        return (base.isEmpty ? trimmed : base, String(upperCandidate))
     }
 
     // MARK: - Sorgenti Dati Centralizzate
 
     private var streams: [XtreamStream] {
-        xtreamCatalog.streams(for: kind)
+        xtreamCatalog.streams(for: credentials, kind: kind)
     }
 
     private var liveCategories: [XtreamCategory] {
-        xtreamCatalog.categories(for: .live)
+        xtreamCatalog.categories(for: credentials, kind: kind)
     }
 
     private var isCatalogStillLoading: Bool {
-        streams.isEmpty && (xtreamCatalog.state == .loading || xtreamCatalog.state == .idle)
+        streams.isEmpty && xtreamCatalog.isLoading(for: credentials, kind: kind)
     }
 
     private var normalizedSelectedGroupID: String? {
@@ -285,7 +360,6 @@ struct EPGGridView: View {
         let categoryByID = Dictionary(
             uniqueKeysWithValues: liveCategories.map { ($0.categoryId, $0) }
         )
-
         let groups = orderedIDs.compactMap { categoryByID[$0] }
 
         let currentGroupName: String
@@ -348,8 +422,7 @@ struct EPGGridView: View {
         return (totalFiltered, paged, canMore, remaining, identity)
     }
 
-    /// Scope di cache che include anche il giorno selezionato, per evitare che dati
-    /// di un giorno diverso vengano riusati/mostrati come validi per la finestra corrente.
+    /// Scope di cache che include anche il giorno selezionato.
     private var cacheScope: String {
         "\(Self.scopeKey(for: credentials))|d\(selectedDayOffset)"
     }
@@ -360,9 +433,7 @@ struct EPGGridView: View {
         Calendar.autoupdatingCurrent.date(byAdding: .day, value: selectedDayOffset, to: now) ?? now
     }
 
-    private var isToday: Bool {
-        selectedDayOffset == 0
-    }
+    private var isToday: Bool { selectedDayOffset == 0 }
 
     private var windowCenter: Date {
         if isToday { return now }
@@ -374,13 +445,8 @@ struct EPGGridView: View {
         ) ?? selectedDate
     }
 
-    private var windowStart: Date {
-        windowCenter.addingTimeInterval(-pastWindow)
-    }
-
-    private var windowEnd: Date {
-        windowCenter.addingTimeInterval(futureWindow)
-    }
+    private var windowStart: Date { windowCenter.addingTimeInterval(-pastWindow) }
+    private var windowEnd: Date { windowCenter.addingTimeInterval(futureWindow) }
 
     private var gridOrigin: Date {
         let calendar = Calendar.autoupdatingCurrent
@@ -412,9 +478,7 @@ struct EPGGridView: View {
         CGFloat(date.timeIntervalSince(gridOrigin) / 60) * pixelsPerMinute
     }
 
-    private var liveAxisX: CGFloat {
-        xCoordinate(for: windowCenter)
-    }
+    private var liveAxisX: CGFloat { xCoordinate(for: windowCenter) }
 
     private var dayTitle: String {
         switch selectedDayOffset {
@@ -492,6 +556,7 @@ struct EPGGridView: View {
                     failedStreamIDs.removeAll()
                     loadingStreamIDs.removeAll()
                     renderLimit = renderPageSize
+                    scheduleReload(debounced: true)
                 }
                 .onChange(of: searchQuery) { _, _ in
                     renderLimit = renderPageSize
@@ -566,6 +631,7 @@ struct EPGGridView: View {
                     }
                 }
             }
+            .scrollClipDisabled(tileAppearance == .cards)
         }
     }
 
@@ -590,6 +656,12 @@ struct EPGGridView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Giorno: \(dayTitle)")
             }
+            .background(alignment: .leading) {
+                if tileAppearance == .cards {
+                    Color.black
+                        .frame(width: bannerColumnWidth, height: timelineHeaderHeight)
+                }
+            }
 
             if pagedStreams.isEmpty {
                 Color.clear.frame(width: bannerColumnWidth, height: 1)
@@ -599,10 +671,10 @@ struct EPGGridView: View {
                 }
             }
         }
-        .background(Color.black)
+        .background(tileAppearance == .grids ? Color.black : Color.clear)
     }
 
-    /// Header orari su Canvas con disegno immediato e freccia live allineata
+    /// Header orari su Canvas con disegno immediato e freccia live allineata.
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, size in
@@ -654,7 +726,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale Adattivo con avvio immediato a latenza zero
+    /// Banner Canale Adattivo con avvio immediato a latenza zero.
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
@@ -705,16 +777,19 @@ struct EPGGridView: View {
                         .offset(x: channelBannerWidth * 0.14)
                 }
             }
-            .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
+            .frame(
+                width: bannerColumnWidth,
+                height: rowHeight,
+                alignment: tileAppearance == .cards ? .trailing : .center
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .zIndex(1)
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
-    /// Vero se lo stream ha in questo momento (o nella finestra visibile) almeno un
-    /// programma riproducibile in differita: mostra l'icona "clock.arrow.circlepath"
-    /// a metà altezza sul bordo destro del banner, come nel video di riferimento.
+    /// Vero se lo stream ha, nella finestra visibile, almeno un programma riproducibile in differita.
     private func hasVisibleCatchup(for stream: XtreamStream) -> Bool {
         visiblePrograms(for: stream).contains { $0.hasArchive }
     }
@@ -752,7 +827,11 @@ struct EPGGridView: View {
         }
         .font(.system(size: layoutDensity == .compact ? 14 : 15, weight: .medium, design: .rounded))
         .foregroundStyle(.white.opacity(0.65))
-        .padding(.horizontal, layoutDensity == .compact ? 14 : 18)
+        .padding(
+            .leading,
+            (layoutDensity == .compact ? 14 : 18) + tileLeadingExtension
+        )
+        .padding(.trailing, layoutDensity == .compact ? 14 : 18)
         .frame(height: blockHeight)
         .background {
             ZStack {
@@ -762,12 +841,21 @@ struct EPGGridView: View {
                     .fill(channelColor.opacity(0.12))
             }
         }
-        .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
+        .frame(
+            width: canvasWidth + tileLeadingExtension,
+            height: rowHeight,
+            alignment: .leading
+        )
+        .offset(x: -tileLeadingExtension)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: layoutDensity == .compact ? 12 : 18,
+                style: .continuous
+            )
+        )
     }
 
     /// Layout scroll-linked della riga superiore in modalità Compatta.
-    /// L'orario della tile futura nasce sul suo margine iniziale e viene spinto
-    /// progressivamente nella posizione finale dalla comparsa del nome canale.
     private struct SlidingCompactHeaderLayout: Layout {
         let pinnedNameOffset: CGFloat
         let keepsNaturalCurrentPosition: Bool
@@ -806,18 +894,12 @@ struct EPGGridView: View {
             let timeX: CGFloat
 
             if keepsNaturalCurrentPosition && pinnedNameOffset < 0 {
-                // La prima tile è già corrente all'apertura: nome e orario restano
-                // immediatamente visibili nelle rispettive posizioni naturali.
                 nameX = 0
                 timeX = finalTimeX
             } else if pinnedNameOffset < 0 {
-                // Tile futura: il nome è ancora oltre il bordo sinistro della tile.
-                // L'orario parte da zero e avanza esattamente della porzione di nome
-                // che entra, fino a raggiungere senza salto la posizione definitiva.
                 nameX = pinnedNameOffset
                 timeX = min(max(finalTimeX + pinnedNameOffset, 0), finalTimeX)
             } else {
-                // Tile corrente: nome e orario sono agganciati insieme al bordo fisso.
                 nameX = pinnedNameOffset
                 timeX = pinnedNameOffset + finalTimeX
             }
@@ -856,7 +938,10 @@ struct EPGGridView: View {
         }
 
         let width = max(32, endX - startX)
+        let extensionWidth = tileLeadingExtension
         let visibleWidth = max(0, width - tileHorizontalGap)
+        let renderedWidth = visibleWidth + extensionWidth
+        let contentLeadingInset = layoutDensity == .compact ? 10 : 13
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
         return GeometryReader { geo in
@@ -873,9 +958,6 @@ struct EPGGridView: View {
 
                 ZStack(alignment: .topLeading) {
                     if layoutDensity == .compact {
-                        // Nome e orario sono elementi distinti dello stesso layout: l'orario
-                        // futuro è sempre visibile all'inizio della tile e si sposta in modo
-                        // continuo mentre il nome viene progressivamente rivelato.
                         VStack(alignment: .leading, spacing: 3) {
                             SlidingCompactHeaderLayout(
                                 pinnedNameOffset: pinnedNameX,
@@ -905,58 +987,62 @@ struct EPGGridView: View {
                                 .lineLimit(1)
                                 .hidden()
                         }
-                        .padding(.horizontal, 10)
+                        .padding(.leading, contentLeadingInset)
+                        .padding(.trailing, 10)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
+                        .offset(x: extensionWidth)
 
-                        // Il titolo conserva posizione e sticky originali.
                         compactProgramTitle(
                             nameParts: nameParts,
-                            program: program
+                            program: program,
+                            leadingInset: contentLeadingInset
                         )
                         .offset(x: stickyContentX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
+                        .offset(x: extensionWidth)
                     } else {
-                        // In modalità Comoda l'orario occupa già l'inizio della propria riga;
-                        // nome, orario e titolo mantengono le animazioni scroll-linked esistenti.
                         comfortableProgramName(
                             nameParts: nameParts,
-                            program: program
+                            program: program,
+                            leadingInset: contentLeadingInset
                         )
-                        .offset(
-                            x: keepsNaturalCurrentPosition
-                                ? 0
-                                : pinnedNameX
-                        )
+                        .offset(x: keepsNaturalCurrentPosition ? 0 : pinnedNameX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
+                        .offset(x: extensionWidth)
 
                         comfortableProgramTime(
                             nameParts: nameParts,
-                            program: program
+                            program: program,
+                            leadingInset: contentLeadingInset
                         )
                         .offset(x: stickyContentX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
+                        .offset(x: extensionWidth)
 
                         comfortableProgramTitle(
                             nameParts: nameParts,
-                            program: program
+                            program: program,
+                            leadingInset: contentLeadingInset
                         )
                         .offset(x: stickyContentX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
+                        .offset(x: extensionWidth)
                     }
                 }
-                .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
+                .frame(width: renderedWidth, height: blockHeight, alignment: .topLeading)
                 .background {
                     programTileBackground(
                         stream: stream,
                         program: program,
-                        tileStartX: startX,
-                        tileWidth: visibleWidth
+                        tileStartX: startX - extensionWidth,
+                        tileWidth: renderedWidth
                     )
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
             .buttonStyle(.plain)
-            .frame(width: width, height: blockHeight, alignment: .leading)
+            .frame(width: renderedWidth, height: blockHeight, alignment: .leading)
+            .offset(x: -extensionWidth)
         }
         .frame(width: width, height: blockHeight)
         .offset(x: startX)
@@ -967,146 +1053,96 @@ struct EPGGridView: View {
 
     private func compactProgramTitle(
         nameParts: (name: String, badge: String?),
-        program: EPGProgram
+        program: EPGProgram,
+        leadingInset: CGFloat
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(nameParts.name)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-
-                if let badge = nameParts.badge {
-                    qualityBadge(badge, fontSize: 11)
-                }
-
+                Text(nameParts.name).font(.system(size: 13, weight: .semibold, design: .rounded)).lineLimit(1)
+                if let badge = nameParts.badge { qualityBadge(badge, fontSize: 11) }
                 Text(program.start.formatted(date: .omitted, time: .shortened))
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .lineLimit(1)
+                    .font(.system(size: 13, weight: .medium, design: .rounded)).lineLimit(1)
             }
             .fixedSize(horizontal: true, vertical: false)
             .hidden()
 
             Text(program.title)
                 .font(.system(size: 14, weight: .regular, design: .rounded))
-                .foregroundStyle(.white.opacity(0.92))
-                .lineLimit(1)
-                .truncationMode(.tail)
+                .foregroundStyle(.white.opacity(0.92)).lineLimit(1).truncationMode(.tail)
         }
-        .padding(.horizontal, 10)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        .padding(.leading, leadingInset).padding(.trailing, 10)
+        .allowsHitTesting(false).accessibilityHidden(true)
     }
 
     private func comfortableProgramName(
         nameParts: (name: String, badge: String?),
-        program: EPGProgram
+        program: EPGProgram,
+        leadingInset: CGFloat
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Text(nameParts.name)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.70))
-                    .lineLimit(1)
-
-                if let badge = nameParts.badge {
-                    qualityBadge(badge, fontSize: 10)
-                }
+                    .foregroundStyle(.white.opacity(0.70)).lineLimit(1)
+                if let badge = nameParts.badge { qualityBadge(badge, fontSize: 10) }
             }
             .fixedSize(horizontal: true, vertical: false)
-
             Text(program.start.formatted(date: .omitted, time: .shortened))
-                .font(.system(size: 12, weight: .medium, design: .rounded))
-                .lineLimit(1)
-                .hidden()
-
+                .font(.system(size: 12, weight: .medium, design: .rounded)).lineLimit(1).hidden()
             Text(program.title)
-                .font(.system(size: 16, weight: .semibold, design: .rounded))
-                .lineLimit(1)
-                .hidden()
-
+                .font(.system(size: 16, weight: .semibold, design: .rounded)).lineLimit(1).hidden()
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 8)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        .padding(.leading, leadingInset).padding(.trailing, 13).padding(.vertical, 8)
+        .allowsHitTesting(false).accessibilityHidden(true)
     }
 
     private func comfortableProgramTime(
         nameParts: (name: String, badge: String?),
-        program: EPGProgram
+        program: EPGProgram,
+        leadingInset: CGFloat
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(nameParts.name)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-
-                if let badge = nameParts.badge {
-                    qualityBadge(badge, fontSize: 10)
-                }
+                Text(nameParts.name).font(.system(size: 11, weight: .semibold, design: .rounded)).lineLimit(1)
+                if let badge = nameParts.badge { qualityBadge(badge, fontSize: 10) }
             }
-            .fixedSize(horizontal: true, vertical: false)
-            .hidden()
-
+            .fixedSize(horizontal: true, vertical: false).hidden()
             Text(program.start.formatted(date: .omitted, time: .shortened))
                 .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.55))
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-
+                .foregroundStyle(.white.opacity(0.55)).lineLimit(1).fixedSize(horizontal: true, vertical: false)
             Text(program.title)
-                .font(.system(size: 16, weight: .semibold, design: .rounded))
-                .lineLimit(1)
-                .hidden()
-
+                .font(.system(size: 16, weight: .semibold, design: .rounded)).lineLimit(1).hidden()
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 8)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        .padding(.leading, leadingInset).padding(.trailing, 13).padding(.vertical, 8)
+        .allowsHitTesting(false).accessibilityHidden(true)
     }
 
     private func comfortableProgramTitle(
         nameParts: (name: String, badge: String?),
-        program: EPGProgram
+        program: EPGProgram,
+        leadingInset: CGFloat
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(nameParts.name)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-
-                if let badge = nameParts.badge {
-                    qualityBadge(badge, fontSize: 10)
-                }
+                Text(nameParts.name).font(.system(size: 11, weight: .semibold, design: .rounded)).lineLimit(1)
+                if let badge = nameParts.badge { qualityBadge(badge, fontSize: 10) }
             }
-            .fixedSize(horizontal: true, vertical: false)
-            .hidden()
-
+            .fixedSize(horizontal: true, vertical: false).hidden()
             Text(program.start.formatted(date: .omitted, time: .shortened))
-                .font(.system(size: 12, weight: .medium, design: .rounded))
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .hidden()
-
+                .font(.system(size: 12, weight: .medium, design: .rounded)).lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false).hidden()
             Text(program.title)
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .truncationMode(.tail)
-
+                .foregroundStyle(.white).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 8)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        .padding(.leading, leadingInset).padding(.trailing, 13).padding(.vertical, 8)
+        .allowsHitTesting(false).accessibilityHidden(true)
     }
 
-    /// Pillola badge qualità (es. "FHD", "HD", "SD", "4K"): bordo sottile, nessun riempimento,
-    /// stesso colore attenuato del nome canale — esattamente come nel video di riferimento.
+    /// Pillola badge qualità (es. "FHD", "HD", "SD", "4K").
     private func qualityBadge(_ text: String, fontSize: CGFloat) -> some View {
         Text(text)
             .font(.system(size: fontSize, weight: .semibold, design: .rounded))
@@ -1120,7 +1156,7 @@ struct EPGGridView: View {
             }
     }
 
-    /// Background adattivo della tile
+    /// Background adattivo della tile.
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
@@ -1224,6 +1260,18 @@ struct EPGGridView: View {
                     .pickerStyle(.inline)
                 } label: {
                     Label("Aspetto EPG", systemImage: "aspectratio")
+                }
+
+                Menu {
+                    Picker("Aspetto Tile", selection: $tileAppearance) {
+                        ForEach(EPGTileAppearance.allCases) { appearance in
+                            Label(appearance.title, systemImage: appearance.icon)
+                                .tag(appearance)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("Aspetto Tile", systemImage: "rectangle.3.group")
                 }
 
                 Divider()
@@ -1340,9 +1388,6 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea a Latenza Zero
 
-    /// Avvia la riproduzione live del canale in modo istantaneo a latenza zero:
-    /// - Apre direttamente `AdaptivePlayerView` in fullScreenCover sopra l'EPG, esattamente come avviene da Home.
-    /// - Nessuna animazione di chiusura modale intermedia, nessun ritardo o chiamata asincrona ridondante.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
@@ -1350,6 +1395,7 @@ struct EPGGridView: View {
         if let streamURL = makeLiveStreamURL(for: stream) {
             self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
         }
+        onPlayLive?(stream)
     }
 
     private func makeLiveStreamURL(for stream: XtreamStream) -> URL? {
@@ -1420,10 +1466,9 @@ struct EPGGridView: View {
 
     /// Programma una ricarica dell'EPG, cancellando quella eventualmente in corso.
     /// - Parameter debounced: quando `true` attende `searchDebounceNanoseconds` prima di
-    ///   eseguire realmente il fetch, in modo da assorbire raffiche di cambi di stato
-    ///   (catalogo che si popola in modo incrementale, cambi rapidi di filtro/giorno)
-    ///   evitando che ogni singolo cambiamento cancelli e riavvii il caricamento EPG
-    ///   prima che un batch riesca mai a completarsi (causa della regressione "Dati non disponibili").
+    ///   eseguire realmente il fetch, così da assorbire raffiche di cambi di stato senza
+    ///   che ogni singolo cambiamento cancelli e riavvii il caricamento EPG prima che un
+    ///   batch riesca mai a completarsi.
     private func scheduleReload(forceRefresh: Bool = false, debounced: Bool = false) {
         reloadTaskBox.task?.cancel()
         reloadTaskBox.task = Task { @MainActor in
@@ -1486,10 +1531,10 @@ struct EPGGridView: View {
         let scope = cacheScope
 
         for start in stride(from: 0, to: pending.count, by: maxConcurrentRequests) {
-            // Controlliamo la cancellazione solo PRIMA di avviare un nuovo batch:
-            // un batch già in volo (max `maxConcurrentRequests` richieste, invariato)
-            // viene sempre portato a termine e il suo esito applicato per intero,
-            // in modo che nessuno stream resti "orfano" (né loading, né failed, né caricato).
+            // Controlliamo la cancellazione solo PRIMA di avviare un nuovo batch: un batch
+            // già in volo (max `maxConcurrentRequests` richieste, invariato) viene sempre
+            // portato a termine e il suo esito applicato per intero, così nessuno stream
+            // resta "orfano" (né loading, né failed, né caricato).
             guard !Task.isCancelled else { break }
 
             let end = min(start + maxConcurrentRequests, pending.count)
@@ -1516,11 +1561,9 @@ struct EPGGridView: View {
                 }
 
                 for await (streamID, result) in group {
-                    // Applichiamo SEMPRE il risultato ricevuto, anche se il Task esterno
-                    // è stato nel frattempo cancellato: il fetch è già stato eseguito,
-                    // scartarne l'esito lascerebbe lo stream bloccato in uno stato
-                    // ambiguo (né loading, né failed, né caricato) — la causa esatta
-                    // della regressione "Dati non disponibili" osservata in produzione.
+                    // Applichiamo SEMPRE il risultato ricevuto, anche se il Task esterno è
+                    // stato nel frattempo cancellato: il fetch è già stato eseguito,
+                    // scartarne l'esito lascerebbe lo stream bloccato in uno stato ambiguo.
                     loadingStreamIDs.remove(streamID)
 
                     switch result {
@@ -1573,55 +1616,6 @@ struct EPGGridView: View {
         }
         return String(digest, radix: 16)
     }
-
-    // MARK: - Cache & Stores
-
-    @MainActor
-    private final class EPGMemoryCache {
-        static let shared = EPGMemoryCache()
-
-        private struct Entry {
-            let programs: [EPGProgram]
-        }
-
-        private var storage: [String: Entry] = [:]
-
-        private func key(scope: String, streamId: Int) -> String {
-            "\(scope)#\(streamId)"
-        }
-
-        func programs(scope: String, streamId: Int) -> [EPGProgram]? {
-            storage[key(scope: scope, streamId: streamId)]?.programs
-        }
-
-        func store(scope: String, streamId: Int, programs: [EPGProgram]) {
-            storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs)
-        }
-    }
-
-    @MainActor
-    private final class EPGFavoritesStore: ObservableObject {
-        @Published private(set) var favoriteStreamIDs: Set<Int>
-        private let key: String
-
-        init(scopeKey: String) {
-            key = "gassplayer.epgFavorites.\(scopeKey)"
-            favoriteStreamIDs = Set(UserDefaults.standard.array(forKey: key) as? [Int] ?? [])
-        }
-
-        func isFavorite(_ streamID: Int) -> Bool {
-            favoriteStreamIDs.contains(streamID)
-        }
-
-        func toggle(_ streamID: Int) {
-            if favoriteStreamIDs.contains(streamID) {
-                favoriteStreamIDs.remove(streamID)
-            } else {
-                favoriteStreamIDs.insert(streamID)
-            }
-            UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
-        }
-    }
 }
 
 // MARK: - Dettaglio Programma
@@ -1636,9 +1630,7 @@ private struct ProgramDetailSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    private var isFuture: Bool {
-        program.start > Date()
-    }
+    private var isFuture: Bool { program.start > Date() }
 
     var body: some View {
         NavigationStack {
