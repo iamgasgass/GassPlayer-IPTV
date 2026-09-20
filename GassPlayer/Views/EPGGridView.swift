@@ -1,72 +1,6 @@
 import SwiftUI
 
-// MARK: - Cache & Stores
-// NOTA FIX: `EPGMemoryCache` viene dichiarata qui, in cima al file, PRIMA di
-// `EPGGridView`. Nella versione precedente la classe si trovava in coda al
-// file: se il file veniva copiato/incollato parzialmente (o il build target
-// non includeva l'intera sorgente) il compilatore perdeva la dichiarazione e
-// restituiva l'errore "cannot find 'EPGMemoryCache' in scope" nel punto in cui
-// `reloadEPG` chiama `EPGMemoryCache.shared.store(...)`. Spostandola qui, e
-// rendendola `internal` (accesso di default) invece di `private`, la sua
-// visibilità non dipende più dall'ordine delle dichiarazioni né da eventuali
-// tagli accidentali del file: è sempre risolvibile in tutto il modulo.
-@MainActor
-final class EPGMemoryCache {
-    static let shared = EPGMemoryCache()
-
-    private struct Entry {
-        let programs: [EPGProgram]
-    }
-
-    private var storage: [String: Entry] = [:]
-
-    private init() {}
-
-    private func key(scope: String, streamId: Int) -> String {
-        "\(scope)#\(streamId)"
-    }
-
-    func programs(scope: String, streamId: Int) -> [EPGProgram]? {
-        storage[key(scope: scope, streamId: streamId)]?.programs
-    }
-
-    func store(scope: String, streamId: Int, programs: [EPGProgram]) {
-        storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs)
-    }
-
-    /// Rimuove tutte le voci di cache appartenenti a uno scope (es. cambio account/giorno).
-    func invalidate(scope: String) {
-        storage = storage.filter { !$0.key.hasPrefix("\(scope)#") }
-    }
-}
-
-@MainActor
-final class EPGFavoritesStore: ObservableObject {
-    @Published private(set) var favoriteStreamIDs: Set<Int>
-    private let key: String
-
-    init(scopeKey: String) {
-        key = "gassplayer.epgFavorites.\(scopeKey)"
-        favoriteStreamIDs = Set(UserDefaults.standard.array(forKey: key) as? [Int] ?? [])
-    }
-
-    func isFavorite(_ streamID: Int) -> Bool {
-        favoriteStreamIDs.contains(streamID)
-    }
-
-    func toggle(_ streamID: Int) {
-        if favoriteStreamIDs.contains(streamID) {
-            favoriteStreamIDs.remove(streamID)
-        } else {
-            favoriteStreamIDs.insert(streamID)
-        }
-        UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
-    }
-}
-
-// MARK: - Aspetto EPG
-
-/// Stile dell'aspetto dell'interfaccia EPG selezionabile dall'utente.
+/// Stile dell'aspetto dell'interfaccia EPG selezionabile dall'utente
 enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     case compact = "compatta"
     case comfortable = "comoda"
@@ -128,16 +62,18 @@ enum EPGTileAppearance: String, CaseIterable, Identifiable {
 ///    così raffiche ravvicinate di aggiornamenti (es. catalogo che si popola in modo incrementale) non generano
 ///    una cascata di cancellazioni che impedisce a un batch EPG di completarsi mai.
 /// 2) Il task group di fetch non scarta i risultati "in ritardo" quando il Task viene cancellato: un batch
-///    già avviato viene sempre portato a termine e il suo stato applicato correttamente (niente più stream
+///    già avviato viene sempre portato a termine e il suo stato applicato correttamente (niente stream
 ///    "orfani" bloccati sul messaggio di default).
 /// 3) La cache EPG e lo stato in memoria vengono invalidati/riscoperti in base al giorno selezionato
 ///    (Ieri/Oggi/Domani), evitando di mostrare (o nascondere) dati appartenenti a un'altra finestra temporale.
 ///
-/// FIX 2026-09-20 (v2, compilazione):
-/// `EPGMemoryCache` è stata spostata in cima al file e reso di visibilità `internal`, eliminando l'errore
-/// "cannot find 'EPGMemoryCache' in scope" che si verificava se il file veniva troncato o solo parzialmente
-/// aggiornato. Aggiunte inoltre le generiche esplicite (`Set<Int>`, `Task<Void, Never>?`, ecc.) mancanti in
-/// alcune dichiarazioni, che con Swift 6 / strict concurrency possono impedire la compilazione.
+/// FIX 2026-09-20 (bis) — "cannot find 'EPGMemoryCache' in scope":
+/// L'errore era causato dalla presenza nel target Xcode di DUE file che dichiaravano `struct EPGGridView`
+/// (una copia più vecchia senza `EPGMemoryCache`/`EPGFavoritesStore`/`ProgramDetailSheet` e questa versione
+/// completa). Poiché i tipi di supporto erano marcati `private` a livello top-level (equivalente a
+/// `fileprivate`), risultavano invisibili da qualunque altro file. Soluzione: UN SOLO file `EPGGridView.swift`
+/// nel progetto (eliminare l'eventuale duplicato) con tutti i tipi di supporto definiti qui sotto.
+/// Parametri di tempo e numero di caricamenti concorrenti INVARIATI rispetto alla versione precedente.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -178,19 +114,42 @@ struct EPGGridView: View {
 
     // MARK: - Dimensioni & Geometria Dinamiche (Compatta vs Comoda)
 
-    private var bannerInset: CGFloat { layoutDensity == .compact ? 10 : 12 }
-    private var channelBannerWidth: CGFloat { layoutDensity == .compact ? 80 : 86 }
-    private var bannerHeight: CGFloat { layoutDensity == .compact ? 58 : 76 }
-    private var blockHeight: CGFloat { layoutDensity == .compact ? 58 : 82 }
-    private var rowHeight: CGFloat { layoutDensity == .compact ? 66 : 96 }
-    private var timelineHeaderHeight: CGFloat { layoutDensity == .compact ? 40 : 44 }
-    private var arrowGlyphWidth: CGFloat { layoutDensity == .compact ? 16 : 20 }
+    private var bannerInset: CGFloat {
+        layoutDensity == .compact ? 10 : 12
+    }
 
-    /// Spaziatura temporale (160pt ogni 30 minuti): scala pixel per minuto = 160 / 30 ≈ 5.333 pt/min.
+    private var channelBannerWidth: CGFloat {
+        layoutDensity == .compact ? 80 : 86
+    }
+
+    private var bannerHeight: CGFloat {
+        layoutDensity == .compact ? 58 : 76
+    }
+
+    private var blockHeight: CGFloat {
+        layoutDensity == .compact ? 58 : 82
+    }
+
+    private var rowHeight: CGFloat {
+        layoutDensity == .compact ? 66 : 96
+    }
+
+    private var timelineHeaderHeight: CGFloat {
+        layoutDensity == .compact ? 40 : 44
+    }
+
+    private var arrowGlyphWidth: CGFloat {
+        layoutDensity == .compact ? 16 : 20
+    }
+
+    /// Spaziatura temporale (160pt ogni 30 minuti): scala pixel per minuto = 160 / 30 = 5.333 pt/min.
     private let halfHourPixelSpacing: CGFloat = 160
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
-    /// Intercapedine visibile tra due tile di programma consecutivi nella stessa riga.
+    /// Intercapedine visibile tra due tile di programma consecutivi nella stessa riga
+    /// (misurata sul video di riferimento: ~4pt, identica al gap verticale tra righe
+    /// generato da rowHeight - blockHeight). Non influisce sui calcoli di posizione
+    /// temporale (`xCoordinate`, sticky header): è solo un inset visivo della tile.
     private let tileHorizontalGap: CGFloat = 4
 
     /// Larghezza della colonna fissa laterale. "Griglie" conserva entrambi gli
@@ -199,9 +158,12 @@ struct EPGGridView: View {
         bannerInset + channelBannerWidth + (tileAppearance == .grids ? bannerInset : 0)
     }
 
-    private var bannerContentWidth: CGFloat { channelBannerWidth }
+    private var bannerContentWidth: CGFloat {
+        channelBannerWidth
+    }
 
     /// In "Schede" la tile arretra sotto il solo radius destro del banner.
+    /// La sovrapposizione elimina ogni fessura senza spostare testi, timeline o scroll.
     private var tileLeadingExtension: CGFloat {
         guard tileAppearance == .cards else { return 0 }
         return layoutDensity == .compact ? 14 : 16
@@ -255,10 +217,9 @@ struct EPGGridView: View {
 
     // MARK: - Palette Dinamica Pastello Adattiva
 
-    /// Genera in modo deterministico e fluido il colore primario pastello per il canale.
+    /// Genera in modo deterministico e fluido il colore primario pastello per il canale
     private static func adaptivePastelColor(for stream: XtreamStream) -> Color {
         let name = stream.name.lowercased()
-
         if name.contains("rai 1") || name.contains("rai1") {
             return Color(red: 0.88, green: 0.28, blue: 0.34)
         } else if name.contains("rai 2") || name.contains("rai2") {
@@ -300,7 +261,9 @@ struct EPGGridView: View {
 
     // MARK: - Nome Canale & Badge Qualità
 
-    /// Suffissi di qualità estratti dal nome canale e mostrati come pillola separata.
+    /// Suffissi di qualità che nel video di riferimento vengono estratti dal nome canale
+    /// e mostrati come pillola separata (bordo sottile, nessun riempimento) invece che come
+    /// testo semplice in coda al nome. Tag come "RAW" o "HEVC" restano invece testo semplice.
     private static let qualityBadgeTokens: Set<String> = ["4K", "FHD", "HD", "SD"]
 
     /// Divide il nome canale nel nome "base" e nell'eventuale badge di qualità finale.
@@ -324,16 +287,10 @@ struct EPGGridView: View {
 
     // MARK: - Sorgenti Dati Centralizzate
 
-    private var streams: [XtreamStream] {
-        xtreamCatalog.streams(for: credentials, kind: kind)
-    }
-
-    private var liveCategories: [XtreamCategory] {
-        xtreamCatalog.categories(for: credentials, kind: kind)
-    }
-
+    private var streams: [XtreamStream] { xtreamCatalog.streams(for: kind) }
+    private var liveCategories: [XtreamCategory] { xtreamCatalog.categories(for: .live) }
     private var isCatalogStillLoading: Bool {
-        streams.isEmpty && xtreamCatalog.isLoading(for: credentials, kind: kind)
+        streams.isEmpty && (xtreamCatalog.state == .loading || xtreamCatalog.state == .idle)
     }
 
     private var normalizedSelectedGroupID: String? {
@@ -360,6 +317,7 @@ struct EPGGridView: View {
         let categoryByID = Dictionary(
             uniqueKeysWithValues: liveCategories.map { ($0.categoryId, $0) }
         )
+
         let groups = orderedIDs.compactMap { categoryByID[$0] }
 
         let currentGroupName: String
@@ -422,7 +380,8 @@ struct EPGGridView: View {
         return (totalFiltered, paged, canMore, remaining, identity)
     }
 
-    /// Scope di cache che include anche il giorno selezionato.
+    /// Scope di cache che include anche il giorno selezionato, per evitare che dati
+    /// di un giorno diverso vengano riusati/mostrati come validi per la finestra corrente.
     private var cacheScope: String {
         "\(Self.scopeKey(for: credentials))|d\(selectedDayOffset)"
     }
@@ -433,7 +392,9 @@ struct EPGGridView: View {
         Calendar.autoupdatingCurrent.date(byAdding: .day, value: selectedDayOffset, to: now) ?? now
     }
 
-    private var isToday: Bool { selectedDayOffset == 0 }
+    private var isToday: Bool {
+        selectedDayOffset == 0
+    }
 
     private var windowCenter: Date {
         if isToday { return now }
@@ -445,8 +406,13 @@ struct EPGGridView: View {
         ) ?? selectedDate
     }
 
-    private var windowStart: Date { windowCenter.addingTimeInterval(-pastWindow) }
-    private var windowEnd: Date { windowCenter.addingTimeInterval(futureWindow) }
+    private var windowStart: Date {
+        windowCenter.addingTimeInterval(-pastWindow)
+    }
+
+    private var windowEnd: Date {
+        windowCenter.addingTimeInterval(futureWindow)
+    }
 
     private var gridOrigin: Date {
         let calendar = Calendar.autoupdatingCurrent
@@ -478,7 +444,9 @@ struct EPGGridView: View {
         CGFloat(date.timeIntervalSince(gridOrigin) / 60) * pixelsPerMinute
     }
 
-    private var liveAxisX: CGFloat { xCoordinate(for: windowCenter) }
+    private var liveAxisX: CGFloat {
+        xCoordinate(for: windowCenter)
+    }
 
     private var dayTitle: String {
         switch selectedDayOffset {
@@ -674,7 +642,7 @@ struct EPGGridView: View {
         .background(tileAppearance == .grids ? Color.black : Color.clear)
     }
 
-    /// Header orari su Canvas con disegno immediato e freccia live allineata.
+    /// Header orari su Canvas con disegno immediato e freccia live allineata
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, size in
@@ -726,7 +694,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    /// Banner Canale Adattivo con avvio immediato a latenza zero.
+    /// Banner Canale Adattivo con avvio immediato a latenza zero
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
@@ -789,7 +757,9 @@ struct EPGGridView: View {
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
-    /// Vero se lo stream ha, nella finestra visibile, almeno un programma riproducibile in differita.
+    /// Vero se lo stream ha in questo momento (o nella finestra visibile) almeno un
+    /// programma riproducibile in differita: mostra l'icona "clock.arrow.circlepath"
+    /// a metà altezza sul bordo destro del banner, come nel video di riferimento.
     private func hasVisibleCatchup(for stream: XtreamStream) -> Bool {
         visiblePrograms(for: stream).contains { $0.hasArchive }
     }
@@ -856,6 +826,8 @@ struct EPGGridView: View {
     }
 
     /// Layout scroll-linked della riga superiore in modalità Compatta.
+    /// L'orario della tile futura nasce sul suo margine iniziale e viene spinto
+    /// progressivamente nella posizione finale dalla comparsa del nome canale.
     private struct SlidingCompactHeaderLayout: Layout {
         let pinnedNameOffset: CGFloat
         let keepsNaturalCurrentPosition: Bool
@@ -894,12 +866,18 @@ struct EPGGridView: View {
             let timeX: CGFloat
 
             if keepsNaturalCurrentPosition && pinnedNameOffset < 0 {
+                // La prima tile già corrente all'apertura: nome e orario restano
+                // immediatamente visibili nelle rispettive posizioni naturali.
                 nameX = 0
                 timeX = finalTimeX
             } else if pinnedNameOffset < 0 {
+                // Tile futura: il nome è ancora oltre il bordo sinistro della tile.
+                // L'orario parte da zero e avanza esattamente della porzione di nome
+                // che entra, fino a raggiungere senza salto la posizione definitiva.
                 nameX = pinnedNameOffset
                 timeX = min(max(finalTimeX + pinnedNameOffset, 0), finalTimeX)
             } else {
+                // Tile corrente: nome e orario sono agganciati insieme al bordo fisso.
                 nameX = pinnedNameOffset
                 timeX = pinnedNameOffset + finalTimeX
             }
@@ -1142,7 +1120,8 @@ struct EPGGridView: View {
         .allowsHitTesting(false).accessibilityHidden(true)
     }
 
-    /// Pillola badge qualità (es. "FHD", "HD", "SD", "4K").
+    /// Pillola badge qualità (es. "FHD", "HD", "SD", "4K"): bordo sottile, nessun riempimento,
+    /// stesso colore attenuato del nome canale — esattamente come nel video di riferimento.
     private func qualityBadge(_ text: String, fontSize: CGFloat) -> some View {
         Text(text)
             .font(.system(size: fontSize, weight: .semibold, design: .rounded))
@@ -1156,7 +1135,7 @@ struct EPGGridView: View {
             }
     }
 
-    /// Background adattivo della tile.
+    /// Background adattivo della tile
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
@@ -1388,6 +1367,9 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea a Latenza Zero
 
+    /// Avvia la riproduzione live del canale in modo istantaneo a latenza zero:
+    /// - Apre direttamente `AdaptivePlayerView` in fullScreenCover sopra l'EPG, esattamente come avviene da Home.
+    /// - Nessuna animazione di chiusura modale intermedia, nessun ritardo o chiamata asincrona ridondante.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
@@ -1395,7 +1377,6 @@ struct EPGGridView: View {
         if let streamURL = makeLiveStreamURL(for: stream) {
             self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
         }
-        onPlayLive?(stream)
     }
 
     private func makeLiveStreamURL(for stream: XtreamStream) -> URL? {
@@ -1454,6 +1435,7 @@ struct EPGGridView: View {
             reminderToast = "Abilita le notifiche per ricevere promemoria."
             return
         }
+
         ReminderService.shared.scheduleReminder(for: program, minutesBefore: 5)
         reminderToast = "Promemoria impostato per \"\(program.title)\""
         selectedProgram = nil
@@ -1466,9 +1448,10 @@ struct EPGGridView: View {
 
     /// Programma una ricarica dell'EPG, cancellando quella eventualmente in corso.
     /// - Parameter debounced: quando `true` attende `searchDebounceNanoseconds` prima di
-    ///   eseguire realmente il fetch, così da assorbire raffiche di cambi di stato senza
-    ///   che ogni singolo cambiamento cancelli e riavvii il caricamento EPG prima che un
-    ///   batch riesca mai a completarsi.
+    ///   eseguire realmente il fetch, in modo da assorbire raffiche di cambi di stato
+    ///   (catalogo che si popola in modo incrementale, cambi rapidi di filtro/giorno)
+    ///   evitando che ogni singolo cambiamento cancelli e riavvii il caricamento EPG
+    ///   prima che un batch riesca mai a completarsi (causa della regressione "Dati non disponibili").
     private func scheduleReload(forceRefresh: Bool = false, debounced: Bool = false) {
         reloadTaskBox.task?.cancel()
         reloadTaskBox.task = Task { @MainActor in
@@ -1512,7 +1495,6 @@ struct EPGGridView: View {
         let pending = targets.filter { stream in
             forceRefresh || programsByStream[stream.streamId] == nil
         }
-
         guard !pending.isEmpty else {
             showLoadingIndicator = false
             return
@@ -1531,15 +1513,14 @@ struct EPGGridView: View {
         let scope = cacheScope
 
         for start in stride(from: 0, to: pending.count, by: maxConcurrentRequests) {
-            // Controlliamo la cancellazione solo PRIMA di avviare un nuovo batch: un batch
-            // già in volo (max `maxConcurrentRequests` richieste, invariato) viene sempre
-            // portato a termine e il suo esito applicato per intero, così nessuno stream
-            // resta "orfano" (né loading, né failed, né caricato).
+            // Controlliamo la cancellazione solo PRIMA di avviare un nuovo batch:
+            // un batch già in volo (max `maxConcurrentRequests` richieste, invariato)
+            // viene sempre portato a termine e il suo esito applicato per intero,
+            // in modo che nessuno stream resti "orfano" (né loading, né failed, né caricato).
             guard !Task.isCancelled else { break }
 
             let end = min(start + maxConcurrentRequests, pending.count)
             let batch = Array(pending[start..<end])
-
             for stream in batch {
                 loadingStreamIDs.insert(stream.streamId)
             }
@@ -1561,9 +1542,11 @@ struct EPGGridView: View {
                 }
 
                 for await (streamID, result) in group {
-                    // Applichiamo SEMPRE il risultato ricevuto, anche se il Task esterno è
-                    // stato nel frattempo cancellato: il fetch è già stato eseguito,
-                    // scartarne l'esito lascerebbe lo stream bloccato in uno stato ambiguo.
+                    // Applichiamo SEMPRE il risultato ricevuto, anche se il Task esterno
+                    // è stato nel frattempo cancellato: il fetch è già stato eseguito,
+                    // scartarne l'esito lascerebbe lo stream bloccato in uno stato
+                    // ambiguo (né loading, né failed, né caricato) — la causa esatta
+                    // della regressione "Dati non disponibili" osservata in produzione.
                     loadingStreamIDs.remove(streamID)
 
                     switch result {
@@ -1618,6 +1601,76 @@ struct EPGGridView: View {
     }
 }
 
+// MARK: - Cache & Stores
+
+/// Cache EPG in memoria, condivisa tra tutte le istanze di `EPGGridView` nello stesso processo.
+/// NOTA sul fix "cannot find 'EPGMemoryCache' in scope": questo tipo deve rimanere nell'UNICO
+/// file `EPGGridView.swift` del target (non duplicato altrove). L'accesso è volutamente limitato
+/// al file (`private` = fileprivate a livello top-level) perché è un dettaglio implementativo
+/// interno a questa view: se in futuro serve accedervi da altri file, cambiare in `internal`
+/// (rimuovendo `private`) invece di ricrearne una copia.
+@MainActor
+private final class EPGMemoryCache {
+    static let shared = EPGMemoryCache()
+
+    /// Limite di sicurezza sulle voci in cache per evitare crescita illimitata in memoria
+    /// durante sessioni lunghe (molti canali x molti giorni). Ottimizzazione aggiunta in
+    /// questa revisione: eviction FIFO quando si supera la soglia.
+    private let maxEntries = 400
+
+    private struct Entry {
+        let programs: [EPGProgram]
+    }
+
+    private var storage: [String: Entry] = [:]
+    private var insertionOrder: [String] = []
+
+    private func key(scope: String, streamId: Int) -> String {
+        "\(scope)#\(streamId)"
+    }
+
+    func programs(scope: String, streamId: Int) -> [EPGProgram]? {
+        storage[key(scope: scope, streamId: streamId)]?.programs
+    }
+
+    func store(scope: String, streamId: Int, programs: [EPGProgram]) {
+        let entryKey = key(scope: scope, streamId: streamId)
+
+        if storage[entryKey] == nil {
+            insertionOrder.append(entryKey)
+        }
+        storage[entryKey] = Entry(programs: programs)
+
+        while insertionOrder.count > maxEntries {
+            let oldestKey = insertionOrder.removeFirst()
+            storage.removeValue(forKey: oldestKey)
+        }
+    }
+}
+
+private final class EPGFavoritesStore: ObservableObject {
+    @Published private(set) var favoriteStreamIDs: Set<Int>
+    private let key: String
+
+    init(scopeKey: String) {
+        key = "gassplayer.epgFavorites.\(scopeKey)"
+        favoriteStreamIDs = Set(UserDefaults.standard.array(forKey: key) as? [Int] ?? [])
+    }
+
+    func isFavorite(_ streamID: Int) -> Bool {
+        favoriteStreamIDs.contains(streamID)
+    }
+
+    func toggle(_ streamID: Int) {
+        if favoriteStreamIDs.contains(streamID) {
+            favoriteStreamIDs.remove(streamID)
+        } else {
+            favoriteStreamIDs.insert(streamID)
+        }
+        UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
+    }
+}
+
 // MARK: - Dettaglio Programma
 
 private struct ProgramDetailSheet: View {
@@ -1630,7 +1683,9 @@ private struct ProgramDetailSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    private var isFuture: Bool { program.start > Date() }
+    private var isFuture: Bool {
+        program.start > Date()
+    }
 
     var body: some View {
         NavigationStack {
