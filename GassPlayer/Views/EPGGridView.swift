@@ -68,11 +68,14 @@ enum EPGTileAppearance: String, CaseIterable, Identifiable {
 ///    (Ieri/Oggi/Domani), evitando di mostrare (o nascondere) dati appartenenti a un'altra finestra temporale.
 ///
 /// FIX 2026-09-20 (bis) — "cannot find 'EPGMemoryCache' in scope":
-/// L'errore era causato dalla presenza nel target Xcode di DUE file che dichiaravano `struct EPGGridView`
-/// (una copia più vecchia senza `EPGMemoryCache`/`EPGFavoritesStore`/`ProgramDetailSheet` e questa versione
-/// completa). Poiché i tipi di supporto erano marcati `private` a livello top-level (equivalente a
-/// `fileprivate`), risultavano invisibili da qualunque altro file. Soluzione: UN SOLO file `EPGGridView.swift`
-/// nel progetto (eliminare l'eventuale duplicato) con tutti i tipi di supporto definiti qui sotto.
+/// Causato da due file nel target con `struct EPGGridView` duplicata (una copia priva dei tipi di
+/// supporto). Soluzione: un solo file `EPGGridView.swift` con tutti i tipi di supporto qui sotto.
+///
+/// FIX 2026-09-20 (ter) — "cannot convert value of type 'Int' to expected argument type 'CGFloat'":
+/// `contentLeadingInset`, in `programBlock`, veniva dichiarata senza annotazione di tipo
+/// (`let contentLeadingInset = layoutDensity == .compact ? 10 : 13`): Swift la inferiva come `Int`,
+/// mentre viene passata a `.padding(.leading:)`, che richiede `CGFloat`. Corretto forzando il tipo
+/// (`let contentLeadingInset: CGFloat = ...`), in linea con tutte le altre costanti geometriche del file.
 /// Parametri di tempo e numero di caricamenti concorrenti INVARIATI rispetto alla versione precedente.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
@@ -919,7 +922,10 @@ struct EPGGridView: View {
         let extensionWidth = tileLeadingExtension
         let visibleWidth = max(0, width - tileHorizontalGap)
         let renderedWidth = visibleWidth + extensionWidth
-        let contentLeadingInset = layoutDensity == .compact ? 10 : 13
+        // FIX: annotazione esplicita CGFloat — senza di essa Swift inferiva `Int` dai
+        // due letterali interi (10/13), causando "cannot convert value of type 'Int'
+        // to expected argument type 'CGFloat'" su `.padding(.leading:)` più sotto.
+        let contentLeadingInset: CGFloat = layoutDensity == .compact ? 10 : 13
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
         return GeometryReader { geo in
@@ -1604,18 +1610,13 @@ struct EPGGridView: View {
 // MARK: - Cache & Stores
 
 /// Cache EPG in memoria, condivisa tra tutte le istanze di `EPGGridView` nello stesso processo.
-/// NOTA sul fix "cannot find 'EPGMemoryCache' in scope": questo tipo deve rimanere nell'UNICO
-/// file `EPGGridView.swift` del target (non duplicato altrove). L'accesso è volutamente limitato
-/// al file (`private` = fileprivate a livello top-level) perché è un dettaglio implementativo
-/// interno a questa view: se in futuro serve accedervi da altri file, cambiare in `internal`
-/// (rimuovendo `private`) invece di ricrearne una copia.
+/// Deve rimanere nell'UNICO file `EPGGridView.swift` del target (non duplicata altrove).
 @MainActor
 private final class EPGMemoryCache {
     static let shared = EPGMemoryCache()
 
     /// Limite di sicurezza sulle voci in cache per evitare crescita illimitata in memoria
-    /// durante sessioni lunghe (molti canali x molti giorni). Ottimizzazione aggiunta in
-    /// questa revisione: eviction FIFO quando si supera la soglia.
+    /// durante sessioni lunghe (molti canali x molti giorni): eviction FIFO oltre la soglia.
     private let maxEntries = 400
 
     private struct Entry {
