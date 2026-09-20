@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 
 enum FlexibleArrayDecoder {
     /// FIX "la lista si interrompe a meta'": JSONDecoder().decode([T].self)
@@ -15,6 +16,19 @@ enum FlexibleArrayDecoder {
     /// singolarmente, e solo quelle davvero malformate vengono scartate —
     /// tutte le altre, anche se nello stesso array di una voce "cattiva",
     /// vengono recuperate correttamente.
+    ///
+    /// OTTIMIZZAZIONE 2026-09-20: il percorso di recupero elemento-per-
+    /// elemento girava su un solo thread. Con cataloghi Xtream reali da
+    /// migliaia di voci (VOD in particolare) e anche una sola voce
+    /// malformata, questo significava rieseguire decine di migliaia di
+    /// cicli serializza→decodifica in sequenza, un lavoro puramente
+    /// CPU-bound che un iPhone moderno con più core può eseguire in
+    /// parallelo. Ogni iterazione crea la propria istanza locale di
+    /// `JSONDecoder` (nessuno stato condiviso, quindi nessuna corsa sui
+    /// dati) e scrive solo al proprio indice in un buffer preallocato:
+    /// l'ordine originale degli elementi validi e' preservato esattamente
+    /// come nella versione sequenziale, ma il tempo totale scala con il
+    /// numero di core disponibili invece che con il numero di elementi.
     static func decode<T: Decodable>(_ type: [T].Type, from data: Data) -> [T] {
         if let array = try? JSONDecoder().decode([T].self, from: data) {
             return array
@@ -28,19 +42,25 @@ enum FlexibleArrayDecoder {
             return []
         }
 
-        var results: [T] = []
-        results.reserveCapacity(rawArray.count)
-        var skippedCount = 0
-        let decoder = JSONDecoder()
+        guard !rawArray.isEmpty else { return [] }
 
-        for element in rawArray {
-            guard let itemData = try? JSONSerialization.data(withJSONObject: element),
-                  let decoded = try? decoder.decode(T.self, from: itemData) else {
-                skippedCount += 1
-                continue
+        var decodedSlots = [T?](repeating: nil, count: rawArray.count)
+
+        decodedSlots.withUnsafeMutableBufferPointer { buffer in
+            DispatchQueue.concurrentPerform(iterations: rawArray.count) { index in
+                guard let itemData = try? JSONSerialization.data(withJSONObject: rawArray[index]) else {
+                    return
+                }
+                // Istanza locale alla singola iterazione: `JSONDecoder`
+                // non è documentato come thread-safe per riuso condiviso,
+                // quindi ognuna delle esecuzioni concorrenti ne crea una
+                // propria invece di condividerne una sola fra i thread.
+                buffer[index] = try? JSONDecoder().decode(T.self, from: itemData)
             }
-            results.append(decoded)
         }
+
+        let results = decodedSlots.compactMap { $0 }
+        let skippedCount = rawArray.count - results.count
 
         if skippedCount > 0 {
             DebugLogger.logAsync(.warning, "FlexibleArrayDecoder: \(skippedCount) elementi scartati (campi malformati) su \(rawArray.count) totali durante la decodifica di [\(T.self)] — recuperati correttamente gli altri \(results.count)")
