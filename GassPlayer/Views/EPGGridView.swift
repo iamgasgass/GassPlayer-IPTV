@@ -853,14 +853,14 @@ struct EPGGridView: View {
             let isCurrentProgram = isInitialCurrentProgram || isCrossingCurrentEdge
             let transitionDistance: CGFloat = layoutDensity == .compact ? 30 : 36
             let crossingProgress = min(max(overlap / transitionDistance, 0), 1)
-            let channelNameProgress: CGFloat
-            if !isCurrentProgram {
-                channelNameProgress = 0
-            } else if isFirstProgram {
-                channelNameProgress = 1
-            } else {
-                channelNameProgress = crossingProgress
-            }
+
+            // Espressione singola intenzionale: dentro GeometryReader il contenuto è
+            // un @ViewBuilder; assegnazioni nei rami di un `if` producono `Void` e
+            // causano "type '()' cannot conform to 'View'". Il ternario conserva
+            // esattamente la stessa logica senza introdurre espressioni non-View.
+            let channelNameProgress: CGFloat = isCurrentProgram
+                ? (isFirstProgram ? 1 : crossingProgress)
+                : 0
 
             Button {
                 selectedProgram = SelectedProgram(program: program, stream: stream)
