@@ -641,7 +641,12 @@ struct EPGGridView: View {
             } else {
                 ForEach(Array(programs.enumerated()), id: \.element.id) { index, program in
                     let nextStart = index + 1 < programs.count ? programs[index + 1].start : nil
-                    programBlock(program, stream: stream, nextProgramStart: nextStart)
+                    programBlock(
+                        program,
+                        stream: stream,
+                        nextProgramStart: nextStart,
+                        isFirstProgram: index == programs.startIndex
+                    )
                 }
             }
         }
@@ -760,11 +765,61 @@ struct EPGGridView: View {
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// Tile del programma con supporto alle modalità Compatta e Comoda
+    /// Layout scroll-linked dell'intestazione compatta.
+    /// Il nome occupa progressivamente il proprio spazio mentre l'orario scorre
+    /// dalla posizione iniziale della tile alla posizione successiva al nome.
+    private struct ChannelTimeTransitionLayout: Layout {
+        let progress: CGFloat
+        let spacing: CGFloat
+
+        func sizeThatFits(
+            proposal: ProposedViewSize,
+            subviews: Subviews,
+            cache: inout ()
+        ) -> CGSize {
+            guard subviews.count == 2 else { return .zero }
+            let channelSize = subviews[0].sizeThatFits(.unspecified)
+            let timeSize = subviews[1].sizeThatFits(.unspecified)
+            return CGSize(
+                width: channelSize.width + spacing + timeSize.width,
+                height: max(channelSize.height, timeSize.height)
+            )
+        }
+
+        func placeSubviews(
+            in bounds: CGRect,
+            proposal: ProposedViewSize,
+            subviews: Subviews,
+            cache: inout ()
+        ) {
+            guard subviews.count == 2 else { return }
+            let channelSize = subviews[0].sizeThatFits(.unspecified)
+            let clampedProgress = min(max(progress, 0), 1)
+
+            subviews[0].place(
+                at: CGPoint(x: bounds.minX, y: bounds.midY),
+                anchor: .leading,
+                proposal: .unspecified
+            )
+            subviews[1].place(
+                at: CGPoint(
+                    x: bounds.minX + (channelSize.width + spacing) * clampedProgress,
+                    y: bounds.midY
+                ),
+                anchor: .leading,
+                proposal: .unspecified
+            )
+        }
+    }
+
+    /// Tile del programma con nome esclusivo sulla tile corrente e orario sempre
+    /// disponibile sulle tile future. Tutte le transizioni dipendono direttamente
+    /// dallo scroll e restano quindi fluide, reversibili e sincronizzate con i bordi.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
-        nextProgramStart: Date?
+        nextProgramStart: Date?,
+        isFirstProgram: Bool
     ) -> some View {
         let clippedStart = max(program.start, windowStart)
         let clippedEnd = min(program.end, windowEnd)
@@ -780,25 +835,32 @@ struct EPGGridView: View {
         }
 
         let width = max(32, endX - startX)
+        let visibleWidth = max(0, width - tileHorizontalGap)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
         return GeometryReader { geo in
-            let frameInViewport = geo.frame(in: .named("epgViewportCoordinateSpace"))
-            let tileMinX = frameInViewport.minX
-
-            // Sticky "puro", senza rilascio anticipato: il nome canale/orario resta
-            // agganciato al bordo della colonna banner per l'intera durata in cui questa
-            // tile è quella "corrente" (dal momento in cui il suo bordo sinistro la
-            // supera, fino a quando il suo bordo destro la raggiunge). Non c'è alcuno
-            // scorrimento percepito nel frattempo: lo spostamento compensa esattamente
-            // lo scroll, quindi sullo schermo il testo resta fermo (esattamente come nel
-            // video di riferimento). Il "cambio" alla tile successiva non è quindi
-            // un'animazione separata: è il naturale passaggio di sticky quando il bordo
-            // di QUESTA tile (clipShape locale, 0...width) la ritaglia esattamente nello
-            // stesso istante in cui la tile successiva raggiunge overlap > 0 e comincia
-            // a mostrare, ferma nello stesso punto, la propria intestazione.
+            let tileMinX = geo.frame(in: .named("epgViewportCoordinateSpace")).minX
             let overlap = max(0, bannerColumnWidth - tileMinX)
-            let stickyX = min(overlap, width)
+            let stickyX = min(overlap, visibleWidth)
+
+            // La prima tile è già quella corrente all'apertura, anche quando il suo
+            // inizio temporale è ancora a destra della colonna canali. Le successive
+            // diventano correnti soltanto attraversando il bordo della colonna.
+            let isCrossingCurrentEdge = tileMinX <= bannerColumnWidth
+                && tileMinX + visibleWidth > bannerColumnWidth
+            let isInitialCurrentProgram = isFirstProgram
+                && tileMinX + visibleWidth > bannerColumnWidth
+            let isCurrentProgram = isInitialCurrentProgram || isCrossingCurrentEdge
+            let transitionDistance: CGFloat = layoutDensity == .compact ? 30 : 36
+            let crossingProgress = min(max(overlap / transitionDistance, 0), 1)
+            let channelNameProgress: CGFloat
+            if !isCurrentProgram {
+                channelNameProgress = 0
+            } else if isFirstProgram {
+                channelNameProgress = 1
+            } else {
+                channelNameProgress = crossingProgress
+            }
 
             Button {
                 selectedProgram = SelectedProgram(program: program, stream: stream)
@@ -808,20 +870,35 @@ struct EPGGridView: View {
                 Group {
                     if layoutDensity == .compact {
                         VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Text(nameParts.name)
-                                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
+                            ChannelTimeTransitionLayout(
+                                progress: channelNameProgress,
+                                spacing: 6
+                            ) {
+                                HStack(spacing: 6) {
+                                    Text(nameParts.name)
+                                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(.white)
+                                        .lineLimit(1)
 
-                                if let badge = nameParts.badge {
-                                    qualityBadge(badge, fontSize: 11)
+                                    if let badge = nameParts.badge {
+                                        qualityBadge(badge, fontSize: 11)
+                                    }
+                                }
+                                .fixedSize(horizontal: true, vertical: false)
+                                .mask(alignment: .leading) {
+                                    Rectangle()
+                                        .scaleEffect(
+                                            x: channelNameProgress,
+                                            y: 1,
+                                            anchor: .leading
+                                        )
                                 }
 
                                 Text(program.start.formatted(date: .omitted, time: .shortened))
                                     .font(.system(size: 13, weight: .medium, design: .rounded))
                                     .foregroundStyle(.white.opacity(0.60))
                                     .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
                             }
 
                             Text(program.title)
@@ -832,7 +909,7 @@ struct EPGGridView: View {
                         }
                         .padding(.horizontal, 10)
                         .offset(x: stickyX)
-                        .frame(width: width, height: blockHeight, alignment: .leading)
+                        .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
                     } else {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
@@ -845,11 +922,21 @@ struct EPGGridView: View {
                                     qualityBadge(badge, fontSize: 10)
                                 }
                             }
+                            .fixedSize(horizontal: true, vertical: false)
+                            .mask(alignment: .leading) {
+                                Rectangle()
+                                    .scaleEffect(
+                                        x: channelNameProgress,
+                                        y: 1,
+                                        anchor: .leading
+                                    )
+                            }
 
                             Text(program.start.formatted(date: .omitted, time: .shortened))
                                 .font(.system(size: 12, weight: .medium, design: .rounded))
                                 .foregroundStyle(.white.opacity(0.55))
                                 .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
 
                             Text(program.title)
                                 .font(.system(size: 16, weight: .semibold, design: .rounded))
@@ -862,21 +949,22 @@ struct EPGGridView: View {
                         .padding(.horizontal, 13)
                         .padding(.vertical, 8)
                         .offset(x: stickyX)
-                        .frame(width: width, height: blockHeight, alignment: .topLeading)
+                        .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
                     }
                 }
+                .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
+                .background {
+                    programTileBackground(
+                        stream: stream,
+                        program: program,
+                        tileStartX: startX,
+                        tileWidth: visibleWidth
+                    )
+                }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
             .buttonStyle(.plain)
-            .background {
-                programTileBackground(
-                    stream: stream,
-                    program: program,
-                    tileStartX: startX,
-                    tileWidth: width
-                )
-                .frame(width: max(0, width - tileHorizontalGap))
-            }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .frame(width: width, height: blockHeight, alignment: .leading)
         }
         .frame(width: width, height: blockHeight)
         .offset(x: startX)
