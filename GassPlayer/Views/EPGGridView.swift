@@ -50,32 +50,32 @@ enum EPGTileAppearance: String, CaseIterable, Identifiable {
 /// - Colori pastello adattivi, avanzamento live coordinato e voce di menu dedicata "Aspetto EPG".
 ///
 /// AGGIORNAMENTO 2026-09-20 (replica pixel-perfect del riferimento video):
-/// - Il nome canale viene ora diviso in "nome base" + badge qualità finale (FHD/HD/SD/4K),
-///   mostrato come pillola con bordo separata (vedi `splitNameAndQualityBadge`/`qualityBadge`).
-///   Suffissi non riconosciuti (RAW, HEVC, ecc.) restano invece testo semplice in coda al nome.
-/// - Il banner canale mostra ora anche un'icona di catch-up ("clock.arrow.circlepath") a metà
-///   altezza sul bordo destro quando lo stream ha programmi riproducibili in differita nella
-///   finestra visibile, in aggiunta alla stella dei preferiti (`hasVisibleCatchup`/`catchupBadge`).
+/// - Il nome canale viene ora diviso in "nome base" + badge qualità finale (FHD/HD/SD/4K).
+/// - Il banner canale mostra ora anche un'icona di catch-up ("clock.arrow.circlepath").
 ///
-/// FIX 2026-09-20 (regressione "Dati non disponibili"):
-/// 1) I trigger reattivi (cambio identity/lista canali/preferiti) usano SEMPRE `scheduleReload(debounced: true)`
-///    così raffiche ravvicinate di aggiornamenti (es. catalogo che si popola in modo incrementale) non generano
-///    una cascata di cancellazioni che impedisce a un batch EPG di completarsi mai.
-/// 2) Il task group di fetch non scarta i risultati "in ritardo" quando il Task viene cancellato: un batch
-///    già avviato viene sempre portato a termine e il suo stato applicato correttamente (niente stream
-///    "orfani" bloccati sul messaggio di default).
-/// 3) La cache EPG e lo stato in memoria vengono invalidati/riscoperti in base al giorno selezionato
-///    (Ieri/Oggi/Domani), evitando di mostrare (o nascondere) dati appartenenti a un'altra finestra temporale.
+/// FIX 2026-09-20 (regressione "Dati non disponibili") — trigger reattivi debounced,
+/// batch di fetch mai scartati a metà, cache/stato invalidati per giorno selezionato.
 ///
-/// FIX 2026-09-20 (bis) — "cannot find 'EPGMemoryCache' in scope":
-/// Causato da due file nel target con `struct EPGGridView` duplicata (una copia priva dei tipi di
-/// supporto). Soluzione: un solo file `EPGGridView.swift` con tutti i tipi di supporto qui sotto.
+/// FIX 2026-09-20 (bis) — "cannot find 'EPGMemoryCache' in scope": un solo file
+/// `EPGGridView.swift` nel target, con tutti i tipi di supporto definiti qui sotto.
 ///
-/// FIX 2026-09-20 (ter) — "cannot convert value of type 'Int' to expected argument type 'CGFloat'":
-/// `contentLeadingInset`, in `programBlock`, veniva dichiarata senza annotazione di tipo
-/// (`let contentLeadingInset = layoutDensity == .compact ? 10 : 13`): Swift la inferiva come `Int`,
-/// mentre viene passata a `.padding(.leading:)`, che richiede `CGFloat`. Corretto forzando il tipo
-/// (`let contentLeadingInset: CGFloat = ...`), in linea con tutte le altre costanti geometriche del file.
+/// FIX 2026-09-20 (ter) — "cannot convert value of type 'Int' to expected argument
+/// type 'CGFloat'": `contentLeadingInset` ora è tipizzata esplicitamente `CGFloat`.
+///
+/// AGGIORNAMENTO 2026-09-20 (quater) — Aspetto "Schede", allineamento maniacale al banner:
+/// 1) `tileLeadingExtension` (l'estensione con cui la tile "arretra" sotto il banner) è ora
+///    ESATTAMENTE uguale a `bannerCornerRadius`, la stessa costante usata per il corner radius
+///    del banner canale: non più due numeri magici indipendenti che potevano disallinearsi, ma
+///    un'UNICA fonte di verità. Il raggio del bordo superiore-sinistro della tile (in "Schede")
+///    usa ora `UnevenRoundedRectangle` con lo stesso raggio del bordo superiore-destro del banner,
+///    così l'arco della tile continua esattamente e correttamente l'arco del banner, senza salti.
+/// 2) FIX bug scroll: con `scrollClipDisabled` attivo per "Schede" la tile poteva, scorrendo la
+///    timeline, sporgere visivamente A SINISTRA del banner canale (fuori dalla colonna banner),
+///    invece di restare correttamente e invisibilmente "sotto" di esso. Ogni tile (e il blocco
+///    "Dati non disponibili") calcola ora dal vivo, tramite `GeometryReader`, quanta della sua
+///    estensione verso il banner sarebbe visibile oltre il bordo sinistro della colonna banner
+///    (x = 0 nello spazio del viewport) e la maschera (`epgClipLeadingOverflow`): la tile non può
+///    più apparire a sinistra del banner in nessuna condizione di scroll, overscroll incluso.
 /// Parametri di tempo e numero di caricamenti concorrenti INVARIATI rispetto alla versione precedente.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
@@ -149,10 +149,7 @@ struct EPGGridView: View {
     private let halfHourPixelSpacing: CGFloat = 160
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
-    /// Intercapedine visibile tra due tile di programma consecutivi nella stessa riga
-    /// (misurata sul video di riferimento: ~4pt, identica al gap verticale tra righe
-    /// generato da rowHeight - blockHeight). Non influisce sui calcoli di posizione
-    /// temporale (`xCoordinate`, sticky header): è solo un inset visivo della tile.
+    /// Intercapedine visibile tra due tile di programma consecutivi nella stessa riga.
     private let tileHorizontalGap: CGFloat = 4
 
     /// Larghezza della colonna fissa laterale. "Griglie" conserva entrambi gli
@@ -165,11 +162,21 @@ struct EPGGridView: View {
         channelBannerWidth
     }
 
-    /// In "Schede" la tile arretra sotto il solo radius destro del banner.
-    /// La sovrapposizione elimina ogni fessura senza spostare testi, timeline o scroll.
+    /// Raggio del corner radius del banner canale — UNICA fonte di verità condivisa sia dal
+    /// banner stesso (`channelBanner`) sia dall'estensione/raggio sinistro della tile in "Schede"
+    /// (`tileLeadingExtension`, `epgTileClip`), per garantire che l'arco della tile continui
+    /// ESATTAMENTE e CORRETTAMENTE l'arco del banner, senza disallineamenti tra due valori distinti.
+    private var bannerCornerRadius: CGFloat {
+        layoutDensity == .compact ? 14 : 16
+    }
+
+    /// In "Schede" la tile arretra sotto il banner esattamente della quantità pari al raggio
+    /// del banner (`bannerCornerRadius`): questo è ciò che permette al radius superiore
+    /// sinistro della tile di iniziare esattamente dove inizia il radius superiore del banner,
+    /// eliminando qualunque fessura o disallineamento visivo tra i due elementi.
     private var tileLeadingExtension: CGFloat {
         guard tileAppearance == .cards else { return 0 }
-        return layoutDensity == .compact ? 14 : 16
+        return bannerCornerRadius
     }
 
     /// Finestra temporale: 30 minuti passati, 3 ore future. (INVARIATA)
@@ -220,7 +227,6 @@ struct EPGGridView: View {
 
     // MARK: - Palette Dinamica Pastello Adattiva
 
-    /// Genera in modo deterministico e fluido il colore primario pastello per il canale
     private static func adaptivePastelColor(for stream: XtreamStream) -> Color {
         let name = stream.name.lowercased()
         if name.contains("rai 1") || name.contains("rai1") {
@@ -264,14 +270,8 @@ struct EPGGridView: View {
 
     // MARK: - Nome Canale & Badge Qualità
 
-    /// Suffissi di qualità che nel video di riferimento vengono estratti dal nome canale
-    /// e mostrati come pillola separata (bordo sottile, nessun riempimento) invece che come
-    /// testo semplice in coda al nome. Tag come "RAW" o "HEVC" restano invece testo semplice.
     private static let qualityBadgeTokens: Set<String> = ["4K", "FHD", "HD", "SD"]
 
-    /// Divide il nome canale nel nome "base" e nell'eventuale badge di qualità finale.
-    /// Es: "Rai 1 FHD" -> ("Rai 1", "FHD"); "Rai 1 +1 HD" -> ("Rai 1 +1", "HD");
-    /// "Rai 1 RAW" -> ("Rai 1 RAW", nil) perché "RAW" non è un token riconosciuto.
     private static func splitNameAndQualityBadge(_ rawName: String) -> (name: String, badge: String?) {
         let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let lastSpace = trimmed.range(of: " ", options: .backwards) else {
@@ -346,8 +346,6 @@ struct EPGGridView: View {
         searchQuery = ""
         showFavoritesOnly = false
         renderLimit = renderPageSize
-        // Il cambio di identity generato da questa selezione farà scattare
-        // automaticamente `scheduleReload(debounced: true)` tramite l'onChange dedicato.
     }
 
     private var streamData: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String) {
@@ -376,15 +374,11 @@ struct EPGGridView: View {
         let remaining = max(0, effectiveCap - renderLimit)
 
         let ids = paged.map(\.streamId).map(String.init).joined(separator: ",")
-        // L'identity include il giorno selezionato: cambiare giorno genera sempre
-        // un nuovo ciclo di ricarica/rivalidazione della cache EPG.
         let identity = "\(groupID ?? "all")|\(selectedDayOffset)|\(ids)"
 
         return (totalFiltered, paged, canMore, remaining, identity)
     }
 
-    /// Scope di cache che include anche il giorno selezionato, per evitare che dati
-    /// di un giorno diverso vengano riusati/mostrati come validi per la finestra corrente.
     private var cacheScope: String {
         "\(Self.scopeKey(for: credentials))|d\(selectedDayOffset)"
     }
@@ -513,16 +507,12 @@ struct EPGGridView: View {
                     if currentStreamData.paged.isEmpty {
                         renderLimit = min(renderPageSize, max(streams.count, 1))
                     }
-                    // Debounced: evita che un catalogo che si popola in modo incrementale
-                    // generi una cascata di cancellazioni che impedisce il completamento del fetch EPG.
                     scheduleReload(debounced: true)
                 }
                 .onChange(of: currentStreamData.identity) { _, _ in
                     scheduleReload(debounced: true)
                 }
                 .onChange(of: selectedDayOffset) { _, _ in
-                    // Il giorno selezionato è cambiato: lo stato in memoria appartiene alla
-                    // vecchia finestra temporale, va scartato per forzare una rivalutazione pulita.
                     programsByStream.removeAll()
                     failedStreamIDs.removeAll()
                     loadingStreamIDs.removeAll()
@@ -645,7 +635,6 @@ struct EPGGridView: View {
         .background(tileAppearance == .grids ? Color.black : Color.clear)
     }
 
-    /// Header orari su Canvas con disegno immediato e freccia live allineata
     private var scrollingTimelineHeader: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, size in
@@ -700,13 +689,12 @@ struct EPGGridView: View {
     /// Banner Canale Adattivo con avvio immediato a latenza zero
     private func channelBanner(_ stream: XtreamStream) -> some View {
         let channelColor = Self.adaptivePastelColor(for: stream)
-        let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
 
         return Button {
             playLiveStream(stream, dismissSheetFirst: false)
         } label: {
             ZStack {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: bannerCornerRadius, style: .continuous)
                     .fill(channelColor)
 
                 if let icon = stream.streamIcon, !icon.isEmpty {
@@ -760,9 +748,6 @@ struct EPGGridView: View {
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
-    /// Vero se lo stream ha in questo momento (o nella finestra visibile) almeno un
-    /// programma riproducibile in differita: mostra l'icona "clock.arrow.circlepath"
-    /// a metà altezza sul bordo destro del banner, come nel video di riferimento.
     private func hasVisibleCatchup(for stream: XtreamStream) -> Bool {
         visiblePrograms(for: stream).contains { $0.hasArchive }
     }
@@ -779,58 +764,59 @@ struct EPGGridView: View {
             .accessibilityLabel("Contenuti in differita disponibili")
     }
 
+    /// Blocco "Dati non disponibili"/"Caricamento"/"EPG non disponibile" per l'intera riga.
+    /// In "Schede" arretra sotto il banner esattamente come le tile di programma, e la sua
+    /// estensione viene mascherata dal vivo tramite `GeometryReader` per non poter MAI
+    /// sporgere a sinistra del banner canale durante lo scroll (stesso fix di `programBlock`).
     private func unavailableBlock(for stream: XtreamStream) -> some View {
         let loading = loadingStreamIDs.contains(stream.streamId)
         let failed = failedStreamIDs.contains(stream.streamId)
         let channelColor = Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
+        let extensionWidth = tileLeadingExtension
+        let totalWidth = canvasWidth + extensionWidth
 
-        return HStack(spacing: 6) {
-            if loading {
-                ProgressView()
-                    .tint(.white)
-                    .controlSize(.small)
-                Text("Caricamento EPG")
-            } else if failed {
-                Image(systemName: "exclamationmark.triangle.fill")
-                Text("EPG non disponibile")
-            } else {
-                Text("Dati non disponibili")
+        return GeometryReader { geo in
+            let tileMinX = geo.frame(in: .named("epgViewportCoordinateSpace")).minX
+            let hiddenLeadingOverflow = tileAppearance == .cards
+                ? max(0, extensionWidth - tileMinX)
+                : 0
+
+            HStack(spacing: 6) {
+                if loading {
+                    ProgressView()
+                        .tint(.white)
+                        .controlSize(.small)
+                    Text("Caricamento EPG")
+                } else if failed {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text("EPG non disponibile")
+                } else {
+                    Text("Dati non disponibili")
+                }
             }
-        }
-        .font(.system(size: layoutDensity == .compact ? 14 : 15, weight: .medium, design: .rounded))
-        .foregroundStyle(.white.opacity(0.65))
-        .padding(
-            .leading,
-            (layoutDensity == .compact ? 14 : 18) + tileLeadingExtension
-        )
-        .padding(.trailing, layoutDensity == .compact ? 14 : 18)
-        .frame(height: blockHeight)
-        .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color(white: 0.10))
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(channelColor.opacity(0.12))
-            }
-        }
-        .frame(
-            width: canvasWidth + tileLeadingExtension,
-            height: rowHeight,
-            alignment: .leading
-        )
-        .offset(x: -tileLeadingExtension)
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: layoutDensity == .compact ? 12 : 18,
-                style: .continuous
+            .font(.system(size: layoutDensity == .compact ? 14 : 15, weight: .medium, design: .rounded))
+            .foregroundStyle(.white.opacity(0.65))
+            .padding(
+                .leading,
+                (layoutDensity == .compact ? 14 : 18) + extensionWidth
             )
-        )
+            .padding(.trailing, layoutDensity == .compact ? 14 : 18)
+            .frame(height: blockHeight)
+            .background {
+                ZStack {
+                    tileBackgroundFill(Color(white: 0.10), cornerRadius: cornerRadius)
+                    tileBackgroundFill(channelColor.opacity(0.12), cornerRadius: cornerRadius)
+                }
+            }
+            .frame(width: totalWidth, height: rowHeight, alignment: .leading)
+            .offset(x: -extensionWidth)
+            .epgTileClip(cornerRadius: cornerRadius, useUnevenLeft: tileAppearance == .cards ? bannerCornerRadius : nil)
+            .epgClipLeadingOverflow(totalWidth: totalWidth, hiddenLeading: hiddenLeadingOverflow)
+        }
     }
 
     /// Layout scroll-linked della riga superiore in modalità Compatta.
-    /// L'orario della tile futura nasce sul suo margine iniziale e viene spinto
-    /// progressivamente nella posizione finale dalla comparsa del nome canale.
     private struct SlidingCompactHeaderLayout: Layout {
         let pinnedNameOffset: CGFloat
         let keepsNaturalCurrentPosition: Bool
@@ -869,18 +855,12 @@ struct EPGGridView: View {
             let timeX: CGFloat
 
             if keepsNaturalCurrentPosition && pinnedNameOffset < 0 {
-                // La prima tile già corrente all'apertura: nome e orario restano
-                // immediatamente visibili nelle rispettive posizioni naturali.
                 nameX = 0
                 timeX = finalTimeX
             } else if pinnedNameOffset < 0 {
-                // Tile futura: il nome è ancora oltre il bordo sinistro della tile.
-                // L'orario parte da zero e avanza esattamente della porzione di nome
-                // che entra, fino a raggiungere senza salto la posizione definitiva.
                 nameX = pinnedNameOffset
                 timeX = min(max(finalTimeX + pinnedNameOffset, 0), finalTimeX)
             } else {
-                // Tile corrente: nome e orario sono agganciati insieme al bordo fisso.
                 nameX = pinnedNameOffset
                 timeX = pinnedNameOffset + finalTimeX
             }
@@ -899,6 +879,9 @@ struct EPGGridView: View {
     }
 
     /// Tile del programma con transizioni scroll-linked di nome canale e orari.
+    /// In "Schede", l'estensione verso il banner (`extensionWidth`) è mascherata dal vivo,
+    /// in base alla posizione reale della tile sullo schermo (`tileMinX`), così da non
+    /// sporgere MAI a sinistra del banner canale, in nessuna condizione di scroll.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -922,9 +905,6 @@ struct EPGGridView: View {
         let extensionWidth = tileLeadingExtension
         let visibleWidth = max(0, width - tileHorizontalGap)
         let renderedWidth = visibleWidth + extensionWidth
-        // FIX: annotazione esplicita CGFloat — senza di essa Swift inferiva `Int` dai
-        // due letterali interi (10/13), causando "cannot convert value of type 'Int'
-        // to expected argument type 'CGFloat'" su `.padding(.leading:)` più sotto.
         let contentLeadingInset: CGFloat = layoutDensity == .compact ? 10 : 13
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
@@ -934,6 +914,13 @@ struct EPGGridView: View {
             let stickyContentX = min(overlap, visibleWidth)
             let pinnedNameX = bannerColumnWidth - tileMinX
             let keepsNaturalCurrentPosition = isFirstVisibleProgram && tileMinX > bannerColumnWidth
+            // Quanta parte dell'estensione verso il banner sporgerebbe, sullo schermo, oltre il
+            // bordo sinistro della colonna banner (x = 0 nello spazio del viewport): va sempre
+            // mascherata, altrimenti la tile apparirebbe scorrettamente a sinistra del banner
+            // canale invece di restare correttamente nascosta sotto di esso.
+            let hiddenLeadingOverflow = tileAppearance == .cards
+                ? max(0, extensionWidth - tileMinX)
+                : 0
 
             Button {
                 selectedProgram = SelectedProgram(program: program, stream: stream)
@@ -1022,11 +1009,12 @@ struct EPGGridView: View {
                         tileWidth: renderedWidth
                     )
                 }
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .epgTileClip(cornerRadius: cornerRadius, useUnevenLeft: tileAppearance == .cards ? bannerCornerRadius : nil)
             }
             .buttonStyle(.plain)
             .frame(width: renderedWidth, height: blockHeight, alignment: .leading)
             .offset(x: -extensionWidth)
+            .epgClipLeadingOverflow(totalWidth: renderedWidth, hiddenLeading: hiddenLeadingOverflow)
         }
         .frame(width: width, height: blockHeight)
         .offset(x: startX)
@@ -1126,8 +1114,6 @@ struct EPGGridView: View {
         .allowsHitTesting(false).accessibilityHidden(true)
     }
 
-    /// Pillola badge qualità (es. "FHD", "HD", "SD", "4K"): bordo sottile, nessun riempimento,
-    /// stesso colore attenuato del nome canale — esattamente come nel video di riferimento.
     private func qualityBadge(_ text: String, fontSize: CGFloat) -> some View {
         Text(text)
             .font(.system(size: fontSize, weight: .semibold, design: .rounded))
@@ -1141,7 +1127,26 @@ struct EPGGridView: View {
             }
     }
 
-    /// Background adattivo della tile
+    /// Riempimento del corpo della tile: in "Schede" usa lo stesso `UnevenRoundedRectangle`
+    /// del clip esterno (radius sinistro = `bannerCornerRadius`, radius destro = `cornerRadius`),
+    /// così il fill e il contorno coincidono esattamente con l'arco continuato dal banner.
+    @ViewBuilder
+    private func tileBackgroundFill<S: ShapeStyle>(_ style: S, cornerRadius: CGFloat) -> some View {
+        if tileAppearance == .cards {
+            UnevenRoundedRectangle(
+                topLeadingRadius: bannerCornerRadius,
+                bottomLeadingRadius: bannerCornerRadius,
+                bottomTrailingRadius: cornerRadius,
+                topTrailingRadius: cornerRadius,
+                style: .continuous
+            )
+            .fill(style)
+        } else {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(style)
+        }
+    }
+
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
@@ -1154,11 +1159,8 @@ struct EPGGridView: View {
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
         ZStack(alignment: .leading) {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(Color(white: 0.10))
-
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(channelColor.opacity(layoutDensity == .compact ? 0.18 : 0.22))
+            tileBackgroundFill(Color(white: 0.10), cornerRadius: cornerRadius)
+            tileBackgroundFill(channelColor.opacity(layoutDensity == .compact ? 0.18 : 0.22), cornerRadius: cornerRadius)
 
             if brightWidth > 0 {
                 Rectangle()
@@ -1373,9 +1375,6 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea a Latenza Zero
 
-    /// Avvia la riproduzione live del canale in modo istantaneo a latenza zero:
-    /// - Apre direttamente `AdaptivePlayerView` in fullScreenCover sopra l'EPG, esattamente come avviene da Home.
-    /// - Nessuna animazione di chiusura modale intermedia, nessun ritardo o chiamata asincrona ridondante.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
@@ -1452,12 +1451,6 @@ struct EPGGridView: View {
         await reloadEPG(forceRefresh: true)
     }
 
-    /// Programma una ricarica dell'EPG, cancellando quella eventualmente in corso.
-    /// - Parameter debounced: quando `true` attende `searchDebounceNanoseconds` prima di
-    ///   eseguire realmente il fetch, in modo da assorbire raffiche di cambi di stato
-    ///   (catalogo che si popola in modo incrementale, cambi rapidi di filtro/giorno)
-    ///   evitando che ogni singolo cambiamento cancelli e riavvii il caricamento EPG
-    ///   prima che un batch riesca mai a completarsi (causa della regressione "Dati non disponibili").
     private func scheduleReload(forceRefresh: Bool = false, debounced: Bool = false) {
         reloadTaskBox.task?.cancel()
         reloadTaskBox.task = Task { @MainActor in
@@ -1519,10 +1512,6 @@ struct EPGGridView: View {
         let scope = cacheScope
 
         for start in stride(from: 0, to: pending.count, by: maxConcurrentRequests) {
-            // Controlliamo la cancellazione solo PRIMA di avviare un nuovo batch:
-            // un batch già in volo (max `maxConcurrentRequests` richieste, invariato)
-            // viene sempre portato a termine e il suo esito applicato per intero,
-            // in modo che nessuno stream resti "orfano" (né loading, né failed, né caricato).
             guard !Task.isCancelled else { break }
 
             let end = min(start + maxConcurrentRequests, pending.count)
@@ -1548,11 +1537,6 @@ struct EPGGridView: View {
                 }
 
                 for await (streamID, result) in group {
-                    // Applichiamo SEMPRE il risultato ricevuto, anche se il Task esterno
-                    // è stato nel frattempo cancellato: il fetch è già stato eseguito,
-                    // scartarne l'esito lascerebbe lo stream bloccato in uno stato
-                    // ambiguo (né loading, né failed, né caricato) — la causa esatta
-                    // della regressione "Dati non disponibili" osservata in produzione.
                     loadingStreamIDs.remove(streamID)
 
                     switch result {
@@ -1607,16 +1591,53 @@ struct EPGGridView: View {
     }
 }
 
+// MARK: - Utility di Clip per l'Aspetto "Schede"
+
+private extension View {
+    /// Applica il clip della tile: in "Schede" usa un `UnevenRoundedRectangle` con il radius
+    /// sinistro pari a quello del banner (`bannerRadius`), così l'arco superiore-sinistro della
+    /// tile continua ESATTAMENTE l'arco superiore-destro del banner canale; in "Griglie" usa il
+    /// normale `RoundedRectangle` uniforme.
+    @ViewBuilder
+    func epgTileClip(cornerRadius: CGFloat, useUnevenLeft bannerRadius: CGFloat?) -> some View {
+        if let bannerRadius {
+            self.clipShape(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: bannerRadius,
+                    bottomLeadingRadius: bannerRadius,
+                    bottomTrailingRadius: cornerRadius,
+                    topTrailingRadius: cornerRadius,
+                    style: .continuous
+                )
+            )
+        } else {
+            self.clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+    }
+
+    /// Maschera la porzione iniziale (sinistra) del contenuto che sporgerebbe oltre il bordo
+    /// sinistro della colonna banner (x = 0 nello spazio del viewport `epgViewportCoordinateSpace`):
+    /// impedisce ALLA TILE di apparire a sinistra del banner canale durante lo scroll orizzontale
+    /// (overscroll incluso), lasciandola correttamente invisibile/nascosta sotto di esso.
+    @ViewBuilder
+    func epgClipLeadingOverflow(totalWidth: CGFloat, hiddenLeading: CGFloat) -> some View {
+        if hiddenLeading > 0 {
+            self.mask(alignment: .leading) {
+                Rectangle()
+                    .frame(width: max(0, totalWidth - hiddenLeading))
+                    .offset(x: hiddenLeading)
+            }
+        } else {
+            self
+        }
+    }
+}
+
 // MARK: - Cache & Stores
 
-/// Cache EPG in memoria, condivisa tra tutte le istanze di `EPGGridView` nello stesso processo.
-/// Deve rimanere nell'UNICO file `EPGGridView.swift` del target (non duplicata altrove).
 @MainActor
 private final class EPGMemoryCache {
     static let shared = EPGMemoryCache()
-
-    /// Limite di sicurezza sulle voci in cache per evitare crescita illimitata in memoria
-    /// durante sessioni lunghe (molti canali x molti giorni): eviction FIFO oltre la soglia.
     private let maxEntries = 400
 
     private struct Entry {
