@@ -28,26 +28,24 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 /// - Supporto per entrambe le densità di layout: "Compatta" (rowHeight 66, banner 80x58) e "Comoda" (rowHeight 96, banner 86x76).
 /// - Colori pastello adattivi, avanzamento live coordinato e voce di menu dedicata "Aspetto EPG".
 ///
-/// AGGIORNAMENTO 2026-09-20 (REPLICA MANIACALE AL 100% FEDELE AL VIDEO):
-/// 1) NOME CANALE UNICO PER RIGA: il nome del canale e il relativo badge qualità non
-///    sono più duplicati all'interno di ogni singola tile di programma. Una riga intera
-///    mostra UN SOLO nome canale (overlay ancorato alla riga con z-index elevato), che resta
-///    costantemente visibile agganciato al bordo della colonna fissa del banner laterale.
-///    Durante lo scroll orizzontale, il nome canale galleggia fluidamente sopra le tile e
-///    attraversa progressivamente i gap tra una tile e l'altra senza mai sparire o spezzarsi.
-/// 2) TRANSIZIONE E ANIMAZIONE ORARI VECCHI/NUOVI (REPLICA FEDELE AL VIDEO):
-///    - Ogni tile programma possiede il proprio orario di inizio (`program.start`), allineato a sinistra.
-///    - Quando si scorre verso destra (la tile corrente scivola verso sinistra sotto il banner),
-///      l'orario della tile corrente NON è sticky: rimane solidale con la tile e viene
-///      progressivamente coperto e ritagliato dal bordo sinistro della tile stessa (clipShape).
-///    - Sincronizzatamente, quando la tile successiva entra in vista avvicinandosi al banner,
-///      il suo orario di inizio appare naturalmente a destra del nome canale galleggiante.
-///    - Quando la tile corrente esce completamente e termina, il nome canale continua a
-///      galleggiare in posizione ferma sopra la nuova tile, con una transizione perfettamente
-///      continua e liscia al 100%.
+/// AGGIORNAMENTO 2026-09-20 (replica pixel-perfect del riferimento video):
+/// - Il nome canale viene ora diviso in "nome base" + badge qualità finale (FHD/HD/SD/4K),
+///   mostrato come pillola con bordo separata (vedi `splitNameAndQualityBadge`/`qualityBadge`).
+///   Suffissi non riconosciuti (RAW, HEVC, ecc.) restano invece testo semplice in coda al nome.
+/// - Il banner canale mostra ora anche un'icona di catch-up ("clock.arrow.circlepath") a metà
+///   altezza sul bordo destro quando lo stream ha programmi riproducibili in differita nella
+///   finestra visibile, in aggiunta alla stella dei preferiti (`hasVisibleCatchup`/`catchupBadge`).
 ///
 /// FIX 2026-09-20 (regressione "Dati non disponibili"):
-/// - Parametri di tempo, TTL, concorrenza e architettura rimangono INVARIATI al 100%.
+/// 1) I trigger reattivi (cambio identity/lista canali/preferiti) ora usano SEMPRE `scheduleReload(debounced: true)`
+///    così raffiche ravvicinate di aggiornamenti (es. catalogo che si popola in modo incrementale) non generano
+///    una cascata di cancellazioni che impedisce a un batch EPG di completarsi mai.
+/// 2) Il task group di fetch non scarta più i risultati "in ritardo" quando il Task viene cancellato: un batch
+///    già avviato viene sempre portato a termine e il suo stato applicato correttamente (niente più stream
+///    "orfani" bloccati sul messaggio di default).
+/// 3) La cache EPG e lo stato in memoria vengono ora invalidati/riscoperti in base al giorno selezionato
+///    (Ieri/Oggi/Domani), evitando di mostrare (o nascondere) dati appartenenti a un'altra finestra temporale.
+/// Parametri di tempo e numero di caricamenti concorrenti INVARIATI rispetto alla versione precedente.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -120,6 +118,9 @@ struct EPGGridView: View {
     private var pixelsPerMinute: CGFloat { halfHourPixelSpacing / 30 }
 
     /// Intercapedine visibile tra due tile di programma consecutivi nella stessa riga
+    /// (misurata sul video di riferimento: ~4pt, identica al gap verticale tra righe
+    /// generato da rowHeight - blockHeight). Non influisce sui calcoli di posizione
+    /// temporale (`xCoordinate`, sticky header): è solo un inset visivo della tile.
     private let tileHorizontalGap: CGFloat = 4
 
     /// Larghezza della colonna fissa laterale
@@ -224,26 +225,26 @@ struct EPGGridView: View {
 
     // MARK: - Nome Canale & Badge Qualità
 
+    /// Suffissi di qualità che nel video di riferimento vengono estratti dal nome canale
+    /// e mostrati come pillola separata (bordo sottile, nessun riempimento) invece che come
+    /// testo semplice in coda al nome. Tag come "RAW" o "HEVC" restano invece testo semplice.
     private static let qualityBadgeTokens: Set<String> = ["4K", "FHD", "HD", "SD"]
 
+    /// Divide il nome canale nel nome "base" e nell'eventuale badge di qualità finale.
+    /// Es: "Rai 1 FHD" -> ("Rai 1", "FHD"); "Rai 1 +1 HD" -> ("Rai 1 +1", "HD");
+    /// "Rai 1 RAW" -> ("Rai 1 RAW", nil) perché "RAW" non è un token riconosciuto.
     private static func splitNameAndQualityBadge(_ rawName: String) -> (name: String, badge: String?) {
         let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let lastSpace = trimmed.range(of: " ", options: .backwards) else {
             return (trimmed, nil)
         }
-
         let candidate = trimmed[lastSpace.upperBound...]
         let upperCandidate = candidate.uppercased()
         guard qualityBadgeTokens.contains(upperCandidate) else {
             return (trimmed, nil)
         }
-
         let base = trimmed[..<lastSpace.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !base.isEmpty else {
-            return (trimmed, nil)
-        }
-
-        return (base, upperCandidate)
+        return (base.isEmpty ? trimmed : base, upperCandidate)
     }
 
     // MARK: - Sorgenti Dati Centralizzate
@@ -310,6 +311,8 @@ struct EPGGridView: View {
         searchQuery = ""
         showFavoritesOnly = false
         renderLimit = renderPageSize
+        // Il cambio di identity generato da questa selezione farà scattare
+        // automaticamente `scheduleReload(debounced: true)` tramite l'onChange dedicato.
     }
 
     private var streamData: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String) {
@@ -338,11 +341,15 @@ struct EPGGridView: View {
         let remaining = max(0, effectiveCap - renderLimit)
 
         let ids = paged.map(\.streamId).map(String.init).joined(separator: ",")
+        // L'identity include il giorno selezionato: cambiare giorno genera sempre
+        // un nuovo ciclo di ricarica/rivalidazione della cache EPG.
         let identity = "\(groupID ?? "all")|\(selectedDayOffset)|\(ids)"
 
         return (totalFiltered, paged, canMore, remaining, identity)
     }
 
+    /// Scope di cache che include anche il giorno selezionato, per evitare che dati
+    /// di un giorno diverso vengano riusati/mostrati come validi per la finestra corrente.
     private var cacheScope: String {
         "\(Self.scopeKey(for: credentials))|d\(selectedDayOffset)"
     }
@@ -471,12 +478,16 @@ struct EPGGridView: View {
                     if currentStreamData.paged.isEmpty {
                         renderLimit = min(renderPageSize, max(streams.count, 1))
                     }
+                    // Debounced: evita che un catalogo che si popola in modo incrementale
+                    // generi una cascata di cancellazioni che impedisce il completamento del fetch EPG.
                     scheduleReload(debounced: true)
                 }
                 .onChange(of: currentStreamData.identity) { _, _ in
                     scheduleReload(debounced: true)
                 }
                 .onChange(of: selectedDayOffset) { _, _ in
+                    // Il giorno selezionato è cambiato: lo stato in memoria appartiene alla
+                    // vecchia finestra temporale, va scartato per forzare una rivalutazione pulita.
                     programsByStream.removeAll()
                     failedStreamIDs.removeAll()
                     loadingStreamIDs.removeAll()
@@ -619,7 +630,7 @@ struct EPGGridView: View {
         .clipped()
     }
 
-    // MARK: - Righe Canali, Tile Programmi e Nome Canale Galleggiante
+    // MARK: - Righe Canali e Tile Programmi
 
     private func timelineRow(for stream: XtreamStream) -> some View {
         let programs = visiblePrograms(for: stream)
@@ -628,72 +639,14 @@ struct EPGGridView: View {
             if programs.isEmpty {
                 unavailableBlock(for: stream)
             } else {
-                // 1) Griglia tile dei programmi: sfondo, titolo del programma e orario proprio
                 ForEach(Array(programs.enumerated()), id: \.element.id) { index, program in
                     let nextStart = index + 1 < programs.count ? programs[index + 1].start : nil
                     programBlock(program, stream: stream, nextProgramStart: nextStart)
                 }
-
-                // 2) NOME CANALE UNICO PER RIGA (OVERLAY STICKY FLUIDO):
-                // compare una sola volta all'altezza della riga corrente, resta fermo
-                // agganciato al margine sinistro del banner laterale durante lo scroll
-                // e attraversa fluidamente le tile e i relativi gap con zIndex superiore.
-                stickyChannelNameOverlay(for: stream, programs: programs)
-                    .zIndex(5)
             }
         }
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
         .clipped()
-    }
-
-    /// Overlay del nome canale unico per la riga:
-    /// Calcola la posizione del blocco programmi visibile nella riga per ancorarsi al bordo
-    /// sinistro visibile (`bannerColumnWidth`) e rimanere fluido e visibile al 100%.
-    private func stickyChannelNameOverlay(
-        for stream: XtreamStream,
-        programs: [EPGProgram]
-    ) -> some View {
-        guard let first = programs.first, let last = programs.last else {
-            return AnyView(EmptyView())
-        }
-
-        let firstStartX = xCoordinate(for: max(first.start, windowStart))
-        let lastEndX = xCoordinate(for: min(last.end, windowEnd))
-        let rowSpanWidth = max(0, lastEndX - firstStartX)
-
-        let nameParts = Self.splitNameAndQualityBadge(stream.name)
-        let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
-
-        return GeometryReader { geo in
-            let frameInViewport = geo.frame(in: .named("epgViewportCoordinateSpace"))
-            let rowMinX = frameInViewport.minX
-
-            // Distanza tra il bordo del banner fisso e l'inizio della riga in coordinate canvas
-            let overlap = max(0, bannerColumnWidth - rowMinX)
-            let maxSticky = max(0, rowSpanWidth - 60)
-            let stickyX = min(overlap, maxSticky)
-
-            HStack(spacing: 6) {
-                Text(nameParts.name)
-                    .font(.system(
-                        size: layoutDensity == .compact ? 13 : 11,
-                        weight: .semibold,
-                        design: .rounded
-                    ))
-                    .foregroundStyle(.white.opacity(layoutDensity == .compact ? 1.0 : 0.70))
-                    .lineLimit(1)
-
-                if let badge = nameParts.badge {
-                    qualityBadge(badge, fontSize: layoutDensity == .compact ? 11 : 10)
-                }
-            }
-            .padding(.horizontal, layoutDensity == .compact ? 10 : 13)
-            .padding(.top, layoutDensity == .compact ? 8 : 8)
-            .offset(x: stickyX)
-            .allowsHitTesting(false) // I tocchi passano sotto alle tile dei programmi
-        }
-        .frame(width: rowSpanWidth, height: blockHeight, alignment: .topLeading)
-        .offset(x: firstStartX)
     }
 
     /// Banner Canale Adattivo con avvio immediato a latenza zero
@@ -754,7 +707,9 @@ struct EPGGridView: View {
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
-    /// Vero se lo stream ha in questo momento (o nella finestra visibile) almeno un programma con catchup
+    /// Vero se lo stream ha in questo momento (o nella finestra visibile) almeno un
+    /// programma riproducibile in differita: mostra l'icona "clock.arrow.circlepath"
+    /// a metà altezza sul bordo destro del banner, come nel video di riferimento.
     private func hasVisibleCatchup(for stream: XtreamStream) -> Bool {
         visiblePrograms(for: stream).contains { $0.hasArchive }
     }
@@ -805,12 +760,7 @@ struct EPGGridView: View {
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// Tile del programma:
-    /// - Gestisce la larghezza e lo sfondo della singola trasmissione
-    /// - Mostra l'orario proprio della trasmissione e il titolo del programma
-    /// - L'orario e il titolo sono solidali con la tile e vengono progressivamente coperti
-    ///   dal bordo arrotondato della tile stessa durante lo scorrimento verso destra,
-    ///   esattamente identico al video di riferimento.
+    /// Tile del programma con supporto alle modalità Compatta e Comoda
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
@@ -829,34 +779,45 @@ struct EPGGridView: View {
             endX = calculatedEndX
         }
 
-        let totalWidth = max(32, endX - startX)
-        let tileVisualWidth = max(0, totalWidth - tileHorizontalGap)
+        let width = max(32, endX - startX)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
         return GeometryReader { geo in
             let frameInViewport = geo.frame(in: .named("epgViewportCoordinateSpace"))
             let tileMinX = frameInViewport.minX
 
-            // Calcolo del ritaglio e dell'animazione del titolo programma:
-            // il titolo programma si sposta leggermente per restare leggibile
-            // mentre l'orario scorre verso sinistra venendo coperto dal bordo.
+            // Sticky "puro", senza rilascio anticipato: il nome canale/orario resta
+            // agganciato al bordo della colonna banner per l'intera durata in cui questa
+            // tile è quella "corrente" (dal momento in cui il suo bordo sinistro la
+            // supera, fino a quando il suo bordo destro la raggiunge). Non c'è alcuno
+            // scorrimento percepito nel frattempo: lo spostamento compensa esattamente
+            // lo scroll, quindi sullo schermo il testo resta fermo (esattamente come nel
+            // video di riferimento). Il "cambio" alla tile successiva non è quindi
+            // un'animazione separata: è il naturale passaggio di sticky quando il bordo
+            // di QUESTA tile (clipShape locale, 0...width) la ritaglia esattamente nello
+            // stesso istante in cui la tile successiva raggiunge overlap > 0 e comincia
+            // a mostrare, ferma nello stesso punto, la propria intestazione.
             let overlap = max(0, bannerColumnWidth - tileMinX)
-            let maxSticky = max(0, tileVisualWidth - 60)
-            let titleStickyX = min(overlap, maxSticky)
+            let stickyX = min(overlap, width)
 
             Button {
                 selectedProgram = SelectedProgram(program: program, stream: stream)
             } label: {
+                let nameParts = Self.splitNameAndQualityBadge(stream.name)
+
                 Group {
                     if layoutDensity == .compact {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
-                                // Spazio riservato al nome canale galleggiante (trasparente qui)
-                                Spacer(minLength: 0)
-                                    .frame(width: 2)
+                                Text(nameParts.name)
+                                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
 
-                                // Orario proprio del programma: solidale con la tile, scorre a sinistra
-                                // e viene coperto progressivamente dal bordo della tile
+                                if let badge = nameParts.badge {
+                                    qualityBadge(badge, fontSize: 11)
+                                }
+
                                 Text(program.start.formatted(date: .omitted, time: .shortened))
                                     .font(.system(size: 13, weight: .medium, design: .rounded))
                                     .foregroundStyle(.white.opacity(0.60))
@@ -868,35 +829,40 @@ struct EPGGridView: View {
                                 .foregroundStyle(.white.opacity(0.92))
                                 .lineLimit(1)
                                 .truncationMode(.tail)
-                                .offset(x: titleStickyX)
                         }
                         .padding(.horizontal, 10)
-                        .padding(.top, 8)
-                        .frame(width: tileVisualWidth, height: blockHeight, alignment: .topLeading)
+                        .offset(x: stickyX)
+                        .frame(width: width, height: blockHeight, alignment: .leading)
                     } else {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
-                                Spacer(minLength: 0)
-                                    .frame(width: 2)
-
-                                Text(program.start.formatted(date: .omitted, time: .shortened))
-                                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                                    .foregroundStyle(.white.opacity(0.55))
+                                Text(nameParts.name)
+                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(.white.opacity(0.70))
                                     .lineLimit(1)
+
+                                if let badge = nameParts.badge {
+                                    qualityBadge(badge, fontSize: 10)
+                                }
                             }
+
+                            Text(program.start.formatted(date: .omitted, time: .shortened))
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.55))
+                                .lineLimit(1)
 
                             Text(program.title)
                                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
-                                .offset(x: titleStickyX)
 
                             Spacer(minLength: 0)
                         }
                         .padding(.horizontal, 13)
                         .padding(.vertical, 8)
-                        .frame(width: tileVisualWidth, height: blockHeight, alignment: .topLeading)
+                        .offset(x: stickyX)
+                        .frame(width: width, height: blockHeight, alignment: .topLeading)
                     }
                 }
             }
@@ -906,19 +872,21 @@ struct EPGGridView: View {
                     stream: stream,
                     program: program,
                     tileStartX: startX,
-                    tileWidth: tileVisualWidth
+                    tileWidth: width
                 )
+                .frame(width: max(0, width - tileHorizontalGap))
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
-        .frame(width: totalWidth, height: blockHeight)
+        .frame(width: width, height: blockHeight)
         .offset(x: startX)
         .accessibilityLabel(
             "\(stream.name), \(program.title), dalle \(program.start.formatted(date: .omitted, time: .shortened)) alle \(program.end.formatted(date: .omitted, time: .shortened))"
         )
     }
 
-    /// Pillola badge qualità (es. "FHD", "HD", "SD", "4K")
+    /// Pillola badge qualità (es. "FHD", "HD", "SD", "4K"): bordo sottile, nessun riempimento,
+    /// stesso colore attenuato del nome canale — esattamente come nel video di riferimento.
     private func qualityBadge(_ text: String, fontSize: CGFloat) -> some View {
         Text(text)
             .font(.system(size: fontSize, weight: .semibold, design: .rounded))
@@ -1152,6 +1120,9 @@ struct EPGGridView: View {
 
     // MARK: - Gestione Dati e Riproduzione Live Istantanea a Latenza Zero
 
+    /// Avvia la riproduzione live del canale in modo istantaneo a latenza zero:
+    /// - Apre direttamente `AdaptivePlayerView` in fullScreenCover sopra l'EPG, esattamente come avviene da Home.
+    /// - Nessuna animazione di chiusura modale intermedia, nessun ritardo o chiamata asincrona ridondante.
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
@@ -1227,6 +1198,12 @@ struct EPGGridView: View {
         await reloadEPG(forceRefresh: true)
     }
 
+    /// Programma una ricarica dell'EPG, cancellando quella eventualmente in corso.
+    /// - Parameter debounced: quando `true` attende `searchDebounceNanoseconds` prima di
+    ///   eseguire realmente il fetch, in modo da assorbire raffiche di cambi di stato
+    ///   (catalogo che si popola in modo incrementale, cambi rapidi di filtro/giorno)
+    ///   evitando che ogni singolo cambiamento cancelli e riavvii il caricamento EPG
+    ///   prima che un batch riesca mai a completarsi (causa della regressione "Dati non disponibili").
     private func scheduleReload(forceRefresh: Bool = false, debounced: Bool = false) {
         reloadTaskBox.task?.cancel()
         reloadTaskBox.task = Task { @MainActor in
@@ -1289,6 +1266,10 @@ struct EPGGridView: View {
         let scope = cacheScope
 
         for start in stride(from: 0, to: pending.count, by: maxConcurrentRequests) {
+            // Controlliamo la cancellazione solo PRIMA di avviare un nuovo batch:
+            // un batch già in volo (max `maxConcurrentRequests` richieste, invariato)
+            // viene sempre portato a termine e il suo esito applicato per intero,
+            // in modo che nessuno stream resti "orfano" (né loading, né failed, né caricato).
             guard !Task.isCancelled else { break }
 
             let end = min(start + maxConcurrentRequests, pending.count)
@@ -1315,6 +1296,11 @@ struct EPGGridView: View {
                 }
 
                 for await (streamID, result) in group {
+                    // Applichiamo SEMPRE il risultato ricevuto, anche se il Task esterno
+                    // è stato nel frattempo cancellato: il fetch è già stato eseguito,
+                    // scartarne l'esito lascerebbe lo stream bloccato in uno stato
+                    // ambiguo (né loading, né failed, né caricato) — la causa esatta
+                    // della regressione "Dati non disponibili" osservata in produzione.
                     loadingStreamIDs.remove(streamID)
 
                     switch result {
