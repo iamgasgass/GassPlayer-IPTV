@@ -46,9 +46,30 @@ struct XtreamAuthResponse: Codable {
         }
     }
 
+    /// FIX 2026-09-20: prima `ServerInfo` usava la sintetizzazione
+    /// automatica di `Decodable` con `url`/`port` come `String` rigide.
+    /// Esattamente come `UserInfo` sopra (e per lo stesso identico motivo
+    /// documentato nel suo commento), alcuni pannelli Xtream inviano
+    /// `port` come numero JSON invece che come stringa: con la
+    /// sintetizzazione automatica questo faceva fallire l'INTERA
+    /// `XtreamAuthResponse` — bloccando login e la schermata "Gestisci
+    /// sorgente" — per un campo che ha senso recuperare in modo tollerante
+    /// come già avviene ovunque altrove in questo file.
     struct ServerInfo: Codable {
         let url: String
         let port: String
+
+        enum CodingKeys: String, CodingKey {
+            case url
+            case port
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+
+            url = container.decodeFlexibleString(forKey: .url) ?? ""
+            port = container.decodeFlexibleString(forKey: .port) ?? ""
+        }
     }
 
     let userInfo: UserInfo
