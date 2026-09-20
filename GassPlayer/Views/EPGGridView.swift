@@ -641,7 +641,12 @@ struct EPGGridView: View {
             } else {
                 ForEach(Array(programs.enumerated()), id: \.element.id) { index, program in
                     let nextStart = index + 1 < programs.count ? programs[index + 1].start : nil
-                    programBlock(program, stream: stream, nextProgramStart: nextStart)
+                    programBlock(
+                        program,
+                        stream: stream,
+                        nextProgramStart: nextStart,
+                        isFirstVisibleProgram: index == programs.startIndex
+                    )
                 }
             }
         }
@@ -760,11 +765,82 @@ struct EPGGridView: View {
         .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
-    /// Tile del programma con supporto alle modalità Compatta e Comoda
+    /// Layout scroll-linked della riga superiore in modalità Compatta.
+    /// L'orario della tile futura nasce sul suo margine iniziale e viene spinto
+    /// progressivamente nella posizione finale dalla comparsa del nome canale.
+    private struct SlidingCompactHeaderLayout: Layout {
+        let pinnedNameOffset: CGFloat
+        let keepsNaturalCurrentPosition: Bool
+        private let itemSpacing: CGFloat = 6
+
+        func sizeThatFits(
+            proposal: ProposedViewSize,
+            subviews: Subviews,
+            cache: inout ()
+        ) -> CGSize {
+            guard subviews.count == 2 else {
+                return proposal.replacingUnspecifiedDimensions()
+            }
+
+            let nameSize = subviews[0].sizeThatFits(.unspecified)
+            let timeSize = subviews[1].sizeThatFits(.unspecified)
+            return CGSize(
+                width: proposal.width ?? (nameSize.width + itemSpacing + timeSize.width),
+                height: max(nameSize.height, timeSize.height)
+            )
+        }
+
+        func placeSubviews(
+            in bounds: CGRect,
+            proposal: ProposedViewSize,
+            subviews: Subviews,
+            cache: inout ()
+        ) {
+            guard subviews.count == 2 else { return }
+
+            let nameSize = subviews[0].sizeThatFits(.unspecified)
+            let timeSize = subviews[1].sizeThatFits(.unspecified)
+            let finalTimeX = nameSize.width + itemSpacing
+
+            let nameX: CGFloat
+            let timeX: CGFloat
+
+            if keepsNaturalCurrentPosition && pinnedNameOffset < 0 {
+                // La prima tile è già corrente all'apertura: nome e orario restano
+                // immediatamente visibili nelle rispettive posizioni naturali.
+                nameX = 0
+                timeX = finalTimeX
+            } else if pinnedNameOffset < 0 {
+                // Tile futura: il nome è ancora oltre il bordo sinistro della tile.
+                // L'orario parte da zero e avanza esattamente della porzione di nome
+                // che entra, fino a raggiungere senza salto la posizione definitiva.
+                nameX = pinnedNameOffset
+                timeX = min(max(finalTimeX + pinnedNameOffset, 0), finalTimeX)
+            } else {
+                // Tile corrente: nome e orario sono agganciati insieme al bordo fisso.
+                nameX = pinnedNameOffset
+                timeX = pinnedNameOffset + finalTimeX
+            }
+
+            subviews[0].place(
+                at: CGPoint(x: bounds.minX + nameX, y: bounds.midY),
+                anchor: .leading,
+                proposal: ProposedViewSize(nameSize)
+            )
+            subviews[1].place(
+                at: CGPoint(x: bounds.minX + timeX, y: bounds.midY),
+                anchor: .leading,
+                proposal: ProposedViewSize(timeSize)
+            )
+        }
+    }
+
+    /// Tile del programma con transizioni scroll-linked di nome canale e orari.
     private func programBlock(
         _ program: EPGProgram,
         stream: XtreamStream,
-        nextProgramStart: Date?
+        nextProgramStart: Date?,
+        isFirstVisibleProgram: Bool
     ) -> some View {
         let clippedStart = max(program.start, windowStart)
         let clippedEnd = min(program.end, windowEnd)
@@ -780,110 +856,253 @@ struct EPGGridView: View {
         }
 
         let width = max(32, endX - startX)
-        let contentLeadingInset: CGFloat = layoutDensity == .compact ? 10 : 13
+        let visibleWidth = max(0, width - tileHorizontalGap)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
         return GeometryReader { geo in
-            let frameInViewport = geo.frame(in: .named("epgViewportCoordinateSpace"))
-            let tileMinX = frameInViewport.minX
-
-            // Sticky "puro", senza rilascio anticipato: il nome canale/orario resta
-            // agganciato al bordo della colonna banner per l'intera durata in cui questa
-            // tile è quella "corrente" (dal momento in cui il suo bordo sinistro la
-            // supera, fino a quando il suo bordo destro la raggiunge). Non c'è alcuno
-            // scorrimento percepito nel frattempo: lo spostamento compensa esattamente
-            // lo scroll, quindi sullo schermo il testo resta fermo (esattamente come nel
-            // video di riferimento). Il "cambio" alla tile successiva non è quindi
-            // un'animazione separata: è il naturale passaggio di sticky quando il bordo
-            // di QUESTA tile (clipShape locale, 0...width) la ritaglia esattamente nello
-            // stesso istante in cui la tile successiva raggiunge overlap > 0 e comincia
-            // a mostrare, ferma nello stesso punto, la propria intestazione.
+            let tileMinX = geo.frame(in: .named("epgViewportCoordinateSpace")).minX
             let overlap = max(0, bannerColumnWidth - tileMinX)
-            let stickyX = min(overlap, width)
+            let stickyContentX = min(overlap, visibleWidth)
+            let pinnedNameX = bannerColumnWidth - tileMinX
+            let keepsNaturalCurrentPosition = isFirstVisibleProgram && tileMinX > bannerColumnWidth
 
             Button {
                 selectedProgram = SelectedProgram(program: program, stream: stream)
             } label: {
                 let nameParts = Self.splitNameAndQualityBadge(stream.name)
 
-                Group {
+                ZStack(alignment: .topLeading) {
                     if layoutDensity == .compact {
+                        // Nome e orario sono elementi distinti dello stesso layout: l'orario
+                        // futuro è sempre visibile all'inizio della tile e si sposta in modo
+                        // continuo mentre il nome viene progressivamente rivelato.
                         VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Text(nameParts.name)
-                                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
+                            SlidingCompactHeaderLayout(
+                                pinnedNameOffset: pinnedNameX,
+                                keepsNaturalCurrentPosition: keepsNaturalCurrentPosition
+                            ) {
+                                HStack(spacing: 6) {
+                                    Text(nameParts.name)
+                                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(.white)
+                                        .lineLimit(1)
 
-                                if let badge = nameParts.badge {
-                                    qualityBadge(badge, fontSize: 11)
+                                    if let badge = nameParts.badge {
+                                        qualityBadge(badge, fontSize: 11)
+                                    }
                                 }
+                                .fixedSize(horizontal: true, vertical: false)
 
                                 Text(program.start.formatted(date: .omitted, time: .shortened))
                                     .font(.system(size: 13, weight: .medium, design: .rounded))
                                     .foregroundStyle(.white.opacity(0.60))
                                     .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
                             }
 
                             Text(program.title)
                                 .font(.system(size: 14, weight: .regular, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.92))
                                 .lineLimit(1)
-                                .truncationMode(.tail)
+                                .hidden()
                         }
                         .padding(.horizontal, 10)
-                        .offset(x: stickyX)
-                        .frame(width: width, height: blockHeight, alignment: .leading)
+                        .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
+
+                        // Il titolo conserva posizione e sticky originali.
+                        compactProgramTitle(
+                            nameParts: nameParts,
+                            program: program
+                        )
+                        .offset(x: stickyContentX)
+                        .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
                     } else {
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Text(nameParts.name)
-                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(.white.opacity(0.70))
-                                    .lineLimit(1)
+                        // In modalità Comoda l'orario occupa già l'inizio della propria riga;
+                        // nome, orario e titolo mantengono le animazioni scroll-linked esistenti.
+                        comfortableProgramName(
+                            nameParts: nameParts,
+                            program: program
+                        )
+                        .offset(
+                            x: keepsNaturalCurrentPosition
+                                ? 0
+                                : pinnedNameX
+                        )
+                        .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
 
-                                if let badge = nameParts.badge {
-                                    qualityBadge(badge, fontSize: 10)
-                                }
-                            }
+                        comfortableProgramTime(
+                            nameParts: nameParts,
+                            program: program
+                        )
+                        .offset(x: stickyContentX)
+                        .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
 
-                            Text(program.start.formatted(date: .omitted, time: .shortened))
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.55))
-                                .lineLimit(1)
-
-                            Text(program.title)
-                                .font(.system(size: 16, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 8)
-                        .offset(x: stickyX)
-                        .frame(width: width, height: blockHeight, alignment: .topLeading)
+                        comfortableProgramTitle(
+                            nameParts: nameParts,
+                            program: program
+                        )
+                        .offset(x: stickyContentX)
+                        .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
                     }
                 }
+                .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
+                .background {
+                    programTileBackground(
+                        stream: stream,
+                        program: program,
+                        tileStartX: startX,
+                        tileWidth: visibleWidth
+                    )
+                }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
             .buttonStyle(.plain)
-            .background {
-                programTileBackground(
-                    stream: stream,
-                    program: program,
-                    tileStartX: startX,
-                    tileWidth: width
-                )
-                .frame(width: max(0, width - tileHorizontalGap))
-            }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .frame(width: width, height: blockHeight, alignment: .leading)
         }
         .frame(width: width, height: blockHeight)
         .offset(x: startX)
         .accessibilityLabel(
             "\(stream.name), \(program.title), dalle \(program.start.formatted(date: .omitted, time: .shortened)) alle \(program.end.formatted(date: .omitted, time: .shortened))"
         )
+    }
+
+    private func compactProgramTitle(
+        nameParts: (name: String, badge: String?),
+        program: EPGProgram
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(nameParts.name)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+
+                if let badge = nameParts.badge {
+                    qualityBadge(badge, fontSize: 11)
+                }
+
+                Text(program.start.formatted(date: .omitted, time: .shortened))
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .lineLimit(1)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .hidden()
+
+            Text(program.title)
+                .font(.system(size: 14, weight: .regular, design: .rounded))
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .padding(.horizontal, 10)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func comfortableProgramName(
+        nameParts: (name: String, badge: String?),
+        program: EPGProgram
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(nameParts.name)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.70))
+                    .lineLimit(1)
+
+                if let badge = nameParts.badge {
+                    qualityBadge(badge, fontSize: 10)
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+
+            Text(program.start.formatted(date: .omitted, time: .shortened))
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .lineLimit(1)
+                .hidden()
+
+            Text(program.title)
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+                .hidden()
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func comfortableProgramTime(
+        nameParts: (name: String, badge: String?),
+        program: EPGProgram
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(nameParts.name)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+
+                if let badge = nameParts.badge {
+                    qualityBadge(badge, fontSize: 10)
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .hidden()
+
+            Text(program.start.formatted(date: .omitted, time: .shortened))
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.55))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            Text(program.title)
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+                .hidden()
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func comfortableProgramTitle(
+        nameParts: (name: String, badge: String?),
+        program: EPGProgram
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(nameParts.name)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+
+                if let badge = nameParts.badge {
+                    qualityBadge(badge, fontSize: 10)
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .hidden()
+
+            Text(program.start.formatted(date: .omitted, time: .shortened))
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .hidden()
+
+            Text(program.title)
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     /// Pillola badge qualità (es. "FHD", "HD", "SD", "4K"): bordo sottile, nessun riempimento,
