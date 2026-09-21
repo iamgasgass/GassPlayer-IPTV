@@ -22,28 +22,6 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
-/// Assetto della colonna canale nella griglia EPG selezionabile dall'utente.
-enum EPGCardStyle: String, CaseIterable, Identifiable {
-    case grid = "griglia"
-    case card = "scheda"
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .grid: return "Griglia"
-        case .card: return "Scheda"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .grid: return "square.grid.2x2"
-        case .card: return "rectangle.on.rectangle"
-        }
-    }
-}
-
 /// EPG touch-first ultra-ottimizzata con riproduzione nativa immediata a latenza zero:
 /// - Avvio streaming istantaneo su banner canale: elimina ogni ritardo, dispatch o transizione modale ridondante.
 /// - Il tocco sul banner canale attiva direttamente `livePlayback` (`AdaptivePlayerView`) a latenza zero, esattamente come in EPG da Home.
@@ -78,7 +56,6 @@ struct EPGGridView: View {
     @StateObject private var favorites: EPGFavoritesStore
 
     @AppStorage("epg_layout_density") private var layoutDensity: EPGLayoutDensity = .compact
-    @AppStorage("epg_card_style") private var cardStyle: EPGCardStyle = .grid
 
     @State private var programsByStream: [Int: [EPGProgram]] = [:]
     @State private var failedStreamIDs = Set<Int>()
@@ -148,11 +125,15 @@ struct EPGGridView: View {
 
     /// Larghezza della colonna fissa laterale
     private var bannerColumnWidth: CGFloat {
-        bannerInset + channelBannerWidth + bannerInset
+        // OTTIMIZZAZIONE 2026-09-21: rimosso l'inset a destra del banner canale nella
+        // colonna canale (resta solo l'inset sinistro/leading, coerente col titolo del
+        // giorno). Il banner ora tocca il bordo destro della colonna, subito prima
+        // dell'inizio della timeline orizzontale.
+        bannerInset + channelBannerWidth
     }
 
     private var bannerContentWidth: CGFloat {
-        bannerColumnWidth - (bannerInset * 2)
+        bannerColumnWidth - bannerInset
     }
 
     /// Finestra temporale: 30 minuti passati, 3 ore future. (INVARIATA)
@@ -723,12 +704,15 @@ struct EPGGridView: View {
             }
             .frame(width: channelBannerWidth, height: bannerHeight)
             .overlay(alignment: .trailing) {
-                if cardStyle == .grid && hasVisibleCatchup(for: stream) {
+                if hasVisibleCatchup(for: stream) {
                     catchupBadge
                         .offset(x: channelBannerWidth * 0.14)
                 }
             }
-            .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
+            // OTTIMIZZAZIONE 2026-09-21: allineamento a sinistra invece che centrato,
+            // con il solo inset leading (nessun inset a destra del banner nella colonna).
+            .padding(.leading, bannerInset)
+            .frame(width: bannerColumnWidth, height: rowHeight, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1247,18 +1231,6 @@ struct EPGGridView: View {
                     .pickerStyle(.inline)
                 } label: {
                     Label("Aspetto EPG", systemImage: "aspectratio")
-                }
-
-                Menu {
-                    Picker("Assetti EPG", selection: $cardStyle) {
-                        ForEach(EPGCardStyle.allCases) { style in
-                            Label(style.title, systemImage: style.icon)
-                                .tag(style)
-                        }
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    Label("Assetti EPG", systemImage: "rectangle.on.rectangle")
                 }
 
                 Divider()
