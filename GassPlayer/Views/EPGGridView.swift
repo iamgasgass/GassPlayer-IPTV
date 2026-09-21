@@ -22,6 +22,30 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
+/// Assetto della colonna canale selezionabile dall'utente: "Griglia" replica esattamente
+/// la vista storica (inset simmetrico attorno al banner canale), mentre "Scheda" rimuove
+/// solo l'inset a destra del banner nella colonna canale (resta il solo inset sinistro).
+enum EPGChannelCardStyle: String, CaseIterable, Identifiable {
+    case grid = "griglia"
+    case card = "scheda"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .grid: return "Griglia"
+        case .card: return "Scheda"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .grid: return "rectangle.grid.2x2"
+        case .card: return "rectangle.portrait.on.rectangle.portrait"
+        }
+    }
+}
+
 /// EPG touch-first ultra-ottimizzata con riproduzione nativa immediata a latenza zero:
 /// - Avvio streaming istantaneo su banner canale: elimina ogni ritardo, dispatch o transizione modale ridondante.
 /// - Il tocco sul banner canale attiva direttamente `livePlayback` (`AdaptivePlayerView`) a latenza zero, esattamente come in EPG da Home.
@@ -56,6 +80,7 @@ struct EPGGridView: View {
     @StateObject private var favorites: EPGFavoritesStore
 
     @AppStorage("epg_layout_density") private var layoutDensity: EPGLayoutDensity = .compact
+    @AppStorage("epg_channel_card_style") private var channelCardStyle: EPGChannelCardStyle = .grid
 
     @State private var programsByStream: [Int: [EPGProgram]] = [:]
     @State private var failedStreamIDs = Set<Int>()
@@ -123,17 +148,39 @@ struct EPGGridView: View {
     /// temporale (`xCoordinate`, sticky header): è solo un inset visivo della tile.
     private let tileHorizontalGap: CGFloat = 4
 
-    /// Larghezza della colonna fissa laterale
+    /// Larghezza della colonna fissa laterale.
+    /// - "Griglia" (INVARIATA): inset simmetrico bannerInset su entrambi i lati del banner.
+    /// - "Scheda": solo inset sinistro, il banner tocca il bordo destro della colonna.
     private var bannerColumnWidth: CGFloat {
-        // OTTIMIZZAZIONE 2026-09-21: rimosso l'inset a destra del banner canale nella
-        // colonna canale (resta solo l'inset sinistro/leading, coerente col titolo del
-        // giorno). Il banner ora tocca il bordo destro della colonna, subito prima
-        // dell'inizio della timeline orizzontale.
-        bannerInset + channelBannerWidth
+        switch channelCardStyle {
+        case .grid:
+            return bannerInset + channelBannerWidth + bannerInset
+        case .card:
+            return bannerInset + channelBannerWidth
+        }
     }
 
     private var bannerContentWidth: CGFloat {
-        bannerColumnWidth - bannerInset
+        switch channelCardStyle {
+        case .grid:
+            return bannerColumnWidth - (bannerInset * 2)
+        case .card:
+            return bannerColumnWidth - bannerInset
+        }
+    }
+
+    /// Allineamento orizzontale del banner canale entro `bannerColumnWidth`: centrato in
+    /// "Griglia" (comportamento originale invariato), a sinistra in "Scheda" (nessun inset
+    /// a destra del banner nella colonna canale).
+    private var channelBannerColumnAlignment: Alignment {
+        channelCardStyle == .grid ? .center : .leading
+    }
+
+    /// Padding sinistro aggiuntivo applicato al banner prima del frame di colonna: zero in
+    /// "Griglia" (il centering storico genera già l'inset simmetrico), pari a `bannerInset`
+    /// in "Scheda" per mantenere l'inset sinistro mentre quello destro viene eliminato.
+    private var channelBannerLeadingPadding: CGFloat {
+        channelCardStyle == .grid ? 0 : bannerInset
     }
 
     /// Finestra temporale: 30 minuti passati, 3 ore future. (INVARIATA)
@@ -709,10 +756,11 @@ struct EPGGridView: View {
                         .offset(x: channelBannerWidth * 0.14)
                 }
             }
-            // OTTIMIZZAZIONE 2026-09-21: allineamento a sinistra invece che centrato,
-            // con il solo inset leading (nessun inset a destra del banner nella colonna).
-            .padding(.leading, bannerInset)
-            .frame(width: bannerColumnWidth, height: rowHeight, alignment: .leading)
+            // "Griglia": leadingPadding 0 + alignment .center => centering storico invariato.
+            // "Scheda": leadingPadding bannerInset + alignment .leading => nessun inset a
+            // destra del banner nella colonna canale (solo inset sinistro + banner).
+            .padding(.leading, channelBannerLeadingPadding)
+            .frame(width: bannerColumnWidth, height: rowHeight, alignment: channelBannerColumnAlignment)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1231,6 +1279,18 @@ struct EPGGridView: View {
                     .pickerStyle(.inline)
                 } label: {
                     Label("Aspetto EPG", systemImage: "aspectratio")
+                }
+
+                Menu {
+                    Picker("Assetti EPG", selection: $channelCardStyle) {
+                        ForEach(EPGChannelCardStyle.allCases) { style in
+                            Label(style.title, systemImage: style.icon)
+                                .tag(style)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("Assetti EPG", systemImage: "rectangle.grid.1x2.fill")
                 }
 
                 Divider()
