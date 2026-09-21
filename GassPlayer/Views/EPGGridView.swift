@@ -22,23 +22,24 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
     }
 }
 
-enum EPGTileAppearance: String, CaseIterable, Identifiable {
-    case grids = "griglie"
-    case cards = "schede"
+/// Assetto della colonna canale nella griglia EPG selezionabile dall'utente.
+enum EPGCardStyle: String, CaseIterable, Identifiable {
+    case grid = "griglia"
+    case card = "scheda"
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .grids: return "Griglia"
-        case .cards: return "Scheda"
+        case .grid: return "Griglia"
+        case .card: return "Scheda"
         }
     }
 
     var icon: String {
         switch self {
-        case .grids: return "square.grid.3x3"
-        case .cards: return "rectangle.on.rectangle"
+        case .grid: return "square.grid.2x2"
+        case .card: return "rectangle.on.rectangle"
         }
     }
 }
@@ -67,14 +68,6 @@ enum EPGTileAppearance: String, CaseIterable, Identifiable {
 /// 3) La cache EPG e lo stato in memoria vengono ora invalidati/riscoperti in base al giorno selezionato
 ///    (Ieri/Oggi/Domani), evitando di mostrare (o nascondere) dati appartenenti a un'altra finestra temporale.
 /// Parametri di tempo e numero di caricamenti concorrenti INVARIATI rispetto alla versione precedente.
-///
-/// AGGIORNAMENTO 2026-09-21:
-/// - Il menu "Aspetto Tile" nella toolbar è stato rinominato "Assetti EPG" (posizionato subito
-///   dopo "Aspetto EPG", invariato nella struttura) e le opzioni sono state rinominate in
-///   "Griglia" (comportamento identico alla precedente "Griglie": inset alla destra del banner
-///   canale, NON modificato) e "Scheda" (comportamento identico alla precedente "Schede": nessun
-///   inset nella colonna banner canale). Nessuna logica di layout è stata alterata: si tratta
-///   esclusivamente di una rietichettatura dei testi visualizzati nel menu.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -85,7 +78,7 @@ struct EPGGridView: View {
     @StateObject private var favorites: EPGFavoritesStore
 
     @AppStorage("epg_layout_density") private var layoutDensity: EPGLayoutDensity = .compact
-    @AppStorage("epg_tile_appearance") private var tileAppearance: EPGTileAppearance = .grids
+    @AppStorage("epg_card_style") private var cardStyle: EPGCardStyle = .grid
 
     @State private var programsByStream: [Int: [EPGProgram]] = [:]
     @State private var failedStreamIDs = Set<Int>()
@@ -153,21 +146,13 @@ struct EPGGridView: View {
     /// temporale (`xCoordinate`, sticky header): è solo un inset visivo della tile.
     private let tileHorizontalGap: CGFloat = 4
 
-    /// Larghezza della colonna fissa laterale. "Griglia" conserva entrambi gli
-    /// inset originali; "Scheda" elimina esclusivamente quello a destra del banner.
+    /// Larghezza della colonna fissa laterale
     private var bannerColumnWidth: CGFloat {
-        bannerInset + channelBannerWidth + (tileAppearance == .grids ? bannerInset : 0)
+        bannerInset + channelBannerWidth + bannerInset
     }
 
     private var bannerContentWidth: CGFloat {
-        channelBannerWidth
-    }
-
-    /// In "Scheda" la tile arretra sotto il solo radius destro del banner.
-    /// La sovrapposizione elimina ogni fessura senza spostare testi, timeline o scroll.
-    private var tileLeadingExtension: CGFloat {
-        guard tileAppearance == .cards else { return 0 }
-        return layoutDensity == .compact ? 14 : 16
+        bannerColumnWidth - (bannerInset * 2)
     }
 
     /// Finestra temporale: 30 minuti passati, 3 ore future. (INVARIATA)
@@ -276,15 +261,13 @@ struct EPGGridView: View {
         guard let lastSpace = trimmed.range(of: " ", options: .backwards) else {
             return (trimmed, nil)
         }
-
         let candidate = trimmed[lastSpace.upperBound...]
         let upperCandidate = candidate.uppercased()
         guard qualityBadgeTokens.contains(upperCandidate) else {
             return (trimmed, nil)
         }
-
         let base = trimmed[..<lastSpace.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
-        return base.isEmpty ? (trimmed, nil) : (base, upperCandidate)
+        return (base.isEmpty ? trimmed : base, upperCandidate)
     }
 
     // MARK: - Sorgenti Dati Centralizzate
@@ -607,7 +590,6 @@ struct EPGGridView: View {
                 }
             }
         }
-        .scrollClipDisabled(tileAppearance == .cards)
     }
 
     private func fixedDayAndChannelColumn(pagedStreams: [XtreamStream]) -> some View {
@@ -631,12 +613,6 @@ struct EPGGridView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Giorno: \(dayTitle)")
             }
-            .background(alignment: .leading) {
-                if tileAppearance == .cards {
-                    Color.black
-                        .frame(width: bannerColumnWidth, height: timelineHeaderHeight)
-                }
-            }
 
             if pagedStreams.isEmpty {
                 Color.clear.frame(width: bannerColumnWidth, height: 1)
@@ -646,7 +622,7 @@ struct EPGGridView: View {
                 }
             }
         }
-        .background(tileAppearance == .grids ? Color.black : Color.clear)
+        .background(Color.black)
     }
 
     /// Header orari su Canvas con disegno immediato e freccia live allineata
@@ -747,20 +723,15 @@ struct EPGGridView: View {
             }
             .frame(width: channelBannerWidth, height: bannerHeight)
             .overlay(alignment: .trailing) {
-                if hasVisibleCatchup(for: stream) {
+                if cardStyle == .grid && hasVisibleCatchup(for: stream) {
                     catchupBadge
                         .offset(x: channelBannerWidth * 0.14)
                 }
             }
-            .frame(
-                width: bannerColumnWidth,
-                height: rowHeight,
-                alignment: tileAppearance == .cards ? .trailing : .center
-            )
+            .frame(width: bannerColumnWidth, height: rowHeight, alignment: .center)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .zIndex(1)
         .accessibilityLabel("Guarda \(stream.name) in diretta")
     }
 
@@ -804,11 +775,7 @@ struct EPGGridView: View {
         }
         .font(.system(size: layoutDensity == .compact ? 14 : 15, weight: .medium, design: .rounded))
         .foregroundStyle(.white.opacity(0.65))
-        .padding(
-            .leading,
-            (layoutDensity == .compact ? 14 : 18) + tileLeadingExtension
-        )
-        .padding(.trailing, layoutDensity == .compact ? 14 : 18)
+        .padding(.horizontal, layoutDensity == .compact ? 14 : 18)
         .frame(height: blockHeight)
         .background {
             ZStack {
@@ -818,18 +785,7 @@ struct EPGGridView: View {
                     .fill(channelColor.opacity(0.12))
             }
         }
-        .frame(
-            width: canvasWidth + tileLeadingExtension,
-            height: rowHeight,
-            alignment: .leading
-        )
-        .offset(x: -tileLeadingExtension)
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: layoutDensity == .compact ? 12 : 18,
-                style: .continuous
-            )
-        )
+        .frame(width: canvasWidth, height: rowHeight, alignment: .leading)
     }
 
     /// Layout scroll-linked della riga superiore in modalità Compatta.
@@ -923,10 +879,7 @@ struct EPGGridView: View {
         }
 
         let width = max(32, endX - startX)
-        let extensionWidth = tileLeadingExtension
         let visibleWidth = max(0, width - tileHorizontalGap)
-        let renderedWidth = visibleWidth + extensionWidth
-        let contentLeadingInset: CGFloat = layoutDensity == .compact ? 10 : 13
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
         return GeometryReader { geo in
@@ -975,65 +928,58 @@ struct EPGGridView: View {
                                 .lineLimit(1)
                                 .hidden()
                         }
-                        .padding(.leading, contentLeadingInset)
-                        .padding(.trailing, 10)
+                        .padding(.horizontal, 10)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
-                        .offset(x: extensionWidth)
 
                         // Il titolo conserva posizione e sticky originali.
                         compactProgramTitle(
                             nameParts: nameParts,
-                            program: program,
-                            leadingInset: contentLeadingInset
+                            program: program
                         )
                         .offset(x: stickyContentX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .leading)
-                        .offset(x: extensionWidth)
                     } else {
                         // In modalità Comoda l'orario occupa già l'inizio della propria riga;
                         // nome, orario e titolo mantengono le animazioni scroll-linked esistenti.
                         comfortableProgramName(
                             nameParts: nameParts,
-                            program: program,
-                            leadingInset: contentLeadingInset
+                            program: program
                         )
-                        .offset(x: keepsNaturalCurrentPosition ? 0 : pinnedNameX)
+                        .offset(
+                            x: keepsNaturalCurrentPosition
+                                ? 0
+                                : pinnedNameX
+                        )
                         .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
-                        .offset(x: extensionWidth)
 
                         comfortableProgramTime(
                             nameParts: nameParts,
-                            program: program,
-                            leadingInset: contentLeadingInset
+                            program: program
                         )
                         .offset(x: stickyContentX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
-                        .offset(x: extensionWidth)
 
                         comfortableProgramTitle(
                             nameParts: nameParts,
-                            program: program,
-                            leadingInset: contentLeadingInset
+                            program: program
                         )
                         .offset(x: stickyContentX)
                         .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
-                        .offset(x: extensionWidth)
                     }
                 }
-                .frame(width: renderedWidth, height: blockHeight, alignment: .topLeading)
+                .frame(width: visibleWidth, height: blockHeight, alignment: .topLeading)
                 .background {
                     programTileBackground(
                         stream: stream,
                         program: program,
-                        tileStartX: startX - extensionWidth,
-                        tileWidth: renderedWidth
+                        tileStartX: startX,
+                        tileWidth: visibleWidth
                     )
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
             .buttonStyle(.plain)
-            .frame(width: renderedWidth, height: blockHeight, alignment: .leading)
-            .offset(x: -extensionWidth)
+            .frame(width: width, height: blockHeight, alignment: .leading)
         }
         .frame(width: width, height: blockHeight)
         .offset(x: startX)
@@ -1044,93 +990,142 @@ struct EPGGridView: View {
 
     private func compactProgramTitle(
         nameParts: (name: String, badge: String?),
-        program: EPGProgram,
-        leadingInset: CGFloat
+        program: EPGProgram
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(nameParts.name).font(.system(size: 13, weight: .semibold, design: .rounded)).lineLimit(1)
-                if let badge = nameParts.badge { qualityBadge(badge, fontSize: 11) }
+                Text(nameParts.name)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+
+                if let badge = nameParts.badge {
+                    qualityBadge(badge, fontSize: 11)
+                }
+
                 Text(program.start.formatted(date: .omitted, time: .shortened))
-                    .font(.system(size: 13, weight: .medium, design: .rounded)).lineLimit(1)
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .lineLimit(1)
             }
             .fixedSize(horizontal: true, vertical: false)
             .hidden()
 
             Text(program.title)
                 .font(.system(size: 14, weight: .regular, design: .rounded))
-                .foregroundStyle(.white.opacity(0.92)).lineLimit(1).truncationMode(.tail)
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
-        .padding(.leading, leadingInset).padding(.trailing, 10)
-        .allowsHitTesting(false).accessibilityHidden(true)
+        .padding(.horizontal, 10)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private func comfortableProgramName(
         nameParts: (name: String, badge: String?),
-        program: EPGProgram,
-        leadingInset: CGFloat
+        program: EPGProgram
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Text(nameParts.name)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.70)).lineLimit(1)
-                if let badge = nameParts.badge { qualityBadge(badge, fontSize: 10) }
+                    .foregroundStyle(.white.opacity(0.70))
+                    .lineLimit(1)
+
+                if let badge = nameParts.badge {
+                    qualityBadge(badge, fontSize: 10)
+                }
             }
             .fixedSize(horizontal: true, vertical: false)
+
             Text(program.start.formatted(date: .omitted, time: .shortened))
-                .font(.system(size: 12, weight: .medium, design: .rounded)).lineLimit(1).hidden()
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .lineLimit(1)
+                .hidden()
+
             Text(program.title)
-                .font(.system(size: 16, weight: .semibold, design: .rounded)).lineLimit(1).hidden()
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+                .hidden()
+
             Spacer(minLength: 0)
         }
-        .padding(.leading, leadingInset).padding(.trailing, 13).padding(.vertical, 8)
-        .allowsHitTesting(false).accessibilityHidden(true)
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private func comfortableProgramTime(
         nameParts: (name: String, badge: String?),
-        program: EPGProgram,
-        leadingInset: CGFloat
+        program: EPGProgram
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(nameParts.name).font(.system(size: 11, weight: .semibold, design: .rounded)).lineLimit(1)
-                if let badge = nameParts.badge { qualityBadge(badge, fontSize: 10) }
+                Text(nameParts.name)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+
+                if let badge = nameParts.badge {
+                    qualityBadge(badge, fontSize: 10)
+                }
             }
-            .fixedSize(horizontal: true, vertical: false).hidden()
+            .fixedSize(horizontal: true, vertical: false)
+            .hidden()
+
             Text(program.start.formatted(date: .omitted, time: .shortened))
                 .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.55)).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                .foregroundStyle(.white.opacity(0.55))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
             Text(program.title)
-                .font(.system(size: 16, weight: .semibold, design: .rounded)).lineLimit(1).hidden()
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+                .hidden()
+
             Spacer(minLength: 0)
         }
-        .padding(.leading, leadingInset).padding(.trailing, 13).padding(.vertical, 8)
-        .allowsHitTesting(false).accessibilityHidden(true)
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private func comfortableProgramTitle(
         nameParts: (name: String, badge: String?),
-        program: EPGProgram,
-        leadingInset: CGFloat
+        program: EPGProgram
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(nameParts.name).font(.system(size: 11, weight: .semibold, design: .rounded)).lineLimit(1)
-                if let badge = nameParts.badge { qualityBadge(badge, fontSize: 10) }
+                Text(nameParts.name)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+
+                if let badge = nameParts.badge {
+                    qualityBadge(badge, fontSize: 10)
+                }
             }
-            .fixedSize(horizontal: true, vertical: false).hidden()
+            .fixedSize(horizontal: true, vertical: false)
+            .hidden()
+
             Text(program.start.formatted(date: .omitted, time: .shortened))
-                .font(.system(size: 12, weight: .medium, design: .rounded)).lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false).hidden()
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .hidden()
+
             Text(program.title)
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white).lineLimit(1).truncationMode(.tail)
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
             Spacer(minLength: 0)
         }
-        .padding(.leading, leadingInset).padding(.trailing, 13).padding(.vertical, 8)
-        .allowsHitTesting(false).accessibilityHidden(true)
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     /// Pillola badge qualità (es. "FHD", "HD", "SD", "4K"): bordo sottile, nessun riempimento,
@@ -1255,15 +1250,15 @@ struct EPGGridView: View {
                 }
 
                 Menu {
-                    Picker("Assetti EPG", selection: $tileAppearance) {
-                        ForEach(EPGTileAppearance.allCases) { appearance in
-                            Label(appearance.title, systemImage: appearance.icon)
-                                .tag(appearance)
+                    Picker("Assetti EPG", selection: $cardStyle) {
+                        ForEach(EPGCardStyle.allCases) { style in
+                            Label(style.title, systemImage: style.icon)
+                                .tag(style)
                         }
                     }
                     .pickerStyle(.inline)
                 } label: {
-                    Label("Assetti EPG", systemImage: "rectangle.3.group")
+                    Label("Assetti EPG", systemImage: "rectangle.on.rectangle")
                 }
 
                 Divider()
@@ -1387,7 +1382,6 @@ struct EPGGridView: View {
         if dismissSheetFirst {
             selectedProgram = nil
         }
-
         if let streamURL = makeLiveStreamURL(for: stream) {
             self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
         }
@@ -1449,7 +1443,6 @@ struct EPGGridView: View {
             reminderToast = "Abilita le notifiche per ricevere promemoria."
             return
         }
-
         ReminderService.shared.scheduleReminder(for: program, minutesBefore: 5)
         reminderToast = "Promemoria impostato per \"\(program.title)\""
         selectedProgram = nil
@@ -1536,6 +1529,7 @@ struct EPGGridView: View {
 
             let end = min(start + maxConcurrentRequests, pending.count)
             let batch = Array(pending[start..<end])
+
             for stream in batch {
                 loadingStreamIDs.insert(stream.streamId)
             }
@@ -1614,54 +1608,54 @@ struct EPGGridView: View {
         }
         return String(digest, radix: 16)
     }
-}
 
-// MARK: - Cache & Stores
+    // MARK: - Cache & Stores
 
-@MainActor
-private final class EPGMemoryCache {
-    static let shared = EPGMemoryCache()
+    @MainActor
+    private final class EPGMemoryCache {
+        static let shared = EPGMemoryCache()
 
-    private struct Entry {
-        let programs: [EPGProgram]
-    }
-
-    private var storage: [String: Entry] = [:]
-
-    private func key(scope: String, streamId: Int) -> String {
-        "\(scope)#\(streamId)"
-    }
-
-    func programs(scope: String, streamId: Int) -> [EPGProgram]? {
-        storage[key(scope: scope, streamId: streamId)]?.programs
-    }
-
-    func store(scope: String, streamId: Int, programs: [EPGProgram]) {
-        storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs)
-    }
-}
-
-@MainActor
-private final class EPGFavoritesStore: ObservableObject {
-    @Published private(set) var favoriteStreamIDs: Set<Int>
-    private let key: String
-
-    init(scopeKey: String) {
-        key = "gassplayer.epgFavorites.\(scopeKey)"
-        favoriteStreamIDs = Set(UserDefaults.standard.array(forKey: key) as? [Int] ?? [])
-    }
-
-    func isFavorite(_ streamID: Int) -> Bool {
-        favoriteStreamIDs.contains(streamID)
-    }
-
-    func toggle(_ streamID: Int) {
-        if favoriteStreamIDs.contains(streamID) {
-            favoriteStreamIDs.remove(streamID)
-        } else {
-            favoriteStreamIDs.insert(streamID)
+        private struct Entry {
+            let programs: [EPGProgram]
         }
-        UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
+
+        private var storage: [String: Entry] = [:]
+
+        private func key(scope: String, streamId: Int) -> String {
+            "\(scope)#\(streamId)"
+        }
+
+        func programs(scope: String, streamId: Int) -> [EPGProgram]? {
+            storage[key(scope: scope, streamId: streamId)]?.programs
+        }
+
+        func store(scope: String, streamId: Int, programs: [EPGProgram]) {
+            storage[key(scope: scope, streamId: streamId)] = Entry(programs: programs)
+        }
+    }
+
+    @MainActor
+    private final class EPGFavoritesStore: ObservableObject {
+        @Published private(set) var favoriteStreamIDs: Set<Int>
+        private let key: String
+
+        init(scopeKey: String) {
+            key = "gassplayer.epgFavorites.\(scopeKey)"
+            favoriteStreamIDs = Set(UserDefaults.standard.array(forKey: key) as? [Int] ?? [])
+        }
+
+        func isFavorite(_ streamID: Int) -> Bool {
+            favoriteStreamIDs.contains(streamID)
+        }
+
+        func toggle(_ streamID: Int) {
+            if favoriteStreamIDs.contains(streamID) {
+                favoriteStreamIDs.remove(streamID)
+            } else {
+                favoriteStreamIDs.insert(streamID)
+            }
+            UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
+        }
     }
 }
 
