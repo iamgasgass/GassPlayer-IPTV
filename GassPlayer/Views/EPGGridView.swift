@@ -70,6 +70,30 @@ enum EPGChannelCardStyle: String, CaseIterable, Identifiable {
 /// 3) La cache EPG e lo stato in memoria vengono ora invalidati/riscoperti in base al giorno selezionato
 ///    (Ieri/Oggi/Domani), evitando di mostrare (o nascondere) dati appartenenti a un'altra finestra temporale.
 /// Parametri di tempo e numero di caricamenti concorrenti INVARIATI rispetto alla versione precedente.
+///
+/// AGGIORNAMENTO 2026-09-21 (limite esatto al "sconfinamento" della tile verso il banner):
+/// - Le tile dei programmi hanno di nuovo i corner radius pieni su tutti e quattro i lati,
+///   in ogni istante e in entrambi gli assetti (rimossa la precedente squadratura degli
+///   angoli sinistri): `programBlock` usa un'unica `RoundedRectangle` invariata.
+/// - Lo `ScrollView` orizzontale non usa più `.scrollClipDisabled()` senza limiti: il suo bordo
+///   sinistro viene invece spostato di un valore fisso e limitato (`tileBleedExtraWidth`),
+///   così il contenuto scorrevole (incluso il riempimento della tile) può disegnarsi solo fino
+///   a un punto preciso oltre il bordo della colonna fissa del banner, MAI oltre:
+///   • "Griglia": nessun margine aggiuntivo, clip esattamente al bordo destro della colonna
+///     banner canale (`bannerColumnWidth`) — comportamento identico all'originale.
+///   • "Scheda": margine aggiuntivo pari a metà larghezza del banner, clip esattamente alla
+///     metà del banner canale — la tile può coprire il proprio lato destro fin sotto il
+///     banner (che resta sempre sopra con zIndex 10) ma non prosegue mai oltre il suo centro,
+///     né tantomeno oltre il suo bordo sinistro.
+/// - In modalità "Comoda" la tile ha ora la STESSA altezza del banner canale (`blockHeight`
+///   allineato a `bannerHeight`, 76pt), eliminando il margine verticale residuo che in questa
+///   densità lasciava scoperta una sottile striscia sopra/sotto la tile vicino al banner.
+///
+/// AGGIORNAMENTO 2026-09-22 (badge qualità esteso a "Full HD"):
+/// - `splitNameAndQualityBadge` riconosce ora anche il suffisso di due parole "Full HD"
+///   (case-insensitive) come sinonimo di "FHD": viene estratto e mostrato con la stessa
+///   identica pillola (bordo sottile, nessun riempimento) usata per 4K/FHD/HD/SD, invece di
+///   restare testo semplice in coda al nome canale. Nessun'altra logica è stata toccata.
 struct EPGGridView: View {
     let credentials: XtreamCredentials
     let kind: XtreamStreamKind
@@ -122,8 +146,11 @@ struct EPGGridView: View {
         layoutDensity == .compact ? 58 : 76
     }
 
+    /// Altezza della tile del programma: allineata esattamente a `bannerHeight` in entrambe
+    /// le densità, così tile e banner canale condividono sempre la stessa altezza (nessun
+    /// margine verticale residuo tra i due, in "Compatta" come in "Comoda").
     private var blockHeight: CGFloat {
-        layoutDensity == .compact ? 58 : 82
+        bannerHeight
     }
 
     private var rowHeight: CGFloat {
@@ -181,6 +208,22 @@ struct EPGGridView: View {
     /// in "Scheda" per mantenere l'inset sinistro mentre quello destro viene eliminato.
     private var channelBannerLeadingPadding: CGFloat {
         channelCardStyle == .grid ? 0 : bannerInset
+    }
+
+    /// Ampiezza aggiuntiva (verso sinistra, oltre il normale bordo della colonna fissa) fino
+    /// a cui può disegnarsi il contenuto dello ScrollView orizzontale (tile incluse): definisce
+    /// un limite esatto e invalicabile, MAI un'estensione libera.
+    /// - "Griglia": zero — clip esattamente al bordo destro della colonna banner canale.
+    /// - "Scheda": metà larghezza del banner — clip esattamente alla metà del banner canale,
+    ///   così la tile non prosegue mai oltre il centro del banner (né, a maggior ragione, oltre
+    ///   il suo bordo sinistro).
+    private var tileBleedExtraWidth: CGFloat {
+        switch channelCardStyle {
+        case .grid:
+            return 0
+        case .card:
+            return channelBannerWidth / 2
+        }
     }
 
     /// Finestra temporale: 30 minuti passati, 3 ore future. (INVARIATA)
@@ -284,8 +327,19 @@ struct EPGGridView: View {
     /// Divide il nome canale nel nome "base" e nell'eventuale badge di qualità finale.
     /// Es: "Rai 1 FHD" -> ("Rai 1", "FHD"); "Rai 1 +1 HD" -> ("Rai 1 +1", "HD");
     /// "Rai 1 RAW" -> ("Rai 1 RAW", nil) perché "RAW" non è un token riconosciuto.
+    /// "Rai 1 Full HD" -> ("Rai 1", "FHD"): il suffisso di due parole "Full HD" (case-insensitive)
+    /// è riconosciuto come sinonimo di "FHD" e riceve la stessa identica pillola badge.
     private static func splitNameAndQualityBadge(_ rawName: String) -> (name: String, badge: String?) {
         let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let words = trimmed.split(separator: " ")
+        if words.count >= 2,
+           words[words.count - 2].uppercased() == "FULL",
+           words[words.count - 1].uppercased() == "HD" {
+            let base = words.dropLast(2).joined(separator: " ")
+            return (base.isEmpty ? trimmed : base, "FHD")
+        }
+
         guard let lastSpace = trimmed.range(of: " ", options: .backwards) else {
             return (trimmed, nil)
         }
@@ -617,6 +671,11 @@ struct EPGGridView: View {
                     }
                 }
             }
+            // Sposta il bordo sinistro dello ScrollView di un valore fisso e limitato
+            // (`tileBleedExtraWidth`, zero in "Griglia", metà banner in "Scheda"): il clip
+            // naturale dello ScrollView diventa così il limite esatto e invalicabile oltre il
+            // quale nessuna tile può mai disegnarsi, evitando qualunque sconfinamento libero.
+            .padding(.leading, -tileBleedExtraWidth)
         }
     }
 
@@ -641,16 +700,24 @@ struct EPGGridView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Giorno: \(dayTitle)")
             }
+            // Sfondo nero opaco dedicato SOLO all'header (titolo del giorno): a differenza
+            // delle righe canale sottostanti, l'header non deve mai lasciare trasparire il
+            // contenuto scorrevole dietro di sé.
+            .frame(width: bannerColumnWidth, alignment: .leading)
+            .background(Color.black)
 
             if pagedStreams.isEmpty {
                 Color.clear.frame(width: bannerColumnWidth, height: 1)
             } else {
                 ForEach(pagedStreams) { stream in
+                    // Nessuno sfondo opaco qui: l'area della riga attorno al banner resta
+                    // trasparente, in modo che l'eventuale margine di sovrapposizione della
+                    // tile (`tileBleedExtraWidth`, comunque sempre nascosto sotto il banner
+                    // stesso) non lasci mai vedere nero dietro ai bordi arrotondati del banner.
                     channelBanner(stream)
                 }
             }
         }
-        .background(Color.black)
     }
 
     /// Header orari su Canvas con disegno immediato e freccia live allineata
