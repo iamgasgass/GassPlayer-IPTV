@@ -337,6 +337,18 @@ struct ChannelGridView: View {
                 toolbarContent
             }
             .task(id: sourceIdentity) {
+                // Se il catalogo e' stato svuotato (es. "Svuota cache
+                // catalogo" nelle Impostazioni) mentre questa vista era
+                // gia' presente, `sourceIdentity` puo' restare invariato
+                // (la sorgente attiva non cambia) e nessun'altra vista
+                // richiede piu' un caricamento: senza questa chiamata la
+                // schermata resta bloccata su "Caricamento playlist…" pur
+                // non effettuando piu' alcuna richiesta di rete.
+                // `loadIfNeeded` e' innocuo da richiamare qui: se il
+                // catalogo e' gia' caricato per questa sorgente torna
+                // immediatamente senza rifare alcuna richiesta.
+                await xtreamCatalog.loadIfNeeded(credentials: credentials)
+
                 rebuildIndexIfNeeded()
 
                 guard kind == .live else { return }

@@ -826,7 +826,7 @@ struct AddPlaylistView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     typeSection
 
-                    if let type {
+                    if type != nil {
                         fieldBlock(title: "Dai un nome a questa playlist") {
                             TextField("es. La mia playlist", text: $name)
                                 .textInputAutocapitalization(.words)

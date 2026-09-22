@@ -107,9 +107,11 @@ struct PlayerView: View {
                     Button("Impostazioni buffer", systemImage: "dial.low") { showBufferSettings = true }
                     Button("Audio e sottotitoli", systemImage: "text.bubble") { showTrackPicker = true }
                 } label: {
-                    GlassIconButton(systemImage: "ellipsis") {}
-                        .allowsHitTesting(false)
+                    GlassIconGlyph(systemImage: "ellipsis")
                 }
+                .menuStyle(.button)
+                .modifier(NativeOrLegacyGlassCircle(tint: nil, isInSystemToolbar: false))
+                .accessibilityLabel("Altre opzioni")
             }
             .padding(.horizontal)
             .padding(.top, 8)
