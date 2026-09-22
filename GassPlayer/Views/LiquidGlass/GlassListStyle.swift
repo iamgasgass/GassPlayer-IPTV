@@ -106,14 +106,26 @@ struct GlassSourceIcon: View {
     }
 }
 
-/// Contenuto di riga in stile Liquid Glass per un `NavigationLink`: icona in
-/// cerchio colorato + titolo, senza il proprio `Button` (il tocco e la
-/// chevron sono già forniti dal `NavigationLink` che lo ospita).
+/// Contenuto di riga in stile Liquid Glass per un `NavigationLink` (o
+/// `ShareLink`): icona in cerchio colorato + titolo, senza il proprio
+/// `Button`.
+///
+/// FIX — coerenza con `GlassSettingsRow` (usata ad es. da "Aggiungi
+/// playlist"): fuori da una `List`, `NavigationLink`/`ShareLink` NON
+/// disegnano da soli alcuna chevron, e senza un `contentShape` esplicito
+/// l'area toccabile si limita ai soli pixel disegnati (icona e testo),
+/// escludendo lo spazio vuoto verso il bordo destro occupato dallo
+/// `Spacer()`. Aggiunte qui la stessa chevron e lo stesso
+/// `.contentShape(Rectangle())` già usati da `GlassSettingsRow`, cosi'
+/// ogni riga costruita con questa label (es. "Gestisci sorgenti") ha la
+/// stessa freccia e la stessa area di tocco a tutta larghezza delle righe
+/// costruite con `GlassSettingsRow` (es. "Aggiungi playlist").
 struct GlassSourceRowLabel: View {
     let icon: String
     let title: String
     var subtitle: String? = nil
     let tint: Color
+    var showChevron: Bool = true
 
     var body: some View {
         HStack(spacing: 14) {
@@ -133,8 +145,15 @@ struct GlassSourceRowLabel: View {
             }
 
             Spacer()
+
+            if showChevron {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.vertical, 13)
+        .contentShape(Rectangle())
     }
 }
 

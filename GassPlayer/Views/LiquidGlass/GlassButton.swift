@@ -10,10 +10,7 @@ struct GlassIconButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: size * 0.41, weight: .semibold))
-                .frame(width: size, height: size)
-                .contentShape(Circle())
+            GlassIconGlyph(systemImage: systemImage, size: size)
         }
         .modifier(
             NativeOrLegacyGlassCircle(
@@ -25,7 +22,25 @@ struct GlassIconButton: View {
     }
 }
 
-private struct NativeOrLegacyGlassCircle: ViewModifier {
+/// Solo il glifo di `GlassIconButton` (icona + frame + `contentShape`),
+/// senza alcun `Button` attorno: pensato per essere usato come `label` di
+/// un `Menu` che deve avere lo stesso aspetto ma senza innestarvi un
+/// `Button` proprio. Un `Button` dentro la label di un `Menu` intercetta
+/// il gesto e impedisce l'apertura del menu stesso: è esattamente il bug
+/// che aveva reso irraggiungibili tutte le voci del menu "…" nel player.
+struct GlassIconGlyph: View {
+    let systemImage: String
+    var size: CGFloat = 44
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: size * 0.41, weight: .semibold))
+            .frame(width: size, height: size)
+            .contentShape(Circle())
+    }
+}
+
+struct NativeOrLegacyGlassCircle: ViewModifier {
     let tint: Color?
     let isInSystemToolbar: Bool
 
