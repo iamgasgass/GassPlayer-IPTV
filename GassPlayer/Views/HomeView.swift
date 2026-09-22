@@ -55,6 +55,7 @@ struct HomeView: View {
     @EnvironmentObject private var sourceManager: SourceManager
     @EnvironmentObject private var contentManagement: ContentManagementService
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
+    @EnvironmentObject private var m3uStore: M3UPlaylistStore
     @EnvironmentObject private var recentlyWatched: RecentlyWatchedStore
 
     @ObservedObject private var epgManager = EPGManager.shared
@@ -106,6 +107,7 @@ struct HomeView: View {
                         .environmentObject(sourceManager)
                         .environmentObject(contentManagement)
                         .environmentObject(xtreamCatalog)
+                        .environmentObject(m3uStore)
                 }
             }
             .fullScreenCover(item: $resumeItem) { item in
@@ -485,7 +487,13 @@ struct HomeView: View {
                             }
                         }
                     } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath")
+                        // FIX — "arrow.triangle.2.circlepath" richiama uno
+                        // "aggiorna/sincronizza", fuorviante per un Menu che
+                        // in realtà fa scegliere la sorgente attiva da un
+                        // elenco: "chevron.up.chevron.down" è l'icona
+                        // standard di un selettore/picker, molto più
+                        // coerente con l'azione reale del pulsante.
+                        Image(systemName: "chevron.up.chevron.down")
                             .font(.subheadline.weight(.semibold))
                             .frame(width: 32, height: 32)
                     }

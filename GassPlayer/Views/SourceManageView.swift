@@ -12,6 +12,7 @@ struct SourceManageView: View {
     @EnvironmentObject private var sourceManager: SourceManager
     @EnvironmentObject private var contentManagement: ContentManagementService
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
+    @EnvironmentObject private var m3uStore: M3UPlaylistStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var accountInfo: XtreamAuthResponse.UserInfo?
@@ -75,15 +76,9 @@ struct SourceManageView: View {
                     .environmentObject(contentManagement)
             }
             .fullScreenCover(isPresented: $showManageEPG) {
-                if let credentials = currentSource.xtreamCredentials {
-                    EPGGridView(credentials: credentials, kind: .live)
-                        .environmentObject(xtreamCatalog)
-                } else {
-                    ContentUnavailableView(
-                        "Guida EPG non disponibile",
-                        systemImage: "tv.slash"
-                    )
-                }
+                EPGManageView()
+                    .environmentObject(sourceManager)
+                    .environmentObject(xtreamCatalog)
             }
             .alert("EPG non disponibile", isPresented: $showEPGUnavailableAlert) {
                 Button("OK", role: .cancel) {}
@@ -225,30 +220,82 @@ struct SourceManageView: View {
         }
     }
 
+    /// FIX — "Ricarica" verificava soltanto le credenziali (account info +
+    /// `authenticate()`), senza mai toccare il catalogo effettivo: la
+    /// playlist mostrata in Live TV/VOD/Serie TV restava quella già in
+    /// cache, per cui "Ricarica" non ricaricava davvero nulla. Ora, quando
+    /// questa e' la sorgente attiva (quella la cui playlist e' mostrata
+    /// nell'app), forza anche un fetch completo e non cacheato del
+    /// catalogo Xtream o della playlist M3U. Per una sorgente non attiva
+    /// resta solo la verifica delle credenziali: sovrascrivere il
+    /// catalogo/la playlist condivisi con i dati di una sorgente diversa
+    /// da quella attualmente mostrata creerebbe un disallineamento tra lo
+    /// stato dell'app e i tab Live TV/VOD/Serie TV.
     @MainActor
     private func reload() async {
         guard !isReloading else { return }
         isReloading = true
         defer { isReloading = false }
 
-        await loadAccountInfo()
+        let isActiveSource = sourceManager.activeSourceId == currentSource.id
 
-        guard let credentials = currentSource.xtreamCredentials else {
-            reloadFeedback = "Sorgente aggiornata."
+        if let credentials = currentSource.xtreamCredentials {
+            await loadAccountInfo()
+
+            if isActiveSource {
+                await xtreamCatalog.refresh(credentials: credentials)
+
+                if case .failed(let message) = xtreamCatalog.state {
+                    sourceManager.recordVerification(for: currentSource, succeeded: false)
+                    reloadFeedback = "Ricaricamento non riuscito: \(message)"
+                } else {
+                    sourceManager.recordVerification(for: currentSource, succeeded: true)
+                    reloadFeedback = "Playlist ricaricata."
+                }
+                return
+            }
+
+            do {
+                _ = try await XtreamAPIService(credentials: credentials).authenticate()
+                sourceManager.recordVerification(for: currentSource, succeeded: true)
+                reloadFeedback = "Sorgente aggiornata: le credenziali sono valide."
+            } catch let error as XtreamError {
+                sourceManager.recordVerification(for: currentSource, succeeded: false)
+                reloadFeedback = error.errorDescription ?? "Aggiornamento non riuscito."
+            } catch {
+                sourceManager.recordVerification(for: currentSource, succeeded: false)
+                reloadFeedback = "Aggiornamento non riuscito: \(error.localizedDescription)"
+            }
             return
         }
 
-        do {
-            _ = try await XtreamAPIService(credentials: credentials).authenticate()
-            sourceManager.recordVerification(for: currentSource, succeeded: true)
-            reloadFeedback = "Sorgente aggiornata: le credenziali sono valide."
-        } catch let error as XtreamError {
-            sourceManager.recordVerification(for: currentSource, succeeded: false)
-            reloadFeedback = error.errorDescription ?? "Aggiornamento non riuscito."
-        } catch {
-            sourceManager.recordVerification(for: currentSource, succeeded: false)
-            reloadFeedback = "Aggiornamento non riuscito: \(error.localizedDescription)"
+        if let url = m3uPlaylistURL {
+            if isActiveSource {
+                await m3uStore.reload(url: url)
+                reloadFeedback = m3uStore.errorMessage ?? "Playlist ricaricata."
+            } else {
+                reloadFeedback = "Sorgente aggiornata."
+            }
+            return
         }
+
+        reloadFeedback = "Sorgente aggiornata."
+    }
+
+    /// Stesso parsing usato da `ContentView` per ricavare l'URL della
+    /// playlist M3U di una sorgente dal campo `host`.
+    private var m3uPlaylistURL: URL? {
+        guard currentSource.type == .m3u8 else { return nil }
+
+        let normalized = currentSource.host.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let url = URL(string: normalized),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+
+        return url
     }
 
     private func openManageEPG() {

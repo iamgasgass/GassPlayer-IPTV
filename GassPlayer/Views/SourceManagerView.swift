@@ -11,6 +11,7 @@ struct SourceManagerView: View {
     @EnvironmentObject private var sourceManager: SourceManager
     @EnvironmentObject private var contentManagement: ContentManagementService
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
+    @EnvironmentObject private var m3uStore: M3UPlaylistStore
 
     @State private var managingSource: MediaSourceConfig?
 
@@ -50,6 +51,7 @@ struct SourceManagerView: View {
                 .environmentObject(sourceManager)
                 .environmentObject(contentManagement)
                 .environmentObject(xtreamCatalog)
+                .environmentObject(m3uStore)
         }
     }
 

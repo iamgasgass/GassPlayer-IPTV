@@ -427,7 +427,6 @@ struct SourcesView: View {
             icon: "plus.square.on.square",
             title: "Crea playlist unita",
             tint: .purple,
-            showChevron: false,
             isDisabled: sourceManager.sources.count < 2
         ) {
             showMergeSheet = true
@@ -497,8 +496,7 @@ struct SourcesView: View {
         GlassSettingsRow(
             icon: "square.and.arrow.down",
             title: "Importa sorgenti (JSON)",
-            tint: .blue,
-            showChevron: false
+            tint: .blue
         ) {
             importText = ""
             showImportSheet = true
