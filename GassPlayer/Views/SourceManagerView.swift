@@ -25,13 +25,7 @@ struct SourceManagerView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    // FIX — il chevron delle righe risultava troppo attaccato
-                    // al bordo della scheda: il padding interno della
-                    // GlassCard era troppo stretto (6pt). Portato a 16pt,
-                    // in linea con la spaziatura usata nel resto dell'app,
-                    // così il chevron ha lo stesso margine dal bordo che ha
-                    // in SourcesView.
-                    GlassCard(padding: 16) {
+                    GlassCard(padding: 6) {
                         VStack(spacing: 0) {
                             ForEach(Array(sourceManager.sources.enumerated()), id: \.element.id) { index, source in
                                 if index > 0 {
@@ -39,10 +33,16 @@ struct SourceManagerView: View {
                                 }
 
                                 sourceRow(source)
+                                    // FIX — la chevron risultava troppo attaccata al bordo
+                                    // della scheda: il padding orizzontale della riga era di
+                                    // soli 6pt (più i 6pt interni di GlassCard), mentre le
+                                    // righe con chevron di SourcesView (tramite `.glassTab`)
+                                    // usano un inset di 16pt. Portato a 16pt per lo stesso
+                                    // respiro, senza toccare altezza o padding verticale.
+                                    .padding(.horizontal, 16)
                             }
                         }
                     }
-                    .padding(.horizontal, 6)
                 }
             }
             .padding(.horizontal, 20)
