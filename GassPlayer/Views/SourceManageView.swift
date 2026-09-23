@@ -184,15 +184,10 @@ struct SourceManageView: View {
 
                     GlassRowDivider()
 
-                    GlassSettingsRow(icon: "trash", title: "Cancella", tint: .red, showChevron: false) {
+                    GlassSettingsRow(icon: "trash", title: "Cancella", tint: .red) {
                         showDeleteConfirm = true
                     }
                 }
-                // FIX — con il padding di default della GlassCard (necessario
-                // per allineare il chevron come in HomeView) lo spazio verticale
-                // sopra "Ricarica" e sotto "Cancella" era diventato eccessivo.
-                // Compensato solo sull'asse verticale, senza toccare quello
-                // orizzontale (che regola la posizione del chevron).
                 .padding(.vertical, -8)
             }
             .padding(.horizontal, 6)

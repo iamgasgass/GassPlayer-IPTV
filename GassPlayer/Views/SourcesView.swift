@@ -86,7 +86,6 @@ struct SourcesView: View {
             if lhs.isPinned != rhs.isPinned {
                 return lhs.isPinned && !rhs.isPinned
             }
-
             return false
         }
     }
@@ -287,7 +286,6 @@ struct SourcesView: View {
                 icon: "square.stack.3d.up.fill",
                 title: "Guarda tutte le liste insieme",
                 tint: .red,
-                showChevron: false,
                 isDisabled: !canOpenAllSourcesLive
             ) {
                 showAllSourcesLive = true
@@ -509,7 +507,6 @@ struct SourcesView: View {
             icon: "checkmark.shield",
             title: "Verifica tutte le sorgenti Xtream",
             tint: .green,
-            showChevron: false,
             showsProgress: isCheckingAll,
             isDisabled: verifiableSourceCount == 0
         ) {
@@ -905,8 +902,8 @@ struct AddPlaylistView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 6)
             }
+            .padding(.horizontal, 6)
         }
     }
 
@@ -1031,7 +1028,6 @@ struct AddPlaylistView: View {
                 iconName: iconName
             )
         )
-
         dismiss()
     }
 }
