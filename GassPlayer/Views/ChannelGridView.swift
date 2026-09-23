@@ -317,8 +317,6 @@ struct ChannelGridView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                categoryChips
-
                 if isInitialLoadPending {
                     loadingView
                 } else if case .failed(let message) = xtreamCatalog.state, itemCount == 0 {
@@ -412,6 +410,10 @@ struct ChannelGridView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .principal) {
+                groupMenu
+            }
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSearchButton()
             }
@@ -436,6 +438,10 @@ struct ChannelGridView: View {
                 refreshButton
             }
         } else {
+            ToolbarItem(placement: .principal) {
+                groupMenu
+            }
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSearchButton()
             }
@@ -453,6 +459,107 @@ struct ChannelGridView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 refreshButton
             }
+        }
+    }
+
+    /// Selettore "Gruppo" con la stessa identica UI Liquid Glass del
+    /// selettore "Gruppo playlist" di `EPGGridView` (pillola nativa
+    /// `.glassEffect(.regular.interactive(), in: Capsule())` su iOS 26+,
+    /// fallback `.ultraThinMaterial` + bordo sulle versioni precedenti):
+    /// stesso `Menu` + `Picker(.inline)`, stessa tipografia e stesso
+    /// padding della pillola, così Live TV, VOD e Serie TV condividono
+    /// esattamente lo stesso selettore di gruppo della guida EPG.
+    private var groupMenu: some View {
+        Menu {
+            Picker("Gruppo", selection: $selectedCategory) {
+                Label("Tutti", systemImage: "square.grid.2x2")
+                    .tag(CategorySelection.all)
+
+                if uncategorizedCount > 0 {
+                    Label("Senza categoria (\(uncategorizedCount))", systemImage: "tray")
+                        .tag(CategorySelection.uncategorized)
+                }
+
+                if !visibleCategories.isEmpty {
+                    Divider()
+                    ForEach(visibleCategories) { category in
+                        Label(
+                            "\(category.categoryName) (\(categoryCount(for: category.categoryId)))",
+                            systemImage: Self.categoryIcon(for: category.categoryName)
+                        )
+                        .tag(CategorySelection.category(category.categoryId))
+                    }
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            groupPillLabel(name: currentGroupName, icon: currentGroupIcon)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Gruppo: \(currentGroupName)")
+        .accessibilityHint("Tocca per scegliere il gruppo da visualizzare")
+    }
+
+    private var currentGroupName: String {
+        switch selectedCategory {
+        case .all:
+            return "Tutti"
+
+        case .uncategorized:
+            return "Senza categoria"
+
+        case .category(let categoryID):
+            return categories.first(where: { $0.categoryId == categoryID })?.categoryName ?? "Tutti"
+        }
+    }
+
+    private var currentGroupIcon: String {
+        switch selectedCategory {
+        case .all:
+            return "square.grid.2x2"
+
+        case .uncategorized:
+            return "tray"
+
+        case .category(let categoryID):
+            guard let name = categories.first(where: { $0.categoryId == categoryID })?.categoryName else {
+                return "square.grid.2x2"
+            }
+            return Self.categoryIcon(for: name)
+        }
+    }
+
+    /// Identica, carattere per carattere, alla pillola di `EPGGridView`
+    /// (`groupPillLabel`): stesso layout, stessa tipografia, stesso
+    /// `.glassEffect` nativo Liquid Glass.
+    @ViewBuilder
+    private func groupPillLabel(name: String, icon: String) -> some View {
+        let pill = HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+
+            Text(name)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+
+            Image(systemName: "chevron.down")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .frame(minWidth: 116, maxWidth: 238, minHeight: 44)
+        .contentShape(Capsule())
+
+        if #available(iOS 26.0, *) {
+            pill.glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            pill
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.6)
+                }
         }
     }
 
@@ -631,88 +738,6 @@ struct ChannelGridView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 48)
-    }
-
-    private var categoryChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                categoryButton(
-                    title: "Tutti",
-                    icon: "square.grid.2x2",
-                    count: itemCount,
-                    selection: .all
-                )
-
-                if uncategorizedCount > 0 {
-                    categoryButton(
-                        title: "Senza categoria",
-                        icon: "tray",
-                        count: uncategorizedCount,
-                        selection: .uncategorized
-                    )
-                }
-
-                ForEach(visibleCategories) { category in
-                    categoryButton(
-                        title: category.categoryName,
-                        icon: Self.categoryIcon(for: category.categoryName),
-                        count: categoryCount(for: category.categoryId),
-                        selection: .category(category.categoryId)
-                    )
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-        }
-    }
-
-    private func categoryButton(
-        title: String,
-        icon: String,
-        count: Int,
-        selection: CategorySelection
-    ) -> some View {
-        let isSelected = selectedCategory == selection
-
-        return Button {
-            guard selectedCategory != selection else { return }
-
-            // L'animazione dei chip resta, ma ora è isolata al bottone
-            // stesso (colore/capsule) tramite `withAnimation` locale: non
-            // è più una `.transaction` che si propaga fino ai poster
-            // della griglia sottostante, evitando che il cambio categoria
-            // produca artefatti visivi sulle celle Serie TV.
-            withAnimation(.snappy(duration: 0.16, extraBounce: 0.04)) {
-                selectedCategory = selection
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.caption)
-
-                Text(title)
-                    .lineLimit(1)
-
-                Text("\(count)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(isSelected ? Color.white.opacity(0.78) : Color.secondary)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .background(isSelected ? Color.accentColor : Color.clear, in: Capsule())
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay {
-            Capsule()
-                .strokeBorder(
-                    Color.white.opacity(isSelected ? 0.22 : 0.12),
-                    lineWidth: 0.5
-                )
-        }
-        .accessibilityLabel("\(title), \(count) contenuti")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     /// Ricostruisce l'indice del catalogo (raggruppamento per categoria +
