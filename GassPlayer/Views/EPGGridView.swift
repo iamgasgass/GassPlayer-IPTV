@@ -39,7 +39,7 @@ enum EPGTileColorStyle: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .dynamic: return "paintpalette"
+        case .dynamic: return "wand.and.stars"
         case .dark: return "moon.fill"
         }
     }
