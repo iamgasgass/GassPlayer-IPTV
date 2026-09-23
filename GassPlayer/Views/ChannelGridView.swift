@@ -46,21 +46,25 @@ import SwiftUI
 /// - "Ricarica <sezione>": la stessa identica azione del vecchio
 ///   `refreshButton`, ora disponibile in Live TV, VOD e Serie TV.
 ///
-/// FIX 2026-09-24 (bug visivo cambio "UI Gruppi"):
+/// FIX 2026-09-24 (bis) — pillola "Espansibile" visibile solo dopo lo
+/// scroll / residuo visivo tornando a "Scorrevole":
 ///
-/// La pillola "Espansibile" vive in `ToolbarItem(.principal)`. Con il
-/// titolo in modalità "large" (default), quella posizione della barra di
-/// navigazione resta compressa/non prioritaria finché lo scroll non
-/// collassa la barra: la pillola appariva quindi solo DOPO aver
-/// scrollato, non appena scelta l'opzione. Al contrario, tornando a
-/// "Scorrevole" senza forzare la modalità del titolo, restava attiva la
-/// modalità inline della pillola e al suo posto compariva subito il nome
-/// della sezione (mentre di default il titolo doveva restare invisibile
-/// finché non si scrolla). Risolto forzando esplicitamente
-/// `.navigationBarTitleDisplayMode`: `.inline` quando "UI Gruppi" è
-/// "Espansibile" (pillola sempre visibile da subito, senza dover
-/// scrollare), `.automatic` (comportamento di default, invariato) quando
-/// è "Scorrevole".
+/// Con `navigationBarTitleDisplayMode` lasciato al default (`.automatic`),
+/// la vista mostrava inizialmente il titolo GRANDE di sistema (che occupa
+/// la fascia sotto la barra compatta): il `ToolbarItem(.principal)` con la
+/// pillola "Gruppo" restava quindi nascosto nella barra compatta finché
+/// l'utente non scrollava e il titolo grande collassava. Ora la modalità
+/// del titolo è esplicita e dipende dallo stile "UI Gruppi":
+/// - "Espansibile" → `.inline`: la barra è sempre compatta, la pillola è
+///   quindi visibile da subito, senza dover scrollare. Il nome sezione
+///   (che l'`.principal` sottrae al titolo di sistema) resta comunque
+///   visibile grazie a un header statico (`sectionHeader`) subito sotto
+///   la toolbar, dentro lo scroll.
+/// - "Scorrevole" → `.large`: comportamento di sistema classico, nessun
+///   testo in alto a sinistra nella barra finché non si scrolla (il nome
+///   sezione compare solo allora, come titolo grande che collassa
+///   nell'inline), eliminando il residuo visivo che restava passando da
+///   "Espansibile" a "Scorrevole".
 struct ChannelGridView: View {
     private enum CategorySelection: Hashable {
         case all
@@ -359,6 +363,10 @@ struct ChannelGridView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
+                if groupUIStyle == "espansibile" {
+                    sectionHeader
+                }
+
                 if groupUIStyle == "scorrevole" {
                     categoryChips
                 }
@@ -377,15 +385,7 @@ struct ChannelGridView: View {
                 }
             }
             .navigationTitle(kind.displayName)
-            // FIX — la pillola "Espansibile" (ToolbarItem `.principal`)
-            // era visibile solo dopo aver scrollato perché con il titolo
-            // in modalità "large" (default) quella posizione della barra
-            // resta compressa finché lo scroll non la collassa. Forzando
-            // `.inline` quando "UI Gruppi" è "Espansibile" la pillola è
-            // sempre visibile da subito; tornando a "Scorrevole" si
-            // ripristina `.automatic`, cioè lo stesso comportamento di
-            // default (nessun titolo residuo finché non si scrolla).
-            .navigationBarTitleDisplayMode(groupUIStyle == "espansibile" ? .inline : .automatic)
+            .navigationBarTitleDisplayMode(groupUIStyle == "espansibile" ? .inline : .large)
             .toolbar {
                 toolbarContent
             }
@@ -460,6 +460,21 @@ struct ChannelGridView: View {
                 epgByStream = [:]
             }
         }
+    }
+
+    /// Header statico con il nome della sezione (Live TV/VOD/Serie TV),
+    /// mostrato subito sotto la toolbar quando "UI Gruppi" è impostato su
+    /// "Espansibile": in questa modalità la barra di navigazione resta
+    /// sempre compatta (`.inline`) per lasciare la pillola "Gruppo" visibile
+    /// da subito, quindi il titolo di sistema non è più disponibile nella
+    /// fascia grande. Questo header ne prende il posto, sempre visibile
+    /// senza dover scrollare, e scorre via con il resto del contenuto.
+    private var sectionHeader: some View {
+        Text(kind.displayName)
+            .font(.title2.bold())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .padding(.top, 8)
     }
 
     @ToolbarContentBuilder
