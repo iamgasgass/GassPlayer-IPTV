@@ -25,7 +25,13 @@ struct SourceManagerView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    GlassCard(padding: 6) {
+                    // FIX — il chevron di ogni riga risultava troppo attaccato
+                    // al bordo della card rispetto a HomeView, perché la
+                    // GlassCard forzava un padding interno di soli 6pt e ogni
+                    // riga aggiungeva altri 6pt propri. Rimosso l'override:
+                    // ora la card usa lo stesso padding di default delle
+                    // card in HomeView, con la stessa aria intorno al chevron.
+                    GlassCard {
                         VStack(spacing: 0) {
                             ForEach(Array(sourceManager.sources.enumerated()), id: \.element.id) { index, source in
                                 if index > 0 {
@@ -35,7 +41,6 @@ struct SourceManagerView: View {
                                 sourceRow(source)
                             }
                         }
-                        .padding(.horizontal, 6)
                     }
                 }
             }
@@ -81,6 +86,7 @@ struct SourceManagerView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
                         }
+
                         Text(source.name)
                             .font(.headline)
                             .foregroundStyle(.primary)

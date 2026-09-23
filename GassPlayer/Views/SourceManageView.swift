@@ -75,15 +75,6 @@ struct SourceManageView: View {
                     .environmentObject(sourceManager)
                     .environmentObject(contentManagement)
             }
-            // FIX — "Gestisci EPG" apriva EPGManageView tramite un
-            // fullScreenCover con logica di gating/alert (credenziali Xtream
-            // valide o non disponibile) duplicata rispetto a SettingsView.
-            // Ora naviga in "push" esattamente come SettingsView, usando
-            // .navigationDestination(isPresented:) — l'equivalente di
-            // NavigationLink dentro un NavigationStack — così la riga resta
-            // un GlassSettingsRow identico in stile/colore icona a tutte le
-            // altre voci della lista (Ricarica, Modifica dettagli, Gestisci
-            // contenuto), invece di un componente diverso con tint proprio.
             .navigationDestination(isPresented: $showManageEPG) {
                 EPGManageView()
                     .environmentObject(sourceManager)
@@ -167,7 +158,12 @@ struct SourceManageView: View {
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
 
-            GlassCard(padding: 6) {
+            // FIX — il chevron di ogni riga risultava troppo attaccato al
+            // bordo della card rispetto a HomeView, perché la GlassCard
+            // forzava un padding interno di soli 6pt. Rimosso l'override:
+            // ora la card usa lo stesso padding di default delle card in
+            // HomeView, con la stessa aria intorno al chevron.
+            GlassCard {
                 VStack(spacing: 0) {
                     GlassSettingsRow(icon: "arrow.clockwise", title: "Ricarica", showsProgress: isReloading) {
                         Task { await reload() }
