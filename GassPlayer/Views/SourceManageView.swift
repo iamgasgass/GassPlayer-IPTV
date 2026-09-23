@@ -22,6 +22,7 @@ struct SourceManageView: View {
     @State private var reloadFeedback: String?
     @State private var showEditDetails = false
     @State private var showManageContent = false
+    @State private var showManageEPG = false
     @State private var showDeleteConfirm = false
 
     /// Rilegge sempre la versione più aggiornata della sorgente dal
@@ -73,6 +74,20 @@ struct SourceManageView: View {
                 ManageSourceContentView(source: currentSource)
                     .environmentObject(sourceManager)
                     .environmentObject(contentManagement)
+            }
+            // FIX — "Gestisci EPG" apriva EPGManageView tramite un
+            // fullScreenCover con logica di gating/alert (credenziali Xtream
+            // valide o non disponibile) duplicata rispetto a SettingsView.
+            // Ora naviga in "push" esattamente come SettingsView, usando
+            // .navigationDestination(isPresented:) — l'equivalente di
+            // NavigationLink dentro un NavigationStack — così la riga resta
+            // un GlassSettingsRow identico in stile/colore icona a tutte le
+            // altre voci della lista (Ricarica, Modifica dettagli, Gestisci
+            // contenuto), invece di un componente diverso con tint proprio.
+            .navigationDestination(isPresented: $showManageEPG) {
+                EPGManageView()
+                    .environmentObject(sourceManager)
+                    .environmentObject(xtreamCatalog)
             }
             .confirmationDialog(
                 "Eliminare \u{201C}\(currentSource.name)\u{201D}?",
@@ -172,21 +187,9 @@ struct SourceManageView: View {
 
                     GlassRowDivider()
 
-                    // FIX — "Gestisci EPG" apriva EPGManageView tramite un
-                    // fullScreenCover con logica di gating (openManageEPG()
-                    // + showEPGUnavailableAlert) duplicata rispetto a
-                    // SettingsView. Ora la voce naviga con un NavigationLink
-                    // esattamente come in SettingsView: EPGManageView gestisce
-                    // già da sola l'assenza di playlist con guida disponibile,
-                    // quindi il gating locale non serve più.
-                    NavigationLink {
-                        EPGManageView()
-                            .environmentObject(sourceManager)
-                            .environmentObject(xtreamCatalog)
-                    } label: {
-                        GlassSourceRowLabel(icon: "text.book.closed.fill", title: "Gestisci EPG", tint: .teal)
+                    GlassSettingsRow(icon: "text.book.closed.fill", title: "Gestisci EPG") {
+                        showManageEPG = true
                     }
-                    .buttonStyle(.plain)
 
                     GlassRowDivider()
 
