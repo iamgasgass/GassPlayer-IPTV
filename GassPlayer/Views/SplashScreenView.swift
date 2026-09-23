@@ -35,8 +35,13 @@ struct SplashScreenView: View {
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [Color.black, Color.indigo.opacity(0.55), Color.black],
-                startPoint: .topLeading, endPoint: .bottomTrailing
+                colors: [
+                    Color.accentColor.opacity(0.12),
+                    Color(uiColor: .systemBackground),
+                    Color.purple.opacity(0.08)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
             )
             .ignoresSafeArea()
 

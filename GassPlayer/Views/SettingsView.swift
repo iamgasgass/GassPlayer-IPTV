@@ -111,6 +111,7 @@ struct SettingsView: View {
                       let source = sourceManager.sources.first(where: { $0.id == newValue }) else {
                     return
                 }
+
                 sourceManager.setActive(source)
             }
         )
@@ -120,6 +121,7 @@ struct SettingsView: View {
         guard let date = xtreamCatalog.lastRefreshDate else {
             return "Mai aggiornato"
         }
+
         return "Aggiornato \(date.formatted(.relative(presentation: .named)))"
     }
 
@@ -138,6 +140,7 @@ struct SettingsView: View {
         guard let systemCacheCount else {
             return "Tocca per calcolare"
         }
+
         return systemCacheCount == 0
             ? "Vuota"
             : "\(systemCacheCount) element\(systemCacheCount == 1 ? "o" : "i") in memoria"
@@ -197,7 +200,6 @@ struct SettingsView: View {
                 Button("Ripristina", role: .destructive) {
                     resetPlaybackDefaults()
                 }
-
                 Button("Annulla", role: .cancel) {}
             } message: {
                 Text(
@@ -308,7 +310,7 @@ struct SettingsView: View {
                 SettingsDivider()
 
                 Text(
-                    "Per configurare Live TV, VOD e Serie TV, apri Sorgenti e tocca “Aggiungi playlist”."
+                    "Per configurare Live TV, VOD e Serie TV, apri Sorgenti e tocca \u{201C}Aggiungi playlist\u{201D}."
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -1037,6 +1039,12 @@ private struct SettingsSection<Content: View>: View {
                 VStack(spacing: 0) {
                     content
                 }
+                // FIX — con il padding di default della GlassCard lo spazio
+                // verticale sopra la prima riga e sotto l'ultima riga di ogni
+                // card era eccessivo. Compensato solo sull'asse verticale,
+                // senza toccare quello orizzontale (che regola la posizione
+                // del chevron).
+                .padding(.vertical, -8)
             }
         }
     }
@@ -1085,6 +1093,7 @@ private struct ImportPreferencesSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Annulla") { dismiss() }
                 }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Importa", action: onImport)
                         .disabled(!canImport)
