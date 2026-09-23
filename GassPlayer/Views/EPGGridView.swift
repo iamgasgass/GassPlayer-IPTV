@@ -23,7 +23,8 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 }
 
 /// Palette delle tile EPG selezionabile dall'utente.
-/// I banner dei canali restano sempre invariati e continuano a usare la palette dinamica.
+/// I banner dei canali restano sempre invariati e continuano a usare la palette dinamica,
+/// eccetto in "Dark" dove replicano (in tono leggermente più scuro) il colore base della tile.
 enum EPGTileColorStyle: String, CaseIterable, Identifiable {
     case dynamic = "dynamic"
     case dark = "dark"
@@ -297,6 +298,14 @@ struct EPGGridView: View {
     }
 
     // MARK: - Palette Dinamica Pastello Adattiva
+
+    /// Colore base delle tile in modalità "Dark" (identico a quello usato per il riempimento
+    /// della tile del programma futuro in `programTileBackground`).
+    private static let darkTileBaseColor = Color(red: 0.13, green: 0.13, blue: 0.14)
+
+    /// Colore del banner canale in modalità "Dark": stesso colore della tile "Dark", in una
+    /// tonalità leggermente più scura per restare coerente con l'estetica dark-mode.
+    private static let darkBannerColor = Color(red: 0.09, green: 0.09, blue: 0.10)
 
     /// Genera in modo deterministico e fluido il colore primario pastello per il canale
     private static func adaptivePastelColor(for stream: XtreamStream) -> Color {
@@ -798,7 +807,7 @@ struct EPGGridView: View {
 
     /// Banner Canale Adattivo con avvio immediato a latenza zero
     private func channelBanner(_ stream: XtreamStream) -> some View {
-        let channelColor = Self.adaptivePastelColor(for: stream)
+        let channelColor = tileColorStyle == .dark ? Self.darkBannerColor : Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
 
         return Button {
@@ -1267,7 +1276,9 @@ struct EPGGridView: View {
     }
 
     /// Background della tile: "Dinamico" conserva identica la palette pastello esistente;
-    /// "Dark" replica la tile scura del riferimento. I banner canale non vengono mai modificati.
+    /// "Dark" replica la tile scura del riferimento (`darkTileBaseColor`, riusato anche dal
+    /// banner canale in `channelBanner`, in tonalità leggermente più scura, per restare
+    /// coerente con questa stessa palette). I banner canale in "Dinamico" non vengono mai modificati.
     @ViewBuilder
     private func programTileBackground(
         stream: XtreamStream,
@@ -1299,7 +1310,7 @@ struct EPGGridView: View {
         case .dark:
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color(red: 0.13, green: 0.13, blue: 0.14))
+                    .fill(Self.darkTileBaseColor)
 
                 if brightWidth > 0 {
                     Rectangle()

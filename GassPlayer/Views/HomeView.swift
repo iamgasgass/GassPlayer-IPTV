@@ -752,6 +752,12 @@ struct HomeView: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
+                // FIX — la scheda "Sorgenti" era già avvolta in un Button,
+                // ma senza un contentShape esplicito le zone dell'HStack
+                // senza contenuto visibile (es. lo spazio tra il testo e il
+                // chevron) potevano non rispondere al tocco. Ora l'intera
+                // riga, bordo a bordo, è cliccabile.
+                .contentShape(Rectangle())
             }
         }
         .buttonStyle(.plain)
