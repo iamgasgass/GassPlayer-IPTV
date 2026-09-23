@@ -22,8 +22,6 @@ struct SourceManageView: View {
     @State private var reloadFeedback: String?
     @State private var showEditDetails = false
     @State private var showManageContent = false
-    @State private var showManageEPG = false
-    @State private var showEPGUnavailableAlert = false
     @State private var showDeleteConfirm = false
 
     /// Rilegge sempre la versione più aggiornata della sorgente dal
@@ -40,6 +38,7 @@ struct SourceManageView: View {
                     if currentSource.type == .xtream {
                         serverInfoSection
                     }
+
                     settingsSection
                 }
                 .padding(.horizontal, 20)
@@ -74,16 +73,6 @@ struct SourceManageView: View {
                 ManageSourceContentView(source: currentSource)
                     .environmentObject(sourceManager)
                     .environmentObject(contentManagement)
-            }
-            .fullScreenCover(isPresented: $showManageEPG) {
-                EPGManageView()
-                    .environmentObject(sourceManager)
-                    .environmentObject(xtreamCatalog)
-            }
-            .alert("EPG non disponibile", isPresented: $showEPGUnavailableAlert) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text("Questa funzione richiede credenziali Xtream valide per la sorgente.")
             }
             .confirmationDialog(
                 "Eliminare \u{201C}\(currentSource.name)\u{201D}?",
@@ -183,9 +172,21 @@ struct SourceManageView: View {
 
                     GlassRowDivider()
 
-                    GlassSettingsRow(icon: "text.book.closed.fill", title: "Gestisci EPG") {
-                        openManageEPG()
+                    // FIX — "Gestisci EPG" apriva EPGManageView tramite un
+                    // fullScreenCover con logica di gating (openManageEPG()
+                    // + showEPGUnavailableAlert) duplicata rispetto a
+                    // SettingsView. Ora la voce naviga con un NavigationLink
+                    // esattamente come in SettingsView: EPGManageView gestisce
+                    // già da sola l'assenza di playlist con guida disponibile,
+                    // quindi il gating locale non serve più.
+                    NavigationLink {
+                        EPGManageView()
+                            .environmentObject(sourceManager)
+                            .environmentObject(xtreamCatalog)
+                    } label: {
+                        GlassSourceRowLabel(icon: "text.book.closed.fill", title: "Gestisci EPG", tint: .teal)
                     }
+                    .buttonStyle(.plain)
 
                     GlassRowDivider()
 
@@ -193,8 +194,8 @@ struct SourceManageView: View {
                         showDeleteConfirm = true
                     }
                 }
-                .padding(.horizontal, 6)
             }
+            .padding(.horizontal, 6)
         }
     }
 
@@ -252,6 +253,7 @@ struct SourceManageView: View {
                     sourceManager.recordVerification(for: currentSource, succeeded: true)
                     reloadFeedback = "Playlist ricaricata."
                 }
+
                 return
             }
 
@@ -266,6 +268,7 @@ struct SourceManageView: View {
                 sourceManager.recordVerification(for: currentSource, succeeded: false)
                 reloadFeedback = "Aggiornamento non riuscito: \(error.localizedDescription)"
             }
+
             return
         }
 
@@ -276,6 +279,7 @@ struct SourceManageView: View {
             } else {
                 reloadFeedback = "Sorgente aggiornata."
             }
+
             return
         }
 
@@ -298,23 +302,17 @@ struct SourceManageView: View {
         return url
     }
 
-    private func openManageEPG() {
-        if currentSource.xtreamCredentials != nil {
-            showManageEPG = true
-        } else {
-            showEPGUnavailableAlert = true
-        }
-    }
-
     // MARK: - Testo derivato
 
     private var statusText: String {
         if let accountInfo {
             return accountInfo.status.uppercased()
         }
+
         if accountErrorMessage != nil {
             return "SCONOSCIUTO"
         }
+
         return "—"
     }
 
@@ -329,6 +327,7 @@ struct SourceManageView: View {
               !maxConnections.isEmpty else {
             return "—"
         }
+
         let active = accountInfo.activeConnections ?? "0"
         return "\(active)/\(maxConnections)"
     }
