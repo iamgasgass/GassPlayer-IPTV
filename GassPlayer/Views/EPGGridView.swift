@@ -16,8 +16,8 @@ enum EPGLayoutDensity: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .compact: return "rectangle.grid.1x2"
-        case .comfortable: return "rectangle.grid.2x2"
+        case .compact: return "rectangle.compress.vertical"
+        case .comfortable: return "rectangle.expand.vertical"
         }
     }
 }
@@ -63,8 +63,8 @@ enum EPGChannelCardStyle: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .grid: return "rectangle.grid.2x2"
-        case .card: return "rectangle.portrait.on.rectangle.portrait"
+        case .grid: return "table"
+        case .card: return "rectangle.grid.1x2"
         }
     }
 }
@@ -1398,7 +1398,7 @@ struct EPGGridView: View {
                     }
                     .pickerStyle(.inline)
                 } label: {
-                    Label("Assetti EPG", systemImage: "rectangle.grid.1x2.fill")
+                    Label("Assetti EPG", systemImage: "rectangle.3.offgrid")
                 }
 
                 Menu {
