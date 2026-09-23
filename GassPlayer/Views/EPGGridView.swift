@@ -379,7 +379,7 @@ struct EPGGridView: View {
     // MARK: - Sorgenti Dati Centralizzate
 
     private var streams: [XtreamStream] {
-        xtreamCatalog.streams(for: credentials)
+        xtreamCatalog.streams(for: kind)
     }
 
     private var liveCategories: [XtreamCategory] {
