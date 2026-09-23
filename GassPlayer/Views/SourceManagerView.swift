@@ -33,15 +33,9 @@ struct SourceManagerView: View {
                                 }
 
                                 sourceRow(source)
-                                    // FIX — la chevron risultava troppo attaccata al bordo
-                                    // della scheda: il padding orizzontale della riga era di
-                                    // soli 6pt (più i 6pt interni di GlassCard), mentre le
-                                    // righe con chevron di SourcesView (tramite `.glassTab`)
-                                    // usano un inset di 16pt. Portato a 16pt per lo stesso
-                                    // respiro, senza toccare altezza o padding verticale.
-                                    .padding(.horizontal, 16)
                             }
                         }
+                        .padding(.horizontal, 6)
                     }
                 }
             }
@@ -87,7 +81,6 @@ struct SourceManagerView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
                         }
-
                         Text(source.name)
                             .font(.headline)
                             .foregroundStyle(.primary)
