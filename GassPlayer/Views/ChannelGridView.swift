@@ -3,30 +3,48 @@ import SwiftUI
 /// FIX/OTTIMIZZAZIONE 2026-09-20 (velocità di caricamento/ricaricamento):
 ///
 /// 1) `CatalogIndex` ora precalcola anche il raggruppamento delle Serie TV
-///    per categoria (`seriesByCategory`, `uncategorizedSeries`) e una mappa
-///    `categoryCounts` unica per il `kind` corrente. Prima, per le Serie TV,
-///    `categoryCount(for:)` eseguiva `allSeries.lazy.filter { ... }.count`
-///    — una scansione COMPLETA del catalogo serie PER OGNI categoria — e
-///    questo veniva rifatto ad ogni singola valutazione di `body` (cambio
-///    categoria, refresh, persino toggle non correlati), con complessità
-///    O(categorie × serie). Con cataloghi ampi era il principale
-///    responsabile della lentezza percepita. Ora è un'unica passata O(n)
-///    eseguita solo quando la sorgente cambia davvero (`rebuildIndexIfNeeded`),
-///    e le letture a runtime sono lookup O(1) su dizionario.
+/// per categoria (`seriesByCategory`, `uncategorizedSeries`) e una mappa
+/// `categoryCounts` unica per il `kind` corrente. Prima, per le Serie TV,
+/// `categoryCount(for:)` eseguiva `allSeries.lazy.filter { ... }.count`
+/// — una scansione COMPLETA del catalogo serie PER OGNI categoria — e
+/// questo veniva rifatto ad ogni singola valutazione di `body` (cambio
+/// categoria, refresh, persino toggle non correlati), con complessità
+/// O(categorie × serie). Con cataloghi ampi era il principale
+/// responsabile della lentezza percepita. Ora è un'unica passata O(n)
+/// eseguita solo quando la sorgente cambia davvero (`rebuildIndexIfNeeded`),
+/// e le letture a runtime sono lookup O(1) su dizionario.
 /// 2) L'aggiornamento dell'EPG nei tile (`loadEPGForVisibleStreams`) ora
-///    applica gli esiti di un intero batch concorrente in un'unica scrittura
-///    su `epgByStream`, invece di una scrittura per canale: da un massimo di
-///    24 re-render (uno per canale) si passa a un massimo di 6 (uno per
-///    batch, con `epgTileConcurrency` invariata), rendendo il popolamento
-///    dei tile percepibilmente più fluido senza cambiare timing di rete o
-///    numero di richieste concorrenti verso il provider.
+/// applica gli esiti di un intero batch concorrente in un'unica scrittura
+/// su `epgByStream`, invece di una scrittura per canale: da un massimo di
+/// 24 re-render (uno per canale) si passa a un massimo di 6 (uno per
+/// batch, con `epgTileConcurrency` invariata), rendendo il popolamento
+/// dei tile percepibilmente più fluido senza cambiare timing di rete o
+/// numero di richieste concorrenti verso il provider.
 /// 3) La griglia canali evita l'allocazione di `Array(displayedStreams.enumerated())`
-///    quando i numeri di canale sono disattivati (caso predefinito),
-///    risparmiando una copia O(n) ad ogni render per cataloghi ampi.
+/// quando i numeri di canale sono disattivati (caso predefinito),
+/// risparmiando una copia O(n) ad ogni render per cataloghi ampi.
 ///
 /// Tutta la logica di importazione/filtro/visualizzazione (categorie,
 /// "senza categoria", comportamento EPG nei tile, limiti EPG) resta
 /// invariata: questi sono ottimizzazioni pure, non modifiche funzionali.
+///
+/// FIX 2026-09-24 (menu "…" al posto del pulsante Ricarica isolato):
+///
+/// Il pulsante di ricarica in toolbar (icona "arrow.clockwise") era
+/// visibile solo per Live TV (`kind == .live`): VOD e Serie TV non
+/// avevano alcun modo di ricaricare la propria sezione dalla toolbar.
+/// Il pulsante è stato sostituito da un menu "…" (`libraryMenu`),
+/// presente in ogni sezione (Live TV, VOD, Serie TV), che raggruppa sotto
+/// l'header "Libreria" tre funzioni:
+/// - "Densità griglia": stesso menu a tendina Compatta/Comoda già
+///   presente in `SettingsView` → sezione Libreria.
+/// - "UI Gruppi": scelta fra due implementazioni della vista gruppi,
+///   entrambe già esistenti e non alterate nella loro logica —
+///   "Scorrevole" (i chip orizzontali già presenti in questo file) ed
+///   "Espansibile" (il menu a tendina Liquid Glass in alto a sinistra,
+///   portato identico da `ChannelGridView2.swift`).
+/// - "Ricarica <sezione>": la stessa identica azione del vecchio
+///   `refreshButton`, ora disponibile in Live TV, VOD e Serie TV.
 struct ChannelGridView: View {
     private enum CategorySelection: Hashable {
         case all
@@ -143,6 +161,14 @@ struct ChannelGridView: View {
 
     @AppStorage("gassplayer.grid.showChannelNumbers")
     private var showChannelNumbers = false
+
+    /// Stile dell'interfaccia dei gruppi/categorie, scelto dal menu "…" →
+    /// "UI Gruppi": "scorrevole" (chip orizzontali, comportamento storico
+    /// di questa vista) oppure "espansibile" (pillola Liquid Glass in
+    /// alto a sinistra con menu a tendina, portata da `ChannelGridView2`).
+    /// Condiviso da Live TV, VOD e Serie TV.
+    @AppStorage("gassplayer.grid.groupUIStyle")
+    private var groupUIStyle = "scorrevole"
 
     @State private var selectedCategory: CategorySelection = .all
     @State private var selectedStream: XtreamStream?
@@ -317,6 +343,10 @@ struct ChannelGridView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
+                if groupUIStyle == "scorrevole" {
+                    categoryChips
+                }
+
                 if isInitialLoadPending {
                     loadingView
                 } else if case .failed(let message) = xtreamCatalog.state, itemCount == 0 {
@@ -400,20 +430,22 @@ struct ChannelGridView: View {
                 }
                 .environmentObject(xtreamCatalog)
             }
-        }
-        .onChange(of: kind) { _, _ in
-            selectedCategory = .all
-            epgByStream = [:]
+            .onChange(of: kind) { _, _ in
+                selectedCategory = .all
+                epgByStream = [:]
+            }
         }
     }
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        if #available(iOS 26.0, *) {
+        if groupUIStyle == "espansibile" {
             ToolbarItem(placement: .principal) {
                 groupMenu
             }
+        }
 
+        if #available(iOS 26.0, *) {
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSearchButton()
             }
@@ -435,13 +467,9 @@ struct ChannelGridView: View {
             ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
 
             ToolbarItem(placement: .navigationBarTrailing) {
-                refreshButton
+                libraryMenu
             }
         } else {
-            ToolbarItem(placement: .principal) {
-                groupMenu
-            }
-
             ToolbarItem(placement: .navigationBarTrailing) {
                 GlassSearchButton()
             }
@@ -457,9 +485,59 @@ struct ChannelGridView: View {
             }
 
             ToolbarItem(placement: .navigationBarTrailing) {
-                refreshButton
+                libraryMenu
             }
         }
+    }
+
+    private var epgGuideButton: some View {
+        GlassIconButton(
+            systemImage: "tv.badge.wifi",
+            size: 34,
+            isInSystemToolbar: true,
+            accessibilityLabel: "Apri guida TV"
+        ) {
+            showEPGGuide = true
+        }
+    }
+
+    /// Menu "…" con le opzioni di libreria per questa sezione (Live TV,
+    /// VOD o Serie TV): densità griglia, stile dell'interfaccia dei
+    /// gruppi e ricarica del catalogo. Sostituisce il precedente pulsante
+    /// di ricarica isolato in toolbar (icona "arrow.clockwise", visibile
+    /// solo per Live TV): "Ricarica" è ora disponibile in ogni sezione.
+    private var libraryMenu: some View {
+        Menu {
+            Section("Libreria") {
+                Menu {
+                    Picker("Densità griglia", selection: $channelGridDensity) {
+                        Text("Compatta").tag("compact")
+                        Text("Comoda").tag("comfortable")
+                    }
+                } label: {
+                    Label("Densità griglia", systemImage: "square.grid.3x3")
+                }
+
+                Menu {
+                    Picker("UI Gruppi", selection: $groupUIStyle) {
+                        Text("Scorrevole").tag("scorrevole")
+                        Text("Espansibile").tag("espansibile")
+                    }
+                } label: {
+                    Label("UI Gruppi", systemImage: "rectangle.grid.1x2")
+                }
+
+                Button {
+                    Task { await refreshCatalog() }
+                } label: {
+                    Label("Ricarica \(kind.displayName)", systemImage: "arrow.clockwise")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .accessibilityLabel("Altre opzioni")
+        .accessibilityHint("Densità griglia, stile dei gruppi e ricarica di \(kind.displayName)")
     }
 
     /// Selettore "Gruppo" con la stessa identica UI Liquid Glass del
@@ -468,7 +546,9 @@ struct ChannelGridView: View {
     /// fallback `.ultraThinMaterial` + bordo sulle versioni precedenti):
     /// stesso `Menu` + `Picker(.inline)`, stessa tipografia e stesso
     /// padding della pillola, così Live TV, VOD e Serie TV condividono
-    /// esattamente lo stesso selettore di gruppo della guida EPG.
+    /// esattamente lo stesso selettore di gruppo della guida EPG. Portato
+    /// identico da `ChannelGridView2.swift`, attivo solo quando "UI
+    /// Gruppi" è impostato su "Espansibile" dal menu "…".
     private var groupMenu: some View {
         Menu {
             Picker("Gruppo", selection: $selectedCategory) {
@@ -526,6 +606,7 @@ struct ChannelGridView: View {
             guard let name = categories.first(where: { $0.categoryId == categoryID })?.categoryName else {
                 return "square.grid.2x2"
             }
+
             return Self.categoryIcon(for: name)
         }
     }
@@ -563,31 +644,16 @@ struct ChannelGridView: View {
         }
     }
 
-    private var epgGuideButton: some View {
-        GlassIconButton(
-            systemImage: "tv.badge.wifi",
-            size: 34,
-            isInSystemToolbar: true,
-            accessibilityLabel: "Apri guida TV"
-        ) {
-            showEPGGuide = true
-        }
-    }
+    /// Ricarica il catalogo per la sezione corrente (Live TV, VOD o Serie
+    /// TV). Stessa identica logica del precedente `refreshButton`, ora
+    /// richiamata dalla voce "Ricarica" del menu "…" in ogni sezione.
+    private func refreshCatalog() async {
+        await xtreamCatalog.refresh(credentials: credentials, kind: kind)
 
-    private var refreshButton: some View {
-        Button {
-            Task {
-                await xtreamCatalog.refresh(credentials: credentials, kind: kind)
-
-                if kind == .live {
-                    epgByStream = [:]
-                    await loadEPGForVisibleStreams()
-                }
-            }
-        } label: {
-            Image(systemName: "arrow.clockwise")
+        if kind == .live {
+            epgByStream = [:]
+            await loadEPGForVisibleStreams()
         }
-        .accessibilityLabel("Aggiorna \(kind.displayName)")
     }
 
     @ViewBuilder
@@ -740,6 +806,91 @@ struct ChannelGridView: View {
         .padding(.vertical, 48)
     }
 
+    /// Vista gruppi "Scorrevole": chip orizzontali, comportamento storico
+    /// di questa vista (invariato). Mostrata quando "UI Gruppi" è
+    /// impostato su "Scorrevole" dal menu "…".
+    private var categoryChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                categoryButton(
+                    title: "Tutti",
+                    icon: "square.grid.2x2",
+                    count: itemCount,
+                    selection: .all
+                )
+
+                if uncategorizedCount > 0 {
+                    categoryButton(
+                        title: "Senza categoria",
+                        icon: "tray",
+                        count: uncategorizedCount,
+                        selection: .uncategorized
+                    )
+                }
+
+                ForEach(visibleCategories) { category in
+                    categoryButton(
+                        title: category.categoryName,
+                        icon: Self.categoryIcon(for: category.categoryName),
+                        count: categoryCount(for: category.categoryId),
+                        selection: .category(category.categoryId)
+                    )
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func categoryButton(
+        title: String,
+        icon: String,
+        count: Int,
+        selection: CategorySelection
+    ) -> some View {
+        let isSelected = selectedCategory == selection
+
+        return Button {
+            guard selectedCategory != selection else { return }
+
+            // L'animazione dei chip resta, ma ora è isolata al bottone
+            // stesso (colore/capsule) tramite `withAnimation` locale: non
+            // è più una `.transaction` che si propaga fino ai poster
+            // della griglia sottostante, evitando che il cambio categoria
+            // produca artefatti visivi sulle celle Serie TV.
+            withAnimation(.snappy(duration: 0.16, extraBounce: 0.04)) {
+                selectedCategory = selection
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.caption)
+
+                Text(title)
+                    .lineLimit(1)
+
+                Text("\(count)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.78) : Color.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected ? Color.white : Color.primary)
+        .background(isSelected ? Color.accentColor : Color.clear, in: Capsule())
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(
+                    Color.white.opacity(isSelected ? 0.22 : 0.12),
+                    lineWidth: 0.5
+                )
+        }
+        .accessibilityLabel("\(title), \(count) contenuti")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
     /// Ricostruisce l'indice del catalogo (raggruppamento per categoria +
     /// conteggi) solo quando la sorgente è realmente cambiata. Ora copre
     /// anche il `kind == .series` (prima veniva saltato del tutto per le
@@ -833,20 +984,11 @@ struct ChannelGridView: View {
             await withTaskGroup(of: (Int, EPGProgram?).self) { group in
                 for stream in batch {
                     group.addTask { [epgTileLookahead] in
-                        let programs = try? await epg.shortEPG(
-                            streamId: stream.streamId,
-                            limit: epgTileLookahead
-                        )
+                        let programs = try? await epg.shortEPG(streamId: stream.streamId, limit: epgTileLookahead)
 
                         let now = Date()
-
-                        let current = programs?.first {
-                            $0.start <= now && $0.end > now
-                        }
-
-                        let next = programs?.first {
-                            $0.start > now
-                        }
+                        let current = programs?.first { $0.start <= now && $0.end > now }
+                        let next = programs?.first { $0.start > now }
 
                         return (stream.streamId, current ?? next)
                     }
