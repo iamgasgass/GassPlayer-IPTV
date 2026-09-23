@@ -75,15 +75,6 @@ struct SourceManageView: View {
                     .environmentObject(sourceManager)
                     .environmentObject(contentManagement)
             }
-            // FIX — "Gestisci EPG" apriva EPGManageView tramite un
-            // fullScreenCover con logica di gating/alert (credenziali Xtream
-            // valide o non disponibile) duplicata rispetto a SettingsView.
-            // Ora naviga in "push" esattamente come SettingsView, usando
-            // .navigationDestination(isPresented:) — l'equivalente di
-            // NavigationLink dentro un NavigationStack — così la riga resta
-            // un GlassSettingsRow identico in stile/colore icona a tutte le
-            // altre voci della lista (Ricarica, Modifica dettagli, Gestisci
-            // contenuto), invece di un componente diverso con tint proprio.
             .navigationDestination(isPresented: $showManageEPG) {
                 EPGManageView()
                     .environmentObject(sourceManager)
@@ -167,13 +158,12 @@ struct SourceManageView: View {
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
 
-            // FIX — la GlassCard usava un padding interno molto stretto
-            // (6pt), che schiacciava i chevron delle righe contro il bordo
-            // arrotondato della card. Il padding di default di GlassCard è
-            // lo stesso usato per liste di righe con chevron altrove
-            // nell'app (es. SettingsSection di SettingsView): lo adottiamo
-            // qui per dare ai chevron lo stesso margine dal bordo.
-            GlassCard {
+            // FIX — il chevron delle righe risultava troppo attaccato al
+            // bordo della scheda: il padding interno della GlassCard era
+            // troppo stretto (6pt). Portato a 16pt, in linea con la
+            // spaziatura usata nel resto dell'app, così il chevron ha lo
+            // stesso margine dal bordo che ha in SourcesView.
+            GlassCard(padding: 16) {
                 VStack(spacing: 0) {
                     GlassSettingsRow(icon: "arrow.clockwise", title: "Ricarica", showsProgress: isReloading) {
                         Task { await reload() }
@@ -204,6 +194,7 @@ struct SourceManageView: View {
                     }
                 }
             }
+            .padding(.horizontal, 6)
         }
     }
 
