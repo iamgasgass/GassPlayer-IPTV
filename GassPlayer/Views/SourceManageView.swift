@@ -167,7 +167,13 @@ struct SourceManageView: View {
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
 
-            GlassCard(padding: 6) {
+            // FIX — la GlassCard usava un padding interno molto stretto
+            // (6pt), che schiacciava i chevron delle righe contro il bordo
+            // arrotondato della card. Il padding di default di GlassCard è
+            // lo stesso usato per liste di righe con chevron altrove
+            // nell'app (es. SettingsSection di SettingsView): lo adottiamo
+            // qui per dare ai chevron lo stesso margine dal bordo.
+            GlassCard {
                 VStack(spacing: 0) {
                     GlassSettingsRow(icon: "arrow.clockwise", title: "Ricarica", showsProgress: isReloading) {
                         Task { await reload() }
@@ -198,7 +204,6 @@ struct SourceManageView: View {
                     }
                 }
             }
-            .padding(.horizontal, 6)
         }
     }
 

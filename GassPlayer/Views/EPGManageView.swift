@@ -139,8 +139,8 @@ struct EPGManageView: View {
                         showAddEPGSource = true
                     }
                 }
+                .padding(.horizontal, 6)
             }
-            .padding(.horizontal, 6)
         }
     }
 
@@ -163,8 +163,8 @@ struct EPGManageView: View {
                         externalSourceRow(source)
                     }
                 }
+                .padding(.horizontal, 6)
             }
-            .padding(.horizontal, 6)
         }
     }
 
@@ -243,8 +243,8 @@ struct EPGManageView: View {
                             }
                         }
                     }
+                    .padding(.horizontal, 6)
                 }
-                .padding(.horizontal, 6)
             }
         }
     }

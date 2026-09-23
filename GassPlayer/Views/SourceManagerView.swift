@@ -25,7 +25,14 @@ struct SourceManagerView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    GlassCard(padding: 6) {
+                    // FIX — la GlassCard usava un padding interno molto
+                    // stretto (6pt), che schiacciava i chevron delle righe
+                    // contro il bordo arrotondato della card. Il padding di
+                    // default di GlassCard è lo stesso usato per liste di
+                    // righe con chevron altrove nell'app (es. SettingsSection
+                    // di SettingsView): lo adottiamo qui per dare ai chevron
+                    // lo stesso margine dal bordo.
+                    GlassCard {
                         VStack(spacing: 0) {
                             ForEach(Array(sourceManager.sources.enumerated()), id: \.element.id) { index, source in
                                 if index > 0 {
@@ -35,7 +42,6 @@ struct SourceManagerView: View {
                                 sourceRow(source)
                             }
                         }
-                        .padding(.horizontal, 6)
                     }
                 }
             }
@@ -81,6 +87,7 @@ struct SourceManagerView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
                         }
+
                         Text(source.name)
                             .font(.headline)
                             .foregroundStyle(.primary)
