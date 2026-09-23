@@ -158,11 +158,6 @@ struct SourceManageView: View {
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
 
-            // FIX — il chevron di ogni riga risultava troppo attaccato al
-            // bordo della card rispetto a HomeView, perché la GlassCard
-            // forzava un padding interno di soli 6pt. Rimosso l'override:
-            // ora la card usa lo stesso padding di default delle card in
-            // HomeView, con la stessa aria intorno al chevron.
             GlassCard {
                 VStack(spacing: 0) {
                     GlassSettingsRow(icon: "arrow.clockwise", title: "Ricarica", showsProgress: isReloading) {
@@ -193,6 +188,12 @@ struct SourceManageView: View {
                         showDeleteConfirm = true
                     }
                 }
+                // FIX — con il padding di default della GlassCard (necessario
+                // per allineare il chevron come in HomeView) lo spazio verticale
+                // sopra "Ricarica" e sotto "Cancella" era diventato eccessivo.
+                // Compensato solo sull'asse verticale, senza toccare quello
+                // orizzontale (che regola la posizione del chevron).
+                .padding(.vertical, -8)
             }
             .padding(.horizontal, 6)
         }
