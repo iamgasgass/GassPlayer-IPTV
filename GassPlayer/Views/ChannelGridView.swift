@@ -45,6 +45,22 @@ import SwiftUI
 ///   portato identico da `ChannelGridView2.swift`).
 /// - "Ricarica <sezione>": la stessa identica azione del vecchio
 ///   `refreshButton`, ora disponibile in Live TV, VOD e Serie TV.
+///
+/// FIX 2026-09-24 (bug visivo cambio "UI Gruppi"):
+///
+/// La pillola "Espansibile" vive in `ToolbarItem(.principal)`. Con il
+/// titolo in modalità "large" (default), quella posizione della barra di
+/// navigazione resta compressa/non prioritaria finché lo scroll non
+/// collassa la barra: la pillola appariva quindi solo DOPO aver
+/// scrollato, non appena scelta l'opzione. Al contrario, tornando a
+/// "Scorrevole" senza forzare la modalità del titolo, restava attiva la
+/// modalità inline della pillola e al suo posto compariva subito il nome
+/// della sezione (mentre di default il titolo doveva restare invisibile
+/// finché non si scrolla). Risolto forzando esplicitamente
+/// `.navigationBarTitleDisplayMode`: `.inline` quando "UI Gruppi" è
+/// "Espansibile" (pillola sempre visibile da subito, senza dover
+/// scrollare), `.automatic` (comportamento di default, invariato) quando
+/// è "Scorrevole".
 struct ChannelGridView: View {
     private enum CategorySelection: Hashable {
         case all
@@ -361,6 +377,15 @@ struct ChannelGridView: View {
                 }
             }
             .navigationTitle(kind.displayName)
+            // FIX — la pillola "Espansibile" (ToolbarItem `.principal`)
+            // era visibile solo dopo aver scrollato perché con il titolo
+            // in modalità "large" (default) quella posizione della barra
+            // resta compressa finché lo scroll non la collassa. Forzando
+            // `.inline` quando "UI Gruppi" è "Espansibile" la pillola è
+            // sempre visibile da subito; tornando a "Scorrevole" si
+            // ripristina `.automatic`, cioè lo stesso comportamento di
+            // default (nessun titolo residuo finché non si scrolla).
+            .navigationBarTitleDisplayMode(groupUIStyle == "espansibile" ? .inline : .automatic)
             .toolbar {
                 toolbarContent
             }
