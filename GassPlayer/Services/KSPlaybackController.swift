@@ -25,6 +25,17 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private var watchdogTask: Task<Void, Never>?
     private var hasEverStartedPlaying = false
 
+    /// OTTIMIZZAZIONE FLUIDITÀ: KSPlayer invoca il delegate di avanzamento
+    /// molto più spesso di quanto la UI necessiti per apparire fluida
+    /// (spesso più volte al secondo). Senza throttling, ogni singolo tick
+    /// pubblica una modifica su `currentTime` che rivaluta l'intera
+    /// `PlayerView.body` — pulsanti Liquid Glass inclusi — molte più volte
+    /// al secondo di quanto un occhio umano possa percepire, sprecando CPU/
+    /// GPU e potendo introdurre micro-scatti. Pubblichiamo un aggiornamento
+    /// solo se la variazione percepita è reale (>= 200ms) o se la durata
+    /// totale è cambiata (es. aggiornamento del DVR live).
+    private var lastPublishedTime: TimeInterval = -1
+
     var isPlaying: Bool { state.isPlaying }
     var isBuffering: Bool { state == .preparing || state == .buffering }
 
@@ -62,7 +73,16 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     func skip(by interval: TimeInterval) {
-        let target = max(0, min(layer.player.currentPlaybackTime + interval, duration > 0 ? duration : .greatestFiniteMagnitude))
+        // BUG FIX: su flussi live (duration == 0) il vecchio codice calcolava
+        // un limite superiore pari a `.greatestFiniteMagnitude`, producendo
+        // un seek non valido/indefinito verso un tempo che lo stream non ha
+        // mai avuto. Senza una durata nota, lo skip è semplicemente un
+        // no-op: la UI (PlayerView) non mostra nemmeno i pulsanti di skip
+        // in questo caso, ma la protezione resta anche qui a livello di
+        // controller per qualunque altro chiamante futuro.
+        guard duration > 0 else { return }
+
+        let target = max(0, min(layer.player.currentPlaybackTime + interval, duration))
         seek(to: target)
     }
 
@@ -120,6 +140,10 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
     }
 
     func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
+        let durationChanged = totalTime != duration
+        guard durationChanged || abs(currentTime - lastPublishedTime) >= 0.2 else { return }
+
+        lastPublishedTime = currentTime
         self.currentTime = currentTime
         self.duration = totalTime
     }
