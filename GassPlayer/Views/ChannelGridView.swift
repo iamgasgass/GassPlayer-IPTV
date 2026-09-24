@@ -46,19 +46,23 @@ import SwiftUI
 /// - "Ricarica <sezione>": la stessa identica azione del vecchio
 ///   `refreshButton`, ora disponibile in Live TV, VOD e Serie TV.
 ///
-/// FIX 2026-09-24 (titolo sezione grande in entrambe le modalità):
+/// FIX 2026-09-24 (titolo sezione grande, senza duplicazioni):
 ///
 /// In modalità "Espansibile" il `ToolbarItem(.principal)` che ospita la
 /// pillola del gruppo occupa lo spazio del titolo di navigazione,
-/// impedendo al titolo di sistema di comparire "grande" (large title).
-/// Per garantire che il nome della sezione (Live TV / VOD / Serie TV) sia
-/// sempre visibile alla stessa dimensione del titolo grande di sistema —
-/// in entrambe le modalità, non solo quando il titolo di sistema decide
-/// di espandersi — è stato aggiunto `sectionTitleHeader`: un `Text`
-/// esplicito con lo stesso font (`.largeTitle`, grassetto) come prima
-/// vista del contenuto. La nav bar è stata forzata su `.inline` per
-/// evitare che il titolo automatico di sistema si sovrapponga/duplichi
-/// questo titolo manuale.
+/// impedendo al titolo di sistema di comparire "grande": per quella
+/// modalità è stato aggiunto `sectionTitleHeader`, un `Text` esplicito
+/// con lo stesso font del titolo grande di sistema (`.largeTitle`,
+/// grassetto), e la nav bar è forzata su `.inline`.
+///
+/// In modalità "Scorrevole" invece il titolo di navigazione NON è
+/// occupato da nulla: usare `.inline` lì avrebbe mostrato il nome
+/// sezione sia piccolo in toolbar sia grande sotto (duplicato). In
+/// questa modalità la nav bar torna quindi al comportamento nativo di
+/// sistema (`.large`): il nome sezione compare grande in cima al
+/// contenuto e collassa nel titolo piccolo in toolbar solo dopo lo
+/// scroll, esattamente come un titolo di sistema — senza alcun `Text`
+/// manuale aggiuntivo.
 struct ChannelGridView: View {
     private enum CategorySelection: Hashable {
         case all
@@ -357,7 +361,9 @@ struct ChannelGridView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                sectionTitleHeader
+                if groupUIStyle == "espansibile" {
+                    sectionTitleHeader
+                }
 
                 if groupUIStyle == "scorrevole" {
                     categoryChips
@@ -377,7 +383,7 @@ struct ChannelGridView: View {
                 }
             }
             .navigationTitle(kind.displayName)
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(groupUIStyle == "espansibile" ? .inline : .large)
             .toolbar {
                 toolbarContent
             }
@@ -456,12 +462,12 @@ struct ChannelGridView: View {
 
     /// Titolo grande della sezione (Live TV / VOD / Serie TV), forzato con
     /// lo stesso font del titolo grande di sistema (`.largeTitle`,
-    /// grassetto) come prima vista del contenuto, in ENTRAMBE le modalità
-    /// di "UI Gruppi". Necessario perché in modalità "Espansibile" il
-    /// `ToolbarItem(.principal)` occupa lo spazio del titolo di
-    /// navigazione impedendo al titolo di sistema di comparire grande; la
-    /// nav bar è quindi forzata su `.inline` e questo `Text` sostituisce
-    /// in modo coerente il titolo grande in entrambi gli stili.
+    /// grassetto) come prima vista del contenuto. Usato SOLO in modalità
+    /// "Espansibile": lì il `ToolbarItem(.principal)` occupa lo spazio
+    /// del titolo di navigazione, impedendo al titolo di sistema di
+    /// comparire grande, quindi serve un `Text` manuale equivalente. In
+    /// modalità "Scorrevole" non viene mostrato: il titolo di sistema
+    /// (`.large`) se ne occupa già da solo, senza duplicazioni.
     private var sectionTitleHeader: some View {
         Text(kind.displayName)
             .font(.largeTitle.bold())
