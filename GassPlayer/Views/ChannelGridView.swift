@@ -47,7 +47,7 @@ import SwiftUI
 ///   `refreshButton`, ora disponibile in Live TV, VOD e Serie TV.
 ///
 /// FIX 2026-09-24 (titolo sezione grande, comportamento nativo in
-/// "Scorrevole" + reset forzato della nav bar al cambio modalità):
+/// "Scorrevole" + fix "titolo bloccato piccolo" dopo lo switch):
 ///
 /// In modalità "Espansibile" il `ToolbarItem(.principal)` che ospita la
 /// pillola del gruppo occupa lo spazio del titolo di navigazione,
@@ -56,18 +56,27 @@ import SwiftUI
 /// font `.largeTitle` del titolo di sistema) sempre visibile in testa al
 /// contenuto, con `.navigationBarTitleDisplayMode(.inline)`.
 ///
-/// In modalità "Scorrevole" si usa invece il titolo NATIVO di sistema
-/// (`.large`): grande in testa al contenuto, piccolo in toolbar solo
-/// scrollando. Il problema segnalato — il titolo restava piccolo e in
-/// alto a sinistra anche subito dopo lo switch da "Espansibile" a
-/// "Scorrevole" — è un comportamento noto di SwiftUI/UIKit: cambiare
-/// `.navigationBarTitleDisplayMode` su una view già presentata non
-/// sempre forza il ridisegno della nav bar, che resta "congelata" sullo
-/// stato precedente. La correzione è `.id(groupUIStyle)` sulla view
-/// radice: ad ogni cambio di modalità l'intera configurazione di
-/// navigazione (titolo, toolbar) viene ricreata da zero invece di essere
-/// semplicemente aggiornata, garantendo che il titolo grande nativo
-/// compaia immediatamente in "Scorrevole".
+/// In modalità "Scorrevole" si usa invece il comportamento NATIVO del
+/// titolo di sistema (`.large`): grande in testa al contenuto, piccolo in
+/// toolbar solo scrollando.
+///
+/// BUG "titolo resta piccolo dopo lo switch Espansibile → Scorrevole":
+/// `UINavigationController` NON ricalcola da zero lo stato del titolo
+/// grande quando `navigationBarTitleDisplayMode` cambia A RUNTIME sulla
+/// STESSA istanza di vista (senza un push/pop di navigazione reale) — il
+/// framework tenta di animare/transire dallo stato precedente (collassato
+/// in "Espansibile") invece di ripartire da zero, e il titolo resta
+/// visivamente "bloccato" piccolo in alto a sinistra anche dopo aver
+/// impostato `.large`. La correzione è forzare SwiftUI a trattare l'intera
+/// vista (titolo, display mode, toolbar) come una NUOVA istanza ogni volta
+/// che "UI Gruppi" cambia, tramite `.id(groupUIStyle)` sul contenuto
+/// annidato in `NavigationStack`: questo azzera davvero lo stato cache di
+/// `UINavigationController`, invece di provare ad animarne una transizione
+/// parziale. Effetto collaterale accettato e coerente: passare da una
+/// modalità all'altra resetta il filtro categoria a "Tutti" e la cache EPG
+/// dei tile (`epgByStream`), che viene semplicemente ricaricata dal
+/// `.task(id: sourceIdentity)` — nessuna richiesta di rete duplicata né
+/// comportamento errato, solo un normale primo caricamento.
 struct ChannelGridView: View {
     private enum CategorySelection: Hashable {
         case all
@@ -399,16 +408,6 @@ struct ChannelGridView: View {
             // (titolo grande finché non si scrolla, poi piccolo in
             // toolbar).
             .navigationBarTitleDisplayMode(groupUIStyle == "espansibile" ? .inline : .large)
-            // FIX — cambiare `.navigationBarTitleDisplayMode` su una view
-            // già presentata non forza sempre il ridisegno della nav bar
-            // di sistema, che può restare "congelata" sullo stato
-            // precedente (titolo piccolo) anche subito dopo lo switch da
-            // "Espansibile" a "Scorrevole". `.id(groupUIStyle)` forza
-            // SwiftUI a ricreare da zero questo nodo — e con esso
-            // l'intera configurazione di navigazione (titolo, toolbar)
-            // — ad ogni cambio di modalità, garantendo che il titolo
-            // grande nativo compaia immediatamente.
-            .id(groupUIStyle)
             .toolbar {
                 toolbarContent
             }
@@ -482,6 +481,19 @@ struct ChannelGridView: View {
                 selectedCategory = .all
                 epgByStream = [:]
             }
+            // FIX — `UINavigationController` non ricalcola da zero lo
+            // stato del titolo grande quando `navigationBarTitleDisplayMode`
+            // cambia A RUNTIME sulla stessa istanza di vista (senza un
+            // push/pop reale): tenta di animare la transizione dallo stato
+            // precedente e il titolo resta visivamente bloccato piccolo
+            // dopo lo switch Espansibile → Scorrevole. Assegnando un `id`
+            // legato a `groupUIStyle` si forza SwiftUI a trattare l'intero
+            // contenuto (titolo, display mode, toolbar) come una vista
+            // NUOVA ogni volta che "UI Gruppi" cambia: la voce di
+            // navigazione viene ricreata da zero invece di provare ad
+            // animarne una transizione parziale, ed il titolo grande
+            // compare correttamente subito dopo lo switch.
+            .id(groupUIStyle)
         }
     }
 
