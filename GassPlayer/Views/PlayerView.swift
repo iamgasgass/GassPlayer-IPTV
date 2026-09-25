@@ -246,19 +246,10 @@ struct PlayerView: View {
         scheduleAutoHide()
     }
 
-    /// FEATURE aggiunta: adattamento video (Adatta/Riempi/Stira), un tasto
-    /// dedicato nella `topBar` invece che sepolto nel menu "…" — è
-    /// un'azione che si usa spesso al volo (specie su contenuti con bordi
-    /// neri o proporzioni sbagliate nelle playlist IPTV) e merita un solo
-    /// tocco, non due.
-    private func cycleVideoGravity() {
-        let next = controller.preferences.videoGravity.next
-        controller.setVideoGravity(next)
-        showToast(next.label, duration: 900_000_000)
-        haptic()
-        scheduleAutoHide()
-    }
-
+    /// FEATURE MANCANTE aggiunta: adattamento video (Adatta/Riempi/Stira),
+    /// raggiungibile dalla voce "Rapporto di aspetto" nel menu "…" (il
+    /// tasto rapido dedicato in `topBar` è stato sostituito da "Blocca
+    /// schermo" su richiesta esplicita — vedi commento in `PlayerTopBar`).
     private func showToast(_ message: String, duration: UInt64 = 900_000_000) {
         toastTask?.cancel()
         toastMessage = message
@@ -370,7 +361,6 @@ struct PlayerView: View {
                     dismiss: { dismiss() },
                     pipToggle: { controller.isPipActive = true },
                     externalPlayer: { showExternalPlayerMenu = true },
-                    cycleAspect: cycleVideoGravity,
                     aspectPicker: { presentAfterMenuDismiss { showAspectPicker = true } },
                     channelHistory: { presentAfterMenuDismiss { showChannelHistory = true } },
                     channelSearch: { presentAfterMenuDismiss { showChannelSearch = true } },
@@ -662,7 +652,6 @@ struct PlayerTopBar: View, Equatable {
         var dismiss: () -> Void
         var pipToggle: () -> Void
         var externalPlayer: () -> Void
-        var cycleAspect: () -> Void
         var aspectPicker: () -> Void
         var channelHistory: () -> Void
         var channelSearch: () -> Void
@@ -724,7 +713,15 @@ struct PlayerTopBar: View, Equatable {
                         GlassIconButton(systemImage: "pip.enter", size: 34) { actions.pipToggle() }
                     }
                     GlassIconButton(systemImage: "arrow.up.forward.app", size: 34) { actions.externalPlayer() }
-                    GlassIconButton(systemImage: data.videoGravity.systemImage, size: 34) { actions.cycleAspect() }
+                    // RICHIESTA UTENTE: il tasto rapido in barra passa da
+                    // "rapporto di aspetto" a "blocca schermo" ("molto più
+                    // utile" in un player live IPTV, dove il rapporto di
+                    // aspetto si tocca una volta ogni tanto e il blocco
+                    // schermo serve spesso per evitare tocchi accidentali
+                    // mentre il telefono è in tasca/borsa). La voce
+                    // "Rapporto di aspetto" NON è stata rimossa: resta
+                    // raggiungibile dal menu "…", identica a prima.
+                    GlassIconButton(systemImage: "lock", size: 34) { actions.lock() }
                     optionsMenu
                 }
             }
