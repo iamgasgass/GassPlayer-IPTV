@@ -742,7 +742,6 @@ struct AdvancedSettingsView: View {
     @State private var maxBuffer: Double
     @State private var hardwareDecode: Bool
     @State private var autoDeInterlace: Bool
-    @State private var subtitleDisabled: Bool
     @State private var isAccurateSeek: Bool
     @State private var videoDelay: Double
 
@@ -753,7 +752,6 @@ struct AdvancedSettingsView: View {
         _maxBuffer = State(initialValue: prefs.maxBufferDuration)
         _hardwareDecode = State(initialValue: prefs.hardwareDecode)
         _autoDeInterlace = State(initialValue: prefs.autoDeInterlace)
-        _subtitleDisabled = State(initialValue: prefs.subtitleDisabled)
         _isAccurateSeek = State(initialValue: prefs.isAccurateSeek)
         _videoDelay = State(initialValue: prefs.videoDelay)
     }
@@ -818,17 +816,6 @@ struct AdvancedSettingsView: View {
                     Text("Posiziona la riproduzione esattamente al fotogramma richiesto invece che al keyframe più vicino: più precisa, leggermente più lenta.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-
-                Section {
-                    Toggle("Disattiva sottotitoli incorporati", isOn: $subtitleDisabled)
-                        .onChange(of: subtitleDisabled) { newValue in
-                            controller.setSubtitleDisabled(newValue)
-                        }
-                } header: {
-                    Text("Sottotitoli")
-                } footer: {
-                    Text("Esclude completamente le tracce sottotitoli dal flusso (non solo dalla visualizzazione): utile per risparmiare risorse su flussi che ne includono molte. Ricarica il flusso per applicarsi.")
                 }
 
                 Section("Riproduzione") {
