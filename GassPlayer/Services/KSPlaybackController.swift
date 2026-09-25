@@ -54,11 +54,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// l'interlacciamento, comune su molti canali SD delle
         /// playlist IPTV.
         var autoDeInterlace: Bool = false
-        /// `KSOptions.subtitleDisable`: disattiva completamente il
-        /// demuxing dei sottotitoli incorporati (non solo la loro
-        /// visualizzazione), a beneficio delle prestazioni su flussi che
-        /// ne includono molte tracce inutilizzate.
-        var subtitleDisabled: Bool = false
         /// `KSOptions.videoDelay` (secondi): sincronizzazione audio/video
         /// manuale. Positivo = video ritardato rispetto all'audio.
         var videoDelay: Double = 0
@@ -125,7 +120,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.hardwareDecode = preferences.hardwareDecode
         options.isAccurateSeek = preferences.isAccurateSeek
         options.autoDeInterlace = preferences.autoDeInterlace
-        options.subtitleDisable = preferences.subtitleDisabled
         options.videoDelay = preferences.videoDelay
         return KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
     }
@@ -249,11 +243,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     func setAutoDeInterlace(_ enabled: Bool) {
         preferences.autoDeInterlace = enabled
-        reload()
-    }
-
-    func setSubtitleDisabled(_ disabled: Bool) {
-        preferences.subtitleDisabled = disabled
         reload()
     }
 
