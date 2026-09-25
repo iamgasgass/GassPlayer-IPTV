@@ -1,5 +1,26 @@
 import SwiftUI
 
+// FIX 2026-09-25 (episodio successivo "senza uscire e riaprire il
+// player"): `PlayerView` espone `onPrevious`/`onNext` opzionali. Qui
+// vengono calcolati a partire dall'`Episode` selezionato (già
+// `Identifiable`) e collegati al `fullScreenCover`. Nessun `.id()`
+// esplicito sulla vista presentata: il controller carica il nuovo
+// episodio in-place nella stessa `PlayerView`, senza mai ricrearla.
+//
+// FIX 2026-09-26 (episodio successivo che scavalca la fine stagione):
+// `adjacentEpisode` cercava l'episodio adiacente SOLO dentro
+// `selectedSeason`, quindi il pulsante "successivo" spariva
+// silenziosamente all'ultimo episodio di ogni stagione, interrompendo il
+// binge-watching esattamente nel punto in cui l'utente se lo aspetta di
+// meno. Ora la ricerca avviene su una lista "appiattita" di TUTTE le
+// stagioni in ordine (`flattenedEpisodes`), quindi precedente/successivo
+// attraversano naturalmente il confine di stagione. L'aggiornamento di
+// `selectedSeason` (per tenere coerente l'evidenziazione nella `List`)
+// avviene SOLO al momento del tap, dentro `selectEpisode(_:)` — mai
+// durante il calcolo di `body`/`onPrevious`/`onNext`, per evitare il
+// classico "Modifying state during view update" di SwiftUI: calcolare
+// quale episodio sia adiacente (per decidere se il pulsante deve esistere)
+// è un'operazione pura, senza effetti collaterali.
 struct SeriesEpisodesView: View {
     let credentials: XtreamCredentials
     let seriesId: Int
@@ -12,12 +33,8 @@ struct SeriesEpisodesView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
 
-    // FEATURE MANCANTE aggiunta: pulsanti precedente/successivo nel player.
-    // Prima si teneva traccia solo dell'URL/titolo dell'episodio in
-    // riproduzione, senza alcun riferimento all'episodio stesso: impossibile
-    // calcolare "il prossimo" senza rifare la ricerca. Ora si tiene
-    // l'`Episode` selezionato (già `Identifiable`), da cui URL, titolo e
-    // adiacenza nella stagione si derivano tutti allo stesso modo.
+    /// Episodio attualmente in riproduzione. Da questo si derivano URL,
+    /// titolo e adiacenza (anche cross-stagione) allo stesso modo.
     @State private var selectedEpisode: XtreamSeriesInfo.Episode?
 
     var body: some View {
@@ -43,6 +60,7 @@ struct SeriesEpisodesView: View {
                             Button("Stagione \(season)") { selectedSeason = season }
                         }
                     }
+
                     if let selectedSeason {
                         Section("Episodi — Stagione \(selectedSeason)") {
                             ForEach(info.episodes(forSeason: selectedSeason)) { episode in
@@ -69,19 +87,19 @@ struct SeriesEpisodesView: View {
                     url: url,
                     title: episode.title,
                     onPrevious: adjacentEpisode(to: episode, offset: -1).map { target in
-                        { selectedEpisode = target }
+                        { selectEpisode(target) }
                     },
                     onNext: adjacentEpisode(to: episode, offset: 1).map { target in
-                        { selectedEpisode = target }
+                        { selectEpisode(target) }
                     }
                 )
                 // FIX (episodio successivo "senza uscire e riaprire il
-                // player"): come in ChannelGridView, nessun `.id(episode.id)`
-                // — il controller carica il nuovo episodio in-place nella
-                // stessa `PlayerView`. `.task(id: episode.id)` al posto di
-                // `.onAppear` per registrare ogni episodio nei "visti di
-                // recente", incluso il primo, dato che la vista non viene
-                // più ricreata ad ogni avanzamento.
+                // player"): nessun `.id(episode.id)` — il controller carica
+                // il nuovo episodio in-place nella stessa `PlayerView`.
+                // `.task(id: episode.id)` al posto di `.onAppear` per
+                // registrare ogni episodio nei "visti di recente", incluso
+                // il primo, dato che la vista non viene più ricreata ad
+                // ogni avanzamento.
                 .task(id: episode.id) {
                     recordRecentlyWatched(episode: episode, url: url)
                 }
@@ -100,21 +118,52 @@ struct SeriesEpisodesView: View {
         return service.episodeStreamURL(episodeId: episode.streamId, ext: ext)
     }
 
-    /// FEATURE MANCANTE aggiunta: episodio adiacente nella stagione
-    /// attualmente selezionata, ordinato per numero di episodio (come già
-    /// mostrato nella lista). `nil` ai bordi della stagione, così i
-    /// pulsanti precedente/successivo nel player si nascondono da soli
-    /// sul primo/ultimo episodio invece di restare inattivi.
-    private func adjacentEpisode(to episode: XtreamSeriesInfo.Episode, offset: Int) -> XtreamSeriesInfo.Episode? {
-        guard let season = selectedSeason, let info = seriesInfo else { return nil }
+    /// Lista di tutti gli episodi di TUTTE le stagioni, appiattita
+    /// nell'ordine mostrato in `List` (stagioni ordinate, episodi
+    /// ordinati come restituiti da `episodes(forSeason:)`). Base per il
+    /// calcolo di adiacenza che attraversa il confine di stagione.
+    private func flattenedEpisodes(_ info: XtreamSeriesInfo) -> [(season: Int, episode: XtreamSeriesInfo.Episode)] {
+        info.sortedSeasonNumbers.flatMap { season in
+            info.episodes(forSeason: season).map { (season: season, episode: $0) }
+        }
+    }
 
-        let episodes = info.episodes(forSeason: season)
-        guard let currentIndex = episodes.firstIndex(where: { $0.id == episode.id }) else { return nil }
+    /// FEATURE 2026-09-26: episodio adiacente calcolato sull'intero
+    /// catalogo della serie (tutte le stagioni), non più limitato alla
+    /// sola `selectedSeason`: raggiunto l'ultimo episodio di una stagione,
+    /// "successivo" propone il primo episodio della stagione seguente
+    /// (e viceversa per "precedente"), come un servizio di streaming
+    /// vero. `nil` solo ai bordi ASSOLUTI del catalogo (primo episodio
+    /// della prima stagione / ultimo dell'ultima), così i pulsanti
+    /// corrispondenti in `PlayerView` si nascondono automaticamente.
+    /// Funzione pura: nessun effetto collaterale, sicura da chiamare
+    /// durante il calcolo di `body`.
+    private func adjacentEpisode(
+        to episode: XtreamSeriesInfo.Episode,
+        offset: Int
+    ) -> (season: Int, episode: XtreamSeriesInfo.Episode)? {
+        guard let info = seriesInfo else { return nil }
+
+        let flattened = flattenedEpisodes(info)
+        guard let currentIndex = flattened.firstIndex(where: { $0.episode.id == episode.id }) else { return nil }
 
         let targetIndex = currentIndex + offset
-        guard episodes.indices.contains(targetIndex) else { return nil }
+        guard flattened.indices.contains(targetIndex) else { return nil }
 
-        return episodes[targetIndex]
+        return flattened[targetIndex]
+    }
+
+    /// Applica la selezione di un episodio adiacente (eventualmente in
+    /// un'altra stagione): SOLO qui, al momento del tap sul pulsante
+    /// precedente/successivo, si aggiorna anche `selectedSeason` per
+    /// tenere coerente l'evidenziazione nella `List` — mai durante il
+    /// calcolo di `body`, per evitare mutazioni di stato durante
+    /// l'aggiornamento della vista.
+    private func selectEpisode(_ target: (season: Int, episode: XtreamSeriesInfo.Episode)) {
+        if target.season != selectedSeason {
+            selectedSeason = target.season
+        }
+        selectedEpisode = target.episode
     }
 
     private func recordRecentlyWatched(episode: XtreamSeriesInfo.Episode, url: URL) {
@@ -133,7 +182,8 @@ struct SeriesEpisodesView: View {
     }
 
     private func loadSeriesInfo() async {
-        isLoading = true; errorMessage = nil
+        isLoading = true
+        errorMessage = nil
         let repository = CachedXtreamRepository(credentials: credentials)
         do {
             let info = try await repository.seriesInfo(seriesId: seriesId)
