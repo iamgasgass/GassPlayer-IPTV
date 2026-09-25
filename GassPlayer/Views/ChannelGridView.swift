@@ -47,7 +47,7 @@ import SwiftUI
 ///   `refreshButton`, ora disponibile in Live TV, VOD e Serie TV.
 ///
 /// FIX 2026-09-24 (titolo sezione grande, comportamento nativo in
-/// "Scorrevole"):
+/// "Scorrevole" + fix "titolo bloccato piccolo" dopo lo switch):
 ///
 /// In modalità "Espansibile" il `ToolbarItem(.principal)` che ospita la
 /// pillola del gruppo occupa lo spazio del titolo di navigazione,
@@ -60,30 +60,49 @@ import SwiftUI
 /// titolo di sistema (`.large`): grande in testa al contenuto, piccolo in
 /// toolbar solo scrollando.
 ///
-/// FIX 2026-09-25 (titolo bloccato piccolo dopo lo switch, SENZA
-/// instabilizzare il menu "…" — TERZO tentativo, quello corretto):
+/// BUG "titolo resta piccolo dopo lo switch Espansibile → Scorrevole"
+/// (ANALISI APPROFONDITA, secondo tentativo):
 ///
-/// Il tentativo precedente applicava `.id(groupUIStyle)` all'INTERO
-/// `NavigationStack` per forzare UIKit a ricalcolare lo stato del titolo
-/// grande. Risolveva il titolo, ma introduceva una regressione grave: la
-/// riga `Picker("UI Gruppi", selection: $groupUIStyle)` sta DENTRO al
-/// menu "…" — selezionare "Scorrevole"/"Espansibile" scrive su
-/// `groupUIStyle`, e siccome quello stesso valore era anche l'`id()` di
-/// TUTTO l'albero, l'intera vista (incluso il menu che si stava ancora
-/// chiudendo) veniva distrutta e ricreata a metà interazione: il menu
-/// smetteva di rispondere ai tap, e qualunque altro re-render successivo
-/// (EPG, refresh catalogo) rischiava di ripetere la stessa ricostruzione,
-/// dando la sensazione di "ricarica sempre".
+/// Il primo fix (`.id(groupUIStyle)` sul contenuto ScrollView, DENTRO il
+/// `NavigationStack`) non risolveva il problema perché `NavigationStack`
+/// mantiene un singolo `UINavigationController` persistente che sopravvive
+/// ai cambi di identità del proprio CONTENUTO interno: SwiftUI aggiorna
+/// solo la vista ospitata dentro lo stesso `UIHostingController`/
+/// `UINavigationController`, ma il `UINavigationItem` sottostante — dove
+/// UIKit conserva la cache di layout del titolo grande, incluso lo stato
+/// "collassato" ereditato da "Espansibile" — resta la STESSA istanza. Il
+/// cambio di `id` sul solo contenuto interno non tocca quella cache.
 ///
-/// La correzione corretta usa `LargeTitleRefreshBridge`, un piccolo ponte
-/// UIKit (`UIViewControllerRepresentable`) che NON tocca in alcun modo
-/// l'albero delle vista SwiftUI: individua il `UINavigationController`
-/// più vicino e forza un ciclo nascondi/mostra sulla sua navigation bar
-/// — tecnica nota per costringere UIKit a ricalcolare da zero il layout
-/// del titolo grande — SOLO quando `groupUIStyle` cambia davvero
-/// (tracciato in un `Coordinator`, non ad ogni render). Nessun `@State`
-/// viene azzerato, nessuna vista (incluso il menu "…") viene distrutta:
-/// il titolo si corregge, il menu resta stabile e reattivo.
+/// La correzione reale è applicare `.id(groupUIStyle)` all'INTERO
+/// `NavigationStack` (non al suo contenuto): questo forza SwiftUI a
+/// distruggere e ricreare da zero anche il `UINavigationController`
+/// sottostante — e con esso il suo `UINavigationItem` e ogni cache di
+/// layout del titolo — ogni volta che "UI Gruppi" cambia. Il titolo
+/// grande compare quindi correttamente subito dopo lo switch, senza
+/// alcuna transizione "bloccata" a metà.
+///
+/// Effetto collaterale accettato e coerente: passare da una modalità
+/// all'altra resetta il filtro categoria a "Tutti" e la cache EPG dei
+/// tile (`epgByStream`), che viene semplicemente ricaricata dal
+/// `.task(id: sourceIdentity)` — nessuna richiesta di rete duplicata né
+/// comportamento errato, solo un normale primo caricamento (idempotente:
+/// `loadIfNeeded`/`rebuildIndexIfNeeded` non rifanno nulla se i dati sono
+/// già pronti).
+///
+/// FIX 2026-09-25 (pulsanti precedente/successivo nel player):
+///
+/// `PlayerView` espone ora `onPrevious`/`onNext` opzionali per scorrere
+/// canali/film senza chiudere il player. Qui vengono calcolati con
+/// `adjacentStream(to:offset:)` sulla stessa lista attualmente filtrata
+/// (`displayedStreams`: stesso gruppo/categoria selezionato) e collegati
+/// al `fullScreenCover`. Fondamentale l'`.id(stream.id)` esplicito sulla
+/// vista presentata: senza di esso, cambiare `selectedStream` mentre il
+/// player è già aperto NON ricreerebbe `PlayerView` (SwiftUI riusa la
+/// stessa identità di vista quando cambiano solo i parametri, non la sua
+/// posizione nell'albero), lasciando la `@StateObject
+/// KSPlaybackController` — e quindi il flusso in riproduzione — quella
+/// del canale precedente nonostante titolo e controlli mostrino già il
+/// nuovo canale.
 struct ChannelGridView: View {
     private enum CategorySelection: Hashable {
         case all
@@ -415,12 +434,6 @@ struct ChannelGridView: View {
             // (titolo grande finché non si scrolla, poi piccolo in
             // toolbar).
             .navigationBarTitleDisplayMode(groupUIStyle == "espansibile" ? .inline : .large)
-            // FIX titolo bloccato piccolo dopo lo switch — ponte UIKit
-            // non distruttivo: NON tocca l'albero SwiftUI (a differenza
-            // di un `.id()` su `NavigationStack`, che instabilizzava il
-            // menu "…"). Vedi commento di testa al file per l'analisi
-            // completa.
-            .background(LargeTitleRefreshBridge(trigger: groupUIStyle))
             .toolbar {
                 toolbarContent
             }
@@ -452,15 +465,6 @@ struct ChannelGridView: View {
             }
             .fullScreenCover(item: $selectedStream) { stream in
                 if let url = service.streamURL(for: stream, kind: kind) {
-                    // FIX (zapping "senza uscire e riaprire il player"):
-                    // `PlayerView` resta la STESSA istanza per tutta la
-                    // sessione di visione — il controller al suo interno
-                    // carica il nuovo URL in-place quando `selectedStream`
-                    // cambia (vedi `.onChange(of: url)` in PlayerView).
-                    // Nessun `.id(stream.id)` qui: forzarlo ricreerebbe
-                    // l'intera vista (e il relativo
-                    // `KSPlayerContainerView`) ad ogni canale, esattamente
-                    // il "chiudi e riapri" che questo fix elimina.
                     AdaptivePlayerView(
                         url: url,
                         title: stream.name,
@@ -471,14 +475,24 @@ struct ChannelGridView: View {
                             { selectedStream = target }
                         }
                     )
-                    // `.task(id: stream.id)` al posto di `.onAppear`: con
-                    // la vista che non viene più ricreata ad ogni canale,
+                    // FIX (zapping "senza uscire e riaprire il player"):
+                    // `PlayerView` ora resta la STESSA istanza per tutta la
+                    // sessione di visione — il controller al suo interno
+                    // carica il nuovo URL in-place quando `selectedStream`
+                    // cambia (vedi `.onChange(of: url)` in PlayerView).
+                    // Nessun `.id(stream.id)`: forzarlo ricreerebbe l'intera
+                    // vista (e il relativo `KSPlayerContainerView`) ad ogni
+                    // canale, esattamente il "chiudi e riapri" che questo
+                    // fix elimina.
+                    //
+                    // `.task(id: stream.id)` al posto di `.onAppear`: con la
+                    // vista che non viene più ricreata ad ogni canale,
                     // `.onAppear` scatterebbe una sola volta per l'intera
                     // sessione di zapping (la vista "appare" una volta
-                    // sola). `.task(id:)` invece si riavvia
-                    // automaticamente ad ogni cambio di `stream.id`,
-                    // incluso il primo, registrando correttamente ogni
-                    // canale zappato nei "visti di recente".
+                    // sola). `.task(id:)` invece si riavvia automaticamente
+                    // ad ogni cambio di `stream.id`, incluso il primo,
+                    // registrando correttamente ogni canale zappato nei
+                    // "visti di recente".
                     .task(id: stream.id) {
                         recentlyWatched.record(
                             id: favoriteID(for: stream),
@@ -521,6 +535,20 @@ struct ChannelGridView: View {
                 epgByStream = [:]
             }
         }
+        // FIX (root cause reale) — applicare `.id()` al CONTENUTO dentro
+        // `NavigationStack` non basta: `NavigationStack` mantiene un
+        // singolo `UINavigationController` persistente e il suo
+        // `UINavigationItem` (dove UIKit conserva la cache di layout del
+        // titolo grande) resta la STESSA istanza anche se il contenuto
+        // ospitato cambia identità. Il titolo grande restava quindi
+        // "bloccato" piccolo dopo lo switch Espansibile → Scorrevole.
+        // Applicando `.id(groupUIStyle)` all'INTERO `NavigationStack` si
+        // forza SwiftUI a distruggere e ricreare anche il
+        // `UINavigationController` sottostante — e con esso il suo
+        // `UINavigationItem` e ogni cache di layout — ogni volta che "UI
+        // Gruppi" cambia: il titolo grande compare ora correttamente
+        // subito dopo lo switch.
+        .id(groupUIStyle)
     }
 
     /// Titolo grande della sezione (Live TV / VOD / Serie TV), usato
@@ -1165,47 +1193,6 @@ struct ChannelGridView: View {
         }
 
         return "tv"
-    }
-}
-
-/// Ponte UIKit invisibile e NON distruttivo per il bug del titolo grande
-/// bloccato piccolo dopo un cambio di `navigationBarTitleDisplayMode` a
-/// runtime. A differenza di un `.id()` sul `NavigationStack` (che
-/// distrugge e ricrea l'intero albero SwiftUI — incluso qualunque `Menu`
-/// aperto in quel momento, instabilizzando l'interazione), questa vista
-/// non ha alcun contenuto visibile e non modifica in alcun modo lo stato
-/// SwiftUI: si limita a individuare il `UINavigationController` più
-/// vicino e a forzare un ciclo nascondi/mostra sulla sua navigation bar,
-/// tecnica nota per costringere UIKit a ricalcolare da zero il layout del
-/// titolo grande. Il `Coordinator` ricorda l'ultimo valore di `trigger`
-/// osservato, così l'operazione viene eseguita SOLO quando `trigger`
-/// cambia realmente — non ad ogni re-render della vista (es. per
-/// aggiornamenti EPG o del catalogo) — evitando qualunque ciclo di
-/// "ricarica" indesiderato.
-private struct LargeTitleRefreshBridge: UIViewControllerRepresentable {
-    let trigger: String
-
-    final class Coordinator {
-        var lastTrigger: String?
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeUIViewController(context: Context) -> UIViewController {
-        UIViewController()
-    }
-
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        guard context.coordinator.lastTrigger != trigger else { return }
-        context.coordinator.lastTrigger = trigger
-
-        DispatchQueue.main.async {
-            guard let navigationBar = uiViewController.navigationController?.navigationBar else { return }
-            navigationBar.isHidden = true
-            navigationBar.isHidden = false
-        }
     }
 }
 
