@@ -11,31 +11,28 @@ struct SeriesEpisodesView: View {
     @State private var selectedSeason: Int?
     @State private var isLoading = true
     @State private var errorMessage: String?
+
+    // FEATURE MANCANTE aggiunta: pulsanti precedente/successivo nel player.
+    // Prima si teneva traccia solo dell'URL/titolo dell'episodio in
+    // riproduzione, senza alcun riferimento all'episodio stesso: impossibile
+    // calcolare "il prossimo" senza rifare la ricerca. Ora si tiene
+    // l'`Episode` selezionato (già `Identifiable`), da cui URL, titolo e
+    // adiacenza nella stagione si derivano tutti allo stesso modo.
     @State private var selectedEpisode: XtreamSeriesInfo.Episode?
-    @State private var isPlayerPresented = false
 
     var body: some View {
         Group {
             if isLoading {
                 VStack(spacing: 12) {
                     ProgressView()
-                    Text("Caricamento episodi...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text("Caricamento episodi...").font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let errorMessage {
                 VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundStyle(.orange)
-                    Text(errorMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    Button("Riprova") {
-                        Task { await loadSeriesInfo() }
-                    }
+                    Image(systemName: "exclamationmark.triangle").font(.largeTitle).foregroundStyle(.orange)
+                    Text(errorMessage).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Button("Riprova") { Task { await loadSeriesInfo() } }
                 }
                 .padding()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -43,18 +40,14 @@ struct SeriesEpisodesView: View {
                 List {
                     Section("Stagioni") {
                         ForEach(info.sortedSeasonNumbers, id: \.self) { season in
-                            Button("Stagione \(season)") {
-                                selectedSeason = season
-                            }
+                            Button("Stagione \(season)") { selectedSeason = season }
                         }
                     }
-
                     if let selectedSeason {
                         Section("Episodi — Stagione \(selectedSeason)") {
                             ForEach(info.episodes(forSeason: selectedSeason)) { episode in
                                 Button {
                                     selectedEpisode = episode
-                                    isPlayerPresented = true
                                 } label: {
                                     HStack {
                                         Text("\(episode.episodeNum).")
@@ -69,14 +62,10 @@ struct SeriesEpisodesView: View {
             }
         }
         .navigationTitle(seriesName)
-        .task {
-            await loadSeriesInfo()
-        }
-        .fullScreenCover(isPresented: $isPlayerPresented, onDismiss: {
-            selectedEpisode = nil
-        }) {
-            if let episode = selectedEpisode, let url = episodeStreamURL(for: episode) {
-                PlayerView(
+        .task { await loadSeriesInfo() }
+        .fullScreenCover(item: $selectedEpisode) { episode in
+            if let url = episodeStreamURL(for: episode) {
+                AdaptivePlayerView(
                     url: url,
                     title: episode.title,
                     onPrevious: adjacentEpisode(to: episode, offset: -1).map { target in
@@ -86,9 +75,13 @@ struct SeriesEpisodesView: View {
                         { selectedEpisode = target }
                     }
                 )
-                // FIX (episodio successivo senza uscire e riaprire il player):
-                // Con `.fullScreenCover(isPresented:)`, il player resta vivo per tutta
-                // la sessione e carica il nuovo episodio in-place in modo fluido e automatico.
+                // FIX (episodio successivo "senza uscire e riaprire il
+                // player"): come in ChannelGridView, nessun `.id(episode.id)`
+                // — il controller carica il nuovo episodio in-place nella
+                // stessa `PlayerView`. `.task(id: episode.id)` al posto di
+                // `.onAppear` per registrare ogni episodio nei "visti di
+                // recente", incluso il primo, dato che la vista non viene
+                // più ricreata ad ogni avanzamento.
                 .task(id: episode.id) {
                     recordRecentlyWatched(episode: episode, url: url)
                 }
@@ -140,8 +133,7 @@ struct SeriesEpisodesView: View {
     }
 
     private func loadSeriesInfo() async {
-        isLoading = true
-        errorMessage = nil
+        isLoading = true; errorMessage = nil
         let repository = CachedXtreamRepository(credentials: credentials)
         do {
             let info = try await repository.seriesInfo(seriesId: seriesId)

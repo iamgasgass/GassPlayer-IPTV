@@ -121,11 +121,6 @@ struct PlayerView: View {
             .onChange(of: url) { newValue in
                 controller.load(url: newValue, title: title)
             }
-            .onChange(of: title) { newTitle in
-                if controller.currentURL != url {
-                    controller.load(url: url, title: newTitle)
-                }
-            }
             .onChange(of: isAnyModalPresented) { presented in
                 if presented {
                     hideControlsTask?.cancel()
@@ -411,6 +406,7 @@ struct PlayerView: View {
         picker.subviews.compactMap { $0 as? UIButton }.first?.sendActions(for: .touchUpInside)
     }
 
+
     private var progressBar: some View {
         VStack(spacing: 8) {
             if controller.duration > 0 {
@@ -453,7 +449,6 @@ struct PlayerView: View {
                         onPrevious()
                     }
                 }
-
                 if controller.duration > 0 {
                     GlassIconButton(systemImage: "gobackward.15", size: 34) {
                         haptic()
@@ -461,13 +456,11 @@ struct PlayerView: View {
                         scheduleAutoHide()
                     }
                 }
-
                 GlassIconButton(systemImage: controller.isPlaying ? "pause.fill" : "play.fill", size: 44) {
                     haptic()
                     controller.togglePlayPause()
                     scheduleAutoHide()
                 }
-
                 if controller.duration > 0 {
                     GlassIconButton(systemImage: "goforward.15", size: 34) {
                         haptic()
@@ -475,7 +468,6 @@ struct PlayerView: View {
                         scheduleAutoHide()
                     }
                 }
-
                 if let onNext {
                     GlassIconButton(systemImage: "forward.end.fill", size: 30) {
                         haptic()
@@ -732,8 +724,8 @@ struct PlayerTopBar: View, Equatable {
                     GlassIconButton(systemImage: "lock", size: 34) { actions.lock() }
                     optionsMenu
                 }
-                .scrollBounceBehavior(.basedOnSize)
             }
+            .scrollBounceBehavior(.basedOnSize)
             .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal)
@@ -822,7 +814,7 @@ struct PlayerTopBar: View, Equatable {
 /// viene mai ricreato l'intero `UIView` del player, quindi nessun nero,
 /// nessuna nuova transizione di presentazione, nessun reset dei controlli.
 struct KSPlayerContainerView: UIViewRepresentable {
-    @ObservedObject var controller: KSPlaybackController
+    let controller: KSPlaybackController
 
     final class Coordinator {
         weak var attachedPlayerView: UIView?
@@ -896,8 +888,6 @@ struct KSPlayerContainerView: UIViewRepresentable {
             playerView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             playerView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ])
-        // Assicura l'avvio immediato e automatico della riproduzione appena la nuova vista è agganciata al container
-        controller.layer.play()
     }
 }
 
@@ -930,7 +920,6 @@ struct AirPlayButton: UIViewRepresentable {
         onCreate?(view)
         return view
     }
-
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
 
@@ -952,7 +941,6 @@ struct ExternalPlayer: Identifiable {
         if let outplayerURL = URL(string: "outplayer://\(encoded)") {
             candidates.append(ExternalPlayer(displayName: "Outplayer", url: outplayerURL))
         }
-
         return candidates.filter { UIApplication.shared.canOpenURL($0.url) }
     }
 }
@@ -1156,7 +1144,6 @@ struct TrackPickerView: View {
                         }
                     }
                 }
-
                 Section("Sottotitoli") {
                     ForEach(controller.subtitleTracks, id: \.trackID) { track in
                         Button {
@@ -1250,6 +1237,3 @@ struct ContentUnavailableViewCompat: View {
         }
     }
 }
-
-/// Alias di compatibilità per riferimenti storici a `AdaptivePlayerView`.
-typealias AdaptivePlayerView = PlayerView
