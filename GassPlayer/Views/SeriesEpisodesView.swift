@@ -75,13 +75,16 @@ struct SeriesEpisodesView: View {
                         { selectedEpisode = target }
                     }
                 )
-                // BUG FIX: come in ChannelGridView, senza `.id(episode.id)`
-                // passare all'episodio successivo tramite i nuovi pulsanti
-                // (che cambiano `selectedEpisode` a player già aperto) non
-                // ricreerebbe `PlayerView`/`KSPlaybackController`, lasciando
-                // in riproduzione l'episodio vecchio con il titolo nuovo.
-                .id(episode.id)
-                .onAppear { recordRecentlyWatched(episode: episode, url: url) }
+                // FIX (episodio successivo "senza uscire e riaprire il
+                // player"): come in ChannelGridView, nessun `.id(episode.id)`
+                // — il controller carica il nuovo episodio in-place nella
+                // stessa `PlayerView`. `.task(id: episode.id)` al posto di
+                // `.onAppear` per registrare ogni episodio nei "visti di
+                // recente", incluso il primo, dato che la vista non viene
+                // più ricreata ad ogni avanzamento.
+                .task(id: episode.id) {
+                    recordRecentlyWatched(episode: episode, url: url)
+                }
             } else {
                 ContentUnavailableView(
                     "URL dell'episodio non valido",

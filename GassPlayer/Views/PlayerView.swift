@@ -10,12 +10,8 @@ struct PlayerView: View {
     let url: URL
     let title: String
 
-    /// FEATURE MANCANTE aggiunta: pulsanti "precedente"/"successivo" per
-    /// scorrere canali Live TV o episodi di una serie senza uscire dal
-    /// player. `nil` = funzione non disponibile in questo contesto (es.
-    /// primo/ultimo elemento della lista, oppure chiamante che non la
-    /// implementa): il pulsante corrispondente si nasconde da solo, non
-    /// resta mai visibile ma inattivo.
+    /// Precedente/successivo: `nil` = non disponibile in questo contesto
+    /// (bordo della lista, o chiamante che non la implementa).
     var onPrevious: (() -> Void)?
     var onNext: (() -> Void)?
 
@@ -24,7 +20,7 @@ struct PlayerView: View {
 
     // Picker/menu
     @State private var showTrackPicker = false
-    @State private var showBufferSettings = false
+    @State private var showAdvancedSettings = false
     @State private var showQualityPicker = false
     @State private var showExternalPlayerMenu = false
     @State private var showSpeedPicker = false
@@ -36,9 +32,7 @@ struct PlayerView: View {
     @State private var selectedSubtitleTrackName: String?
     @State private var selectedVideoTrackName: String?
 
-    // FEATURE MANCANTE aggiunta: timer di spegnimento automatico (comune in
-    // tutti i player video/IPTV, utile per addormentarsi guardando un
-    // programma senza consumare batteria/dati tutta la notte).
+    // Timer di spegnimento automatico
     @State private var sleepTimerMinutes: Int?
     @State private var sleepTimerTask: Task<Void, Never>?
 
@@ -49,9 +43,7 @@ struct PlayerView: View {
     @State private var showVolumeHUD = false
     @State private var hudHideTask: Task<Void, Never>?
 
-    // Toast generico (feedback doppio-tap, timer, ecc.) — un solo
-    // meccanismo riusato ovunque invece di uno stato dedicato per ogni
-    // singola notifica temporanea.
+    // Toast generico (feedback doppio-tap, timer, ecc.)
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
 
@@ -60,18 +52,23 @@ struct PlayerView: View {
     @State private var hideControlsTask: Task<Void, Never>?
     @State private var isScrubbing = false
 
-    // BUG FIX: `UIScreen.main.bounds.width` (usato in precedenza nel drag
-    // gesture) è deprecato e restituisce dimensioni errate in scenari multi
-    // finestra/multi scena (iPad Stage Manager, Slide Over, Split View):
-    // la larghezza reale del player viene ora letta dalla gerarchia SwiftUI
-    // stessa tramite `GeometryReader` e riusata sia per il gesto
-    // luminosità/volume sia per le zone di doppio tap.
     @State private var containerWidth: CGFloat = UIScreen.main.bounds.width
-
     @State private var isLocked = false
-
-    // Cache dei player esterni disponibili per questo URL.
     @State private var externalPlayers: [ExternalPlayer] = []
+
+    /// BUG FIX ("preferenze nel menù '…' corrotte al tocco"): mentre un
+    /// picker/dialog è aperto il timer di auto-hide dei controlli
+    /// continuava comunque a scorrere; se l'utente impiegava più di 4
+    /// secondi a decidere, `unifiedControlSurface` — che contiene il
+    /// pulsante "…" stesso — passava a `opacity(0)` /
+    /// `allowsHitTesting(false)`, rendendo il resto dei controlli
+    /// irraggiungibili finché non si ritoccava lo schermo. Questo
+    /// computed riunisce tutti i flag di presentazione in un unico punto
+    /// osservabile da `.onChange`.
+    private var isAnyModalPresented: Bool {
+        showTrackPicker || showAdvancedSettings || showQualityPicker
+            || showExternalPlayerMenu || showSpeedPicker || showSleepTimerPicker
+    }
 
     init(url: URL, title: String, onPrevious: (() -> Void)? = nil, onNext: (() -> Void)? = nil) {
         self.url = url
@@ -96,6 +93,25 @@ struct PlayerView: View {
             }
             .task(id: url) {
                 externalPlayers = ExternalPlayer.available(for: url)
+            }
+            // FEATURE MANCANTE aggiunta (precedente/successivo "in-place"):
+            // quando il chiamante (ChannelGridView/SeriesEpisodesView)
+            // aggiorna l'elemento selezionato tramite `onPrevious`/`onNext`,
+            // SwiftUI ricostruisce questa `PlayerView` con un nuovo `url`
+            // MANTENENDO la stessa identità di vista (nessun `.id()`, niente
+            // dismiss/ri-presentazione della fullScreenCover): qui basta
+            // dire al controller — che resta vivo per tutta la sessione —
+            // di caricare il nuovo URL. `KSPlayerContainerView` sotto
+            // reagisce da sola al cambio di `controller.layer`.
+            .onChange(of: url) { newValue in
+                controller.load(url: newValue, title: title)
+            }
+            .onChange(of: isAnyModalPresented) { presented in
+                if presented {
+                    hideControlsTask?.cancel()
+                } else {
+                    scheduleAutoHide()
+                }
             }
             .onDisappear {
                 controller.layer.pause()
@@ -142,8 +158,8 @@ struct PlayerView: View {
                     selectedSubtitleTrackName: $selectedSubtitleTrackName
                 )
             }
-            .sheet(isPresented: $showBufferSettings) {
-                BufferSettingsView(controller: controller)
+            .sheet(isPresented: $showAdvancedSettings) {
+                AdvancedSettingsView(controller: controller)
             }
             .sheet(isPresented: $showQualityPicker) {
                 QualityPickerView(controller: controller, selectedTrackName: $selectedVideoTrackName)
@@ -179,11 +195,6 @@ struct PlayerView: View {
 
     // MARK: - Gesture handling
 
-    // BUG DI PROGETTAZIONE EVITATO: uno schermo "bloccato" che si sblocca
-    // con un tap qualunque non protegge da nulla (tocchi accidentali in
-    // tasca, pulizia dello schermo…). A schermo bloccato un tap generico
-    // non fa nulla: l'unico modo per sbloccare è il pulsante dedicato
-    // mostrato da `lockedOverlay`.
     private func handleSingleTap() {
         guard !isLocked else { return }
         toggleControls()
@@ -277,35 +288,55 @@ struct PlayerView: View {
         }
     }
 
+    /// BUG FIX ("player disallineato oltre i bordi" / "troppi tasti che
+    /// fuoriescono dallo schermo"): il cluster di icone secondarie
+    /// (AirPlay, PiP, apri con altro player, "…") non si riduce mai sotto
+    /// la sua larghezza intrinseca in un `HStack` — su schermi stretti
+    /// (iPhone piccoli, Slide Over/Stage Manager su iPad, rotazione con
+    /// notch che riduce la safe area disponibile) il numero di icone
+    /// oggi presenti può superare la larghezza disponibile e finire
+    /// tagliato oltre il bordo destro. Racchiuderlo in uno
+    /// `ScrollView(.horizontal)` non cambia nulla quando tutto entra
+    /// (nessuna indicazione di scroll visibile, nessun tasto "in più" da
+    /// notare) ma garantisce che, quando NON entra, resti comunque
+    /// raggiungibile scorrendo invece di sparire oltre lo schermo.
     private var topBar: some View {
         HStack {
             GlassIconButton(systemImage: "xmark") { dismiss() }
-            Spacer()
+
+            Spacer(minLength: 8)
+
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .shadow(radius: 4)
-            Spacer()
-            if controller.isBuffering { ProgressView().tint(.white).padding(.horizontal, 4) }
-            AirPlayButton()
-                .frame(width: 32, height: 32)
-            if controller.supportsPictureInPicture {
-                GlassIconButton(systemImage: "pip.enter") { controller.isPipActive = true }
+                .layoutPriority(1)
+
+            Spacer(minLength: 8)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    if controller.isBuffering {
+                        ProgressView().tint(.white).padding(.horizontal, 4)
+                    }
+                    AirPlayButton()
+                        .frame(width: 30, height: 30)
+                    if controller.supportsPictureInPicture {
+                        GlassIconButton(systemImage: "pip.enter", size: 34) { controller.isPipActive = true }
+                    }
+                    GlassIconButton(systemImage: "arrow.up.forward.app", size: 34) { showExternalPlayerMenu = true }
+                    optionsMenu
+                }
             }
-            GlassIconButton(systemImage: "arrow.up.forward.app") { showExternalPlayerMenu = true }
-            optionsMenu
+            .scrollBounceBehavior(.basedOnSize)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal)
         .padding(.top, 8)
         // BUG FIX ("player disallineato oltre i bordi"): mancava il
         // rispetto del safe-area verticale (notch/Dynamic Island in alto,
-        // home indicator in basso). Combinato con troppe icone ravvicinate
-        // nella barra superiore, gli ultimi pulsanti finivano spinti oltre
-        // il bordo destro dello schermo su iPhone più stretti. Qui si
-        // applica il safe-area a tutti i lati (non solo orizzontale) e si è
-        // rimosso un pulsante ridondante (blocco schermo, già presente nel
-        // menu "…") che affollava inutilmente la barra.
+        // home indicator in basso), applicato ora su tutti i lati.
         .safeAreaPadding()
         .background(LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom))
     }
@@ -318,8 +349,8 @@ struct PlayerView: View {
             Button("Qualità video\(selectedVideoTrackName.map { " (\($0))" } ?? "")", systemImage: "4k.tv") {
                 presentAfterMenuDismiss { showQualityPicker = true }
             }
-            Button("Impostazioni buffer", systemImage: "dial.low") {
-                presentAfterMenuDismiss { showBufferSettings = true }
+            Button("Impostazioni avanzate", systemImage: "slider.horizontal.3") {
+                presentAfterMenuDismiss { showAdvancedSettings = true }
             }
             Button("Audio e sottotitoli", systemImage: "text.bubble") {
                 presentAfterMenuDismiss { showTrackPicker = true }
@@ -334,7 +365,7 @@ struct PlayerView: View {
                 isLocked = true
             }
         } label: {
-            GlassIconGlyph(systemImage: "ellipsis")
+            GlassIconGlyph(systemImage: "ellipsis", size: 34)
         }
         .menuStyle(.button)
         .modifier(NativeOrLegacyGlassCircle(tint: nil, isInSystemToolbar: false))
@@ -342,7 +373,7 @@ struct PlayerView: View {
     }
 
     private var progressBar: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             if controller.duration > 0 {
                 // BUG FIX: la barra di avanzamento, se trascinata per più di
                 // 4 secondi, spariva sotto al dito perché il timer di
@@ -366,10 +397,17 @@ struct PlayerView: View {
                 )
                 .tint(.white)
             }
+
+            // BUG FIX ("troppi tasti che fuoriescono dallo schermo"): i
+            // pulsanti di trasporto (precedente/-15/play-pausa/+15/
+            // successivo) sono ora su una riga TUTTA loro, senza dover
+            // condividere lo spazio orizzontale con l'etichetta del tempo:
+            // prima, su schermi stretti con precedente+successivo
+            // visibili, l'intera fila (5 icone + testo "mm:ss / mm:ss")
+            // poteva superare la larghezza disponibile e finire tagliata
+            // oltre il bordo. Al centro dello schermo, dimensione fissa e
+            // sempre ampiamente entro la larghezza minima di un iPhone.
             HStack(spacing: 22) {
-                // FEATURE MANCANTE aggiunta: precedente/successivo. Non
-                // dipendono dalla durata del flusso: servono anche in Live
-                // TV per cambiare canale senza uscire dal player.
                 if let onPrevious {
                     GlassIconButton(systemImage: "backward.end.fill", size: 30) {
                         haptic()
@@ -401,17 +439,19 @@ struct PlayerView: View {
                         onNext()
                     }
                 }
+            }
+            .frame(maxWidth: .infinity)
+
+            Group {
                 if controller.duration > 0 {
                     Text("\(formatted(controller.currentTime)) / \(formatted(controller.duration))")
                         .font(.caption.monospacedDigit())
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .layoutPriority(1)
                 } else {
-                    Text("Live").font(.caption.weight(.semibold)).foregroundStyle(.white)
+                    Text("Live").font(.caption.weight(.semibold))
                 }
-                Spacer(minLength: 0)
             }
+            .foregroundStyle(.white)
+            .lineLimit(1)
         }
         .padding(.horizontal)
         .padding(.bottom, 8)
@@ -447,7 +487,7 @@ struct PlayerView: View {
 
     private func scheduleAutoHide() {
         hideControlsTask?.cancel()
-        guard !isScrubbing else { return }
+        guard !isScrubbing, !isAnyModalPresented else { return }
         hideControlsTask = Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
@@ -496,12 +536,6 @@ struct PlayerView: View {
         DragGesture(minimumDistance: 10)
             .onChanged { value in
                 guard !isLocked else { return }
-                // BUG FIX: cancella qualunque nascondimento HUD già
-                // programmato appena arriva un nuovo evento di trascinamento,
-                // invece di lasciarlo scattare in background: prima, due
-                // trascinamenti ravvicinati (es. luminosità poi volume entro
-                // 0.8s) potevano far sparire l'HUD del secondo gesto ancora
-                // in corso, perché il primo timer non veniva annullato.
                 hudHideTask?.cancel()
 
                 let delta = -value.translation.height / 200
@@ -550,26 +584,50 @@ struct PlayerView: View {
     }
 }
 
+/// FIX ("cambiare canale senza uscire e riaprire il player"): riflette
+/// nella UIKit view il `KSPlayerLayer` corrente del controller. Quando
+/// `controller.load(url:title:)` sostituisce `layer` con uno nuovo (stesso
+/// controller, stessa `PlayerView`, nessuna nuova presentazione),
+/// `updateUIView` se ne accorge e scollega la vecchia `player.view`
+/// agganciando quella nuova nello STESSO container già a schermo — non
+/// viene mai ricreato l'intero `UIView` del player, quindi nessun nero,
+/// nessuna nuova transizione di presentazione, nessun reset dei controlli.
 struct KSPlayerContainerView: UIViewRepresentable {
     let controller: KSPlaybackController
+
+    final class Coordinator {
+        weak var attachedPlayerView: UIView?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
         container.backgroundColor = .black
-        if let playerView = controller.layer.player.view {
-            playerView.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(playerView)
-            NSLayoutConstraint.activate([
-                playerView.topAnchor.constraint(equalTo: container.topAnchor),
-                playerView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                playerView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                playerView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            ])
-        }
+        attach(controller.layer.player.view, to: container, coordinator: context.coordinator)
         return container
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {}
+    func updateUIView(_ uiView: UIView, context: Context) {
+        guard controller.layer.player.view !== context.coordinator.attachedPlayerView else { return }
+        attach(controller.layer.player.view, to: uiView, coordinator: context.coordinator)
+    }
+
+    private func attach(_ playerView: UIView?, to container: UIView, coordinator: Coordinator) {
+        coordinator.attachedPlayerView?.removeFromSuperview()
+        coordinator.attachedPlayerView = playerView
+
+        guard let playerView else { return }
+
+        playerView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(playerView)
+        NSLayoutConstraint.activate([
+            playerView.topAnchor.constraint(equalTo: container.topAnchor),
+            playerView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            playerView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            playerView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+    }
 }
 
 struct AirPlayButton: UIViewRepresentable {
@@ -660,44 +718,133 @@ struct QualityPickerView: View {
     }
 }
 
-struct BufferSettingsView: View {
+/// Impostazioni avanzate del motore KSPlayer+FFmpeg, tutte su proprietà
+/// REALI di `KSOptions` (verificate sul sorgente ufficiale
+/// github.com/kingslay/KSPlayer): buffer, decodifica hardware/software,
+/// de-interlacciamento automatico, sincronizzazione audio/video, ricerca
+/// accurata, sottotitoli. Le modifiche che richiedono il riavvio della
+/// pipeline di decodifica (decodifica, de-interlacciamento, sottotitoli)
+/// lo fanno in modo esplicito e visibile tramite `controller.reload()`,
+/// invece di illudere l'utente con un cambiamento che non si applica
+/// davvero finché il flusso non viene ricaricato.
+struct AdvancedSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
 
-    // BUG FIX ("preferenze nel menù '…' corrotte/non funzionanti"): la
-    // slider era collegata direttamente a `controller.layer.options`, una
-    // proprietà NON osservata da Combine (`KSOptions` non è `@Published`).
-    // Il valore veniva sì scritto correttamente, ma l'etichetta con i
-    // secondi sotto la slider non si aggiornava a schermo durante il
-    // trascinamento, perché nulla notificava alla view di ridisegnarsi:
-    // sembrava un'impostazione "rotta" anche se in realtà veniva applicata.
-    // Ora la slider guida uno `@State` locale (che SwiftUI osserva
-    // nativamente) e lo propaga al controller ad ogni variazione.
-    @State private var bufferDuration: Double
+    // BUG FIX ("preferenze nel menù '…' corrotte/non funzionanti"): come
+    // per il buffer, ogni slider/toggle qui guida uno `@State` locale
+    // (osservato nativamente da SwiftUI) sincronizzato con
+    // `controller.preferences`/`layer.options` ad ogni variazione, invece
+    // di leggere/scrivere `layer.options` direttamente nel `body` — che
+    // non essendo `@Published`-osservato lascia l'interfaccia "congelata"
+    // sul valore iniziale anche quando il valore reale è cambiato.
+    @State private var preferredBuffer: Double
+    @State private var maxBuffer: Double
+    @State private var hardwareDecode: Bool
+    @State private var autoDeInterlace: Bool
+    @State private var subtitleDisabled: Bool
+    @State private var isAccurateSeek: Bool
+    @State private var videoDelay: Double
 
     init(controller: KSPlaybackController) {
         self.controller = controller
-        _bufferDuration = State(initialValue: controller.layer.options.preferredForwardBufferDuration)
+        let prefs = controller.preferences
+        _preferredBuffer = State(initialValue: prefs.preferredForwardBufferDuration)
+        _maxBuffer = State(initialValue: prefs.maxBufferDuration)
+        _hardwareDecode = State(initialValue: prefs.hardwareDecode)
+        _autoDeInterlace = State(initialValue: prefs.autoDeInterlace)
+        _subtitleDisabled = State(initialValue: prefs.subtitleDisabled)
+        _isAccurateSeek = State(initialValue: prefs.isAccurateSeek)
+        _videoDelay = State(initialValue: prefs.videoDelay)
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Buffer") {
-                    Slider(value: $bufferDuration, in: 1...30, step: 1) { Text("Durata buffer") }
-                        .onChange(of: bufferDuration) { newValue in
-                            controller.layer.options.preferredForwardBufferDuration = newValue
+                Section {
+                    Slider(value: $preferredBuffer, in: 1...30, step: 1) { Text("Buffer minimo") }
+                        .onChange(of: preferredBuffer) { newValue in
+                            controller.setPreferredForwardBufferDuration(newValue)
                         }
-                    Text("\(Int(bufferDuration)) secondi").foregroundStyle(.secondary)
+                    Text("Minimo: \(Int(preferredBuffer))s").foregroundStyle(.secondary)
+
+                    Slider(value: $maxBuffer, in: Double(max(Int(preferredBuffer), 5))...120, step: 5) { Text("Buffer massimo") }
+                        .onChange(of: maxBuffer) { newValue in
+                            controller.setMaxBufferDuration(newValue)
+                        }
+                    Text("Massimo: \(Int(maxBuffer))s").foregroundStyle(.secondary)
+                } header: {
+                    Text("Buffer")
+                } footer: {
+                    Text("Un buffer più ampio riduce le interruzioni su reti instabili, a costo di un avvio più lento del flusso.")
                 }
+
+                Section {
+                    Toggle("Decodifica hardware", isOn: $hardwareDecode)
+                        .onChange(of: hardwareDecode) { newValue in
+                            controller.setHardwareDecode(newValue)
+                        }
+                    Toggle("De-interlacciamento automatico", isOn: $autoDeInterlace)
+                        .onChange(of: autoDeInterlace) { newValue in
+                            controller.setAutoDeInterlace(newValue)
+                        }
+                } header: {
+                    Text("Decodifica")
+                } footer: {
+                    Text("Disattiva la decodifica hardware se un canale si blocca o mostra artefatti: FFmpeg in software è più lento ma compatibile con flussi malformati. Il de-interlacciamento corregge l'effetto \"pettine\" tipico dei canali SD interlacciati. Entrambe ricaricano il flusso per applicarsi.")
+                }
+
+                Section {
+                    Slider(value: $videoDelay, in: -2...2, step: 0.05) { Text("Sincronizzazione") }
+                        .onChange(of: videoDelay) { newValue in
+                            controller.setVideoDelay(newValue)
+                        }
+                    Text(videoDelaySummary).foregroundStyle(.secondary)
+                    Button("Ripristina sincronizzazione") {
+                        videoDelay = 0
+                        controller.setVideoDelay(0)
+                    }
+                } header: {
+                    Text("Sincronizzazione audio/video")
+                } footer: {
+                    Text("Se il video anticipa l'audio, sposta verso destra; se lo insegue, sposta verso sinistra.")
+                }
+
+                Section("Ricerca") {
+                    Toggle("Ricerca accurata", isOn: $isAccurateSeek)
+                        .onChange(of: isAccurateSeek) { newValue in
+                            controller.setAccurateSeek(newValue)
+                        }
+                    Text("Posiziona la riproduzione esattamente al fotogramma richiesto invece che al keyframe più vicino: più precisa, leggermente più lenta.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Toggle("Disattiva sottotitoli incorporati", isOn: $subtitleDisabled)
+                        .onChange(of: subtitleDisabled) { newValue in
+                            controller.setSubtitleDisabled(newValue)
+                        }
+                } header: {
+                    Text("Sottotitoli")
+                } footer: {
+                    Text("Esclude completamente le tracce sottotitoli dal flusso (non solo dalla visualizzazione): utile per risparmiare risorse su flussi che ne includono molte. Ricarica il flusso per applicarsi.")
+                }
+
                 Section("Riproduzione") {
                     Text("Stato: \(controller.state.description)")
                     Button("Riprova") { controller.resetAttempts() }
                 }
             }
-            .navigationTitle("Impostazioni stream")
+            .navigationTitle("Impostazioni avanzate")
             .toolbar { Button("Chiudi") { dismiss() } }
         }
+    }
+
+    private var videoDelaySummary: String {
+        if abs(videoDelay) < 0.01 { return "Sincronizzato" }
+        let ms = Int((videoDelay * 1000).rounded())
+        return videoDelay > 0 ? "Video ritardato di \(ms)ms" : "Video anticipato di \(-ms)ms"
     }
 }
 

@@ -475,19 +475,25 @@ struct ChannelGridView: View {
                             { selectedStream = target }
                         }
                     )
-                    // BUG FIX: senza `.id(stream.id)`, cambiare canale con i
-                    // pulsanti precedente/successivo (che aggiornano
-                    // `selectedStream` mentre il player è già presentato)
-                    // NON ricrea `PlayerView`: la sua `@StateObject
-                    // KSPlaybackController` resta quella del canale
-                    // precedente, perché SwiftUI riusa la stessa identità di
-                    // vista quando cambiano solo i parametri, non il tipo/la
-                    // posizione nell'albero. L'`.id()` esplicito forza una
-                    // nuova identità — e quindi un nuovo controller — per
-                    // ogni canale, così lo zapping carica davvero il nuovo
-                    // flusso invece di continuare a riprodurre il vecchio.
-                    .id(stream.id)
-                    .onAppear {
+                    // FIX (zapping "senza uscire e riaprire il player"):
+                    // `PlayerView` ora resta la STESSA istanza per tutta la
+                    // sessione di visione — il controller al suo interno
+                    // carica il nuovo URL in-place quando `selectedStream`
+                    // cambia (vedi `.onChange(of: url)` in PlayerView).
+                    // Nessun `.id(stream.id)`: forzarlo ricreerebbe l'intera
+                    // vista (e il relativo `KSPlayerContainerView`) ad ogni
+                    // canale, esattamente il "chiudi e riapri" che questo
+                    // fix elimina.
+                    //
+                    // `.task(id: stream.id)` al posto di `.onAppear`: con la
+                    // vista che non viene più ricreata ad ogni canale,
+                    // `.onAppear` scatterebbe una sola volta per l'intera
+                    // sessione di zapping (la vista "appare" una volta
+                    // sola). `.task(id:)` invece si riavvia automaticamente
+                    // ad ogni cambio di `stream.id`, incluso il primo,
+                    // registrando correttamente ogni canale zappato nei
+                    // "visti di recente".
+                    .task(id: stream.id) {
                         recentlyWatched.record(
                             id: favoriteID(for: stream),
                             title: stream.name,
