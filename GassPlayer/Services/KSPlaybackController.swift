@@ -31,6 +31,61 @@ import KSPlayer
 /// stesso container già presente a schermo — nessuna nuova
 /// presentazione, nessun reset di stato (blocco schermo, timer di
 /// spegnimento, ecc.), transizione fluida.
+/// Modalità di adattamento del video al riquadro dello schermo, esposta
+/// nel player (pulsante nella `topBar`, vedi `PlayerView`).
+/// Mappa 1:1 su `UIView.ContentMode`, che è il tipo letto/scritto da
+/// `MediaPlayerProtocol.contentMode` in KSPlayer (il player, sia motore
+/// AVPlayer sia motore FFmpeg/KSMEPlayer, applica questo valore alla
+/// propria vista di rendering — `AVPlayerLayer.videoGravity` nel primo
+/// caso, trasformazione della vista OpenGL/Metal nel secondo — quindi
+/// funziona in modo identico indipendentemente da quale dei due motori
+/// stia effettivamente decodificando il flusso corrente).
+enum VideoGravityMode: String, CaseIterable, Identifiable {
+    /// Il video intero è visibile, con eventuali barre nere ai lati:
+    /// nessun ritaglio, nessuna deformazione. Default.
+    case fit
+    /// Il video riempie tutto il riquadro ritagliando le parti che
+    /// eccedono: nessuna barra nera, nessuna deformazione, ma parte
+    /// dell'immagine (di solito i bordi) non è visibile.
+    case fill
+    /// Il video viene stirato per riempire esattamente il riquadro:
+    /// nessuna barra nera, nessun ritaglio, ma l'immagine viene
+    /// deformata se le proporzioni non corrispondono.
+    case stretch
+
+    var id: String { rawValue }
+
+    var contentMode: UIView.ContentMode {
+        switch self {
+        case .fit: return .scaleAspectFit
+        case .fill: return .scaleAspectFill
+        case .stretch: return .scaleToFill
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .fit: return "rectangle.arrowtriangle.2.inward"
+        case .fill: return "arrow.up.left.and.arrow.down.right.rectangle"
+        case .stretch: return "rectangle.expand.vertical"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .fit: return "Adatta"
+        case .fill: return "Riempi"
+        case .stretch: return "Stira"
+        }
+    }
+
+    var next: VideoGravityMode {
+        let all = Self.allCases
+        let idx = all.firstIndex(of: self) ?? 0
+        return all[(idx + 1) % all.count]
+    }
+}
+
 @MainActor
 final class KSPlaybackController: NSObject, ObservableObject {
     /// Preferenze di riproduzione avanzate regolabili dall'utente
@@ -57,6 +112,13 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// `KSOptions.videoDelay` (secondi): sincronizzazione audio/video
         /// manuale. Positivo = video ritardato rispetto all'audio.
         var videoDelay: Double = 0
+        /// Modalità di adattamento del video al riquadro (vedi
+        /// `VideoGravityMode`). A differenza di decodifica/
+        /// de-interlacciamento, questa si applica al volo (proprietà
+        /// della vista di rendering, non della pipeline FFmpeg) e viene
+        /// comunque riportata qui perché deve sopravvivere allo zapping
+        /// canale/episodio (`load(url:title:)` ricrea il layer da zero).
+        var videoGravity: VideoGravityMode = .fit
     }
 
     @Published var state: KSPlayerState = .initialized
@@ -121,7 +183,9 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.isAccurateSeek = preferences.isAccurateSeek
         options.autoDeInterlace = preferences.autoDeInterlace
         options.videoDelay = preferences.videoDelay
-        return KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
+        let layer = KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
+        layer.player.contentMode = preferences.videoGravity.contentMode
+        return layer
     }
 
     /// FEATURE MANCANTE aggiunta (precedente/successivo "in-place"): carica
@@ -234,6 +298,15 @@ final class KSPlaybackController: NSObject, ObservableObject {
     func setAccurateSeek(_ enabled: Bool) {
         preferences.isAccurateSeek = enabled
         layer.options.isAccurateSeek = enabled
+    }
+
+    /// A differenza di `setHardwareDecode`/`setAutoDeInterlace`, non
+    /// richiede `reload()`: `contentMode` è letto ad ogni frame renderizzato
+    /// dalla vista del player (sia motore AVPlayer sia FFmpeg), quindi il
+    /// cambiamento è visibile all'istante sul fotogramma corrente.
+    func setVideoGravity(_ mode: VideoGravityMode) {
+        preferences.videoGravity = mode
+        layer.player.contentMode = mode.contentMode
     }
 
     func setHardwareDecode(_ enabled: Bool) {
