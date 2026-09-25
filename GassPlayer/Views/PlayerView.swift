@@ -18,6 +18,16 @@ struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var controller: KSPlaybackController
 
+    // FEATURE aggiunta (menu "…" — sezioni "Cronologia dei canali" /
+    // "Cerca canale"): entrambe leggono dati già gestiti altrove
+    // nell'app (`RecentlyWatchedStore`, già @Published e persistito;
+    // `GlobalSearchView`, già funzionante altrove) invece di duplicarne
+    // la logica qui. Sono environment object già iniettati sulla radice
+    // della gerarchia (`ContentView`) e propagati automaticamente
+    // attraverso la `fullScreenCover` che presenta questo player.
+    @EnvironmentObject private var recentlyWatched: RecentlyWatchedStore
+    @EnvironmentObject private var sourceManager: SourceManager
+
     // Picker/menu
     @State private var showTrackPicker = false
     @State private var showAdvancedSettings = false
@@ -25,6 +35,9 @@ struct PlayerView: View {
     @State private var showExternalPlayerMenu = false
     @State private var showSpeedPicker = false
     @State private var showSleepTimerPicker = false
+    @State private var showAspectPicker = false
+    @State private var showChannelHistory = false
+    @State private var showChannelSearch = false
 
     // Selezioni correnti (usate per mostrare un segno di spunta nei picker)
     @State private var currentPlaybackRate: Double = 1.0
@@ -55,6 +68,7 @@ struct PlayerView: View {
     @State private var containerWidth: CGFloat = UIScreen.main.bounds.width
     @State private var isLocked = false
     @State private var externalPlayers: [ExternalPlayer] = []
+    @State private var airPlayRoutePicker: AVRoutePickerView?
 
     /// BUG FIX ("preferenze nel menù '…' corrotte al tocco"): mentre un
     /// picker/dialog è aperto il timer di auto-hide dei controlli
@@ -68,6 +82,7 @@ struct PlayerView: View {
     private var isAnyModalPresented: Bool {
         showTrackPicker || showAdvancedSettings || showQualityPicker
             || showExternalPlayerMenu || showSpeedPicker || showSleepTimerPicker
+            || showAspectPicker || showChannelHistory || showChannelSearch
     }
 
     init(url: URL, title: String, onPrevious: (() -> Void)? = nil, onNext: (() -> Void)? = nil) {
@@ -191,6 +206,27 @@ struct PlayerView: View {
                 }
                 Button("Annulla", role: .cancel) {}
             }
+            .confirmationDialog("Rapporto di aspetto", isPresented: $showAspectPicker, titleVisibility: .visible) {
+                ForEach(VideoGravityMode.allCases) { mode in
+                    Button(mode == controller.preferences.videoGravity ? "✓ \(mode.label)" : mode.label) {
+                        controller.setVideoGravity(mode)
+                    }
+                }
+                Button("Annulla", role: .cancel) {}
+            }
+            .sheet(isPresented: $showChannelHistory) {
+                ChannelHistoryView(
+                    items: recentlyWatched.items.filter { $0.kind == "live" },
+                    onSelect: { item in
+                        controller.load(url: item.streamURL, title: item.title)
+                        showChannelHistory = false
+                    }
+                )
+            }
+            .sheet(isPresented: $showChannelSearch) {
+                GlobalSearchView()
+                    .environmentObject(sourceManager)
+            }
     }
 
     // MARK: - Gesture handling
@@ -206,6 +242,19 @@ struct PlayerView: View {
         let isForward = location.x > containerWidth / 2
         controller.skip(by: isForward ? 10 : -10)
         showToast("\(isForward ? "+" : "-")10s")
+        haptic()
+        scheduleAutoHide()
+    }
+
+    /// FEATURE aggiunta: adattamento video (Adatta/Riempi/Stira), un tasto
+    /// dedicato nella `topBar` invece che sepolto nel menu "…" — è
+    /// un'azione che si usa spesso al volo (specie su contenuti con bordi
+    /// neri o proporzioni sbagliate nelle playlist IPTV) e merita un solo
+    /// tocco, non due.
+    private func cycleVideoGravity() {
+        let next = controller.preferences.videoGravity.next
+        controller.setVideoGravity(next)
+        showToast(next.label, duration: 900_000_000)
         haptic()
         scheduleAutoHide()
     }
@@ -320,12 +369,15 @@ struct PlayerView: View {
                     if controller.isBuffering {
                         ProgressView().tint(.white).padding(.horizontal, 4)
                     }
-                    AirPlayButton()
+                    AirPlayButton(onCreate: { airPlayRoutePicker = $0 })
                         .frame(width: 30, height: 30)
                     if controller.supportsPictureInPicture {
                         GlassIconButton(systemImage: "pip.enter", size: 34) { controller.isPipActive = true }
                     }
                     GlassIconButton(systemImage: "arrow.up.forward.app", size: 34) { showExternalPlayerMenu = true }
+                    GlassIconButton(systemImage: controller.preferences.videoGravity.systemImage, size: 34) {
+                        cycleVideoGravity()
+                    }
                     optionsMenu
                 }
             }
@@ -341,28 +393,79 @@ struct PlayerView: View {
         .background(LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom))
     }
 
+    /// Ricostruito per rispecchiare esattamente la struttura mostrata
+    /// dall'utente (3 gruppi con intestazione grigia, stesso ordine/testo/
+    /// icona per ogni voce): `Section` dentro un `Menu` nativo SwiftUI
+    /// produce di per sé quel pannello arrotondato con divisori e titoli
+    /// di gruppo — nessuna vista custom necessaria, stesso comportamento
+    /// affidabile di `presentAfterMenuDismiss` già in uso per le voci
+    /// esistenti.
     private var optionsMenu: some View {
         Menu {
-            Button("Velocità di riproduzione (\(currentPlaybackRate == 1.0 ? "1x" : currentPlaybackRate.formatted() + "x"))", systemImage: "speedometer") {
-                presentAfterMenuDismiss { showSpeedPicker = true }
+            Section("Impostazioni e controlli video") {
+                Button("Rapporto di aspetto", systemImage: "aspectratio") {
+                    presentAfterMenuDismiss { showAspectPicker = true }
+                }
+                Button("Cronologia dei canali", systemImage: "clock") {
+                    presentAfterMenuDismiss { showChannelHistory = true }
+                }
+                Button("Cerca canale", systemImage: "magnifyingglass") {
+                    presentAfterMenuDismiss { showChannelSearch = true }
+                }
+                Button("Blocca schermo", systemImage: "lock") {
+                    haptic()
+                    isLocked = true
+                }
             }
-            Button("Qualità video\(selectedVideoTrackName.map { " (\($0))" } ?? "")", systemImage: "4k.tv") {
-                presentAfterMenuDismiss { showQualityPicker = true }
+
+            Section("Impostazioni lettore") {
+                // Motore di decodifica: questo player usa un solo engine
+                // (KSPlayer, AVPlayer nativo + fallback FFmpeg incorporato
+                // automaticamente da KSPlayer stesso), non una scelta tra
+                // più player come in altre app — quindi questa voce
+                // corrisponde alla leva reale più vicina: `hardwareDecode`
+                // (VideoToolbox/Metal) vs decodifica software FFmpeg pura.
+                Button(
+                    controller.preferences.hardwareDecode ? "✓ Usa KSPlayer (Metal)" : "Usa KSPlayer (Metal)",
+                    systemImage: "cpu"
+                ) {
+                    haptic()
+                    controller.setHardwareDecode(!controller.preferences.hardwareDecode)
+                    showToast(controller.preferences.hardwareDecode ? "Decodifica hardware (Metal)" : "Decodifica software (FFmpeg)", duration: 1_200_000_000)
+                }
+                Button("Velocità di riproduzione (\(currentPlaybackRate == 1.0 ? "1x" : currentPlaybackRate.formatted() + "x"))", systemImage: "speedometer") {
+                    presentAfterMenuDismiss { showSpeedPicker = true }
+                }
+                Button("Qualità video\(selectedVideoTrackName.map { " (\($0))" } ?? "")", systemImage: "4k.tv") {
+                    presentAfterMenuDismiss { showQualityPicker = true }
+                }
+                Button("Impostazioni avanzate", systemImage: "slider.horizontal.3") {
+                    presentAfterMenuDismiss { showAdvancedSettings = true }
+                }
+                Button("Audio e sottotitoli", systemImage: "text.bubble") {
+                    presentAfterMenuDismiss { showTrackPicker = true }
+                }
+                Button(sleepTimerMenuLabel, systemImage: sleepTimerMinutes != nil ? "moon.zzz.fill" : "moon.zzz") {
+                    presentAfterMenuDismiss { showSleepTimerPicker = true }
+                }
             }
-            Button("Impostazioni avanzate", systemImage: "slider.horizontal.3") {
-                presentAfterMenuDismiss { showAdvancedSettings = true }
-            }
-            Button("Audio e sottotitoli", systemImage: "text.bubble") {
-                presentAfterMenuDismiss { showTrackPicker = true }
-            }
-            Divider()
-            Button(sleepTimerMenuLabel, systemImage: sleepTimerMinutes != nil ? "moon.zzz.fill" : "moon.zzz") {
-                presentAfterMenuDismiss { showSleepTimerPicker = true }
-            }
-            Divider()
-            Button("Blocca schermo", systemImage: "lock") {
-                haptic()
-                isLocked = true
+
+            Section("Trasmissione video e audio") {
+                Button("AirPlay audio", systemImage: "airplayaudio") {
+                    triggerAirPlayPicker()
+                }
+                Button("AirPlay video", systemImage: "airplayvideo") {
+                    triggerAirPlayPicker()
+                }
+                // Chromecast richiede il Google Cast SDK come nuova
+                // dipendenza SPM/CocoaPods: non presente in questo
+                // progetto e non aggiungibile alla cieca senza poter
+                // compilare/verificare qui. Voce mostrata per coerenza
+                // visiva con lo screenshot ma onestamente non funzionante
+                // finché quella dipendenza non viene aggiunta a parte.
+                Button("Chromecast (richiede Google Cast SDK)", systemImage: "tv.badge.wifi") {
+                    showToast("Chromecast non ancora integrato", duration: 1_400_000_000)
+                }
             }
         } label: {
             GlassIconGlyph(systemImage: "ellipsis", size: 34)
@@ -371,6 +474,23 @@ struct PlayerView: View {
         .modifier(NativeOrLegacyGlassCircle(tint: nil, isInSystemToolbar: false))
         .accessibilityLabel("Altre opzioni")
     }
+
+    /// Innesca il picker di sistema AirPlay senza dover mostrare un'altra
+    /// `AVRoutePickerView` visibile a schermo: `AVRoutePickerView` non è
+    /// programmabile via API pubblica dedicata, ma incapsula internamente
+    /// un `UIButton` che risponde a `sendActions(for: .touchUpInside)` —
+    /// tecnica ampiamente usata proprio per innescarla da un tasto
+    /// personalizzato. Se Apple cambiasse quella gerarchia interna in una
+    /// futura versione di iOS, questa chiamata diventerebbe semplicemente
+    /// un no-op silenzioso (nessun crash, nessun errore di compilazione):
+    /// per questo qui c'è un solo punto di innesco condiviso da entrambe
+    /// le voci "AirPlay audio/video", riutilizzando la STESSA istanza già
+    /// visibile nella `topBar` invece di crearne una seconda nascosta.
+    private func triggerAirPlayPicker() {
+        guard let picker = airPlayRoutePicker else { return }
+        picker.subviews.compactMap { $0 as? UIButton }.first?.sendActions(for: .touchUpInside)
+    }
+
 
     private var progressBar: some View {
         VStack(spacing: 8) {
@@ -631,10 +751,18 @@ struct KSPlayerContainerView: UIViewRepresentable {
 }
 
 struct AirPlayButton: UIViewRepresentable {
+    /// Espone al chiamante la `AVRoutePickerView` appena creata, così il
+    /// menu "…" può innescarla a distanza (vedi `triggerAirPlayPicker`)
+    /// riusando questa STESSA istanza invece di crearne una seconda
+    /// invisibile — un'unica `AVRoutePickerView` per sessione di
+    /// riproduzione, come previsto dalla view stessa.
+    var onCreate: ((AVRoutePickerView) -> Void)? = nil
+
     func makeUIView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView()
         view.tintColor = .white
         view.activeTintColor = .systemBlue
+        onCreate?(view)
         return view
     }
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
@@ -885,6 +1013,72 @@ struct TrackPickerView: View {
             }
             .navigationTitle("Tracce")
             .toolbar { Button("Chiudi") { dismiss() } }
+        }
+    }
+}
+
+/// Sheet "Cronologia dei canali", raggiungibile dal menu "…": elenca i
+/// canali live aperti di recente (`RecentlyWatchedStore`, già alimentato
+/// altrove nell'app ad ogni riproduzione) e permette di riaprirli
+/// nello STESSO player, in-place, con `controller.load(url:title:)` —
+/// stesso meccanismo già usato per precedente/successivo, nessuna nuova
+/// presentazione del player.
+struct ChannelHistoryView: View {
+    let items: [RecentlyWatchedItem]
+    let onSelect: (RecentlyWatchedItem) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if items.isEmpty {
+                    ContentUnavailableViewCompat(
+                        title: "Nessun canale recente",
+                        message: "I canali live che apri verranno elencati qui."
+                    )
+                } else {
+                    List(items) { item in
+                        Button {
+                            onSelect(item)
+                        } label: {
+                            HStack {
+                                Image(systemName: "play.tv")
+                                    .foregroundStyle(.secondary)
+                                VStack(alignment: .leading) {
+                                    Text(item.title).lineLimit(1)
+                                    Text(item.openedAt.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Cronologia dei canali")
+            .toolbar { Button("Chiudi") { dismiss() } }
+        }
+    }
+}
+
+/// `ContentUnavailableView` esiste solo da iOS 17: questo fallback usa
+/// lo stesso identico markup su iOS 16, evitando di alzare a forza la
+/// deployment target del progetto solo per questa sheet.
+struct ContentUnavailableViewCompat: View {
+    let title: String
+    let message: String
+
+    var body: some View {
+        if #available(iOS 17.0, *) {
+            ContentUnavailableView(title, systemImage: "clock", description: Text(message))
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: "clock").font(.largeTitle).foregroundStyle(.secondary)
+                Text(title).font(.headline)
+                Text(message).font(.subheadline).foregroundStyle(.secondary)
+            }
+            .multilineTextAlignment(.center)
+            .padding()
         }
     }
 }
