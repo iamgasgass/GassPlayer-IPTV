@@ -11,8 +11,14 @@ struct SeriesEpisodesView: View {
     @State private var selectedSeason: Int?
     @State private var isLoading = true
     @State private var errorMessage: String?
-    @State private var selectedEpisodeURL: URL?
-    @State private var selectedEpisodeTitle = ""
+
+    // FEATURE MANCANTE aggiunta: pulsanti precedente/successivo nel player.
+    // Prima si teneva traccia solo dell'URL/titolo dell'episodio in
+    // riproduzione, senza alcun riferimento all'episodio stesso: impossibile
+    // calcolare "il prossimo" senza rifare la ricerca. Ora si tiene
+    // l'`Episode` selezionato (già `Identifiable`), da cui URL, titolo e
+    // adiacenza nella stagione si derivano tutti allo stesso modo.
+    @State private var selectedEpisode: XtreamSeriesInfo.Episode?
 
     var body: some View {
         Group {
@@ -41,7 +47,7 @@ struct SeriesEpisodesView: View {
                         Section("Episodi — Stagione \(selectedSeason)") {
                             ForEach(info.episodes(forSeason: selectedSeason)) { episode in
                                 Button {
-                                    play(episode)
+                                    selectedEpisode = episode
                                 } label: {
                                     HStack {
                                         Text("\(episode.episodeNum).")
@@ -57,34 +63,70 @@ struct SeriesEpisodesView: View {
         }
         .navigationTitle(seriesName)
         .task { await loadSeriesInfo() }
-        .fullScreenCover(item: Binding(
-            get: { selectedEpisodeURL.map { IdentifiableURL(url: $0) } },
-            set: { selectedEpisodeURL = $0?.url }
-        )) { wrapped in
-            AdaptivePlayerView(url: wrapped.url, title: selectedEpisodeTitle)
+        .fullScreenCover(item: $selectedEpisode) { episode in
+            if let url = episodeStreamURL(for: episode) {
+                AdaptivePlayerView(
+                    url: url,
+                    title: episode.title,
+                    onPrevious: adjacentEpisode(to: episode, offset: -1).map { target in
+                        { selectedEpisode = target }
+                    },
+                    onNext: adjacentEpisode(to: episode, offset: 1).map { target in
+                        { selectedEpisode = target }
+                    }
+                )
+                // BUG FIX: come in ChannelGridView, senza `.id(episode.id)`
+                // passare all'episodio successivo tramite i nuovi pulsanti
+                // (che cambiano `selectedEpisode` a player già aperto) non
+                // ricreerebbe `PlayerView`/`KSPlaybackController`, lasciando
+                // in riproduzione l'episodio vecchio con il titolo nuovo.
+                .id(episode.id)
+                .onAppear { recordRecentlyWatched(episode: episode, url: url) }
+            } else {
+                ContentUnavailableView(
+                    "URL dell'episodio non valido",
+                    systemImage: "exclamationmark.triangle"
+                )
+            }
         }
     }
 
-    private func play(_ episode: XtreamSeriesInfo.Episode) {
+    private func episodeStreamURL(for episode: XtreamSeriesInfo.Episode) -> URL? {
         let service = XtreamAPIService(credentials: credentials)
         let ext = episode.containerExtension?.isEmpty == false ? episode.containerExtension! : "mp4"
-        if let url = service.episodeStreamURL(episodeId: episode.streamId, ext: ext) {
-            selectedEpisodeTitle = episode.title
-            selectedEpisodeURL = url
+        return service.episodeStreamURL(episodeId: episode.streamId, ext: ext)
+    }
 
-            recentlyWatched.record(
-                id: [
-                    credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-                    credentials.username,
-                    "series",
-                    String(seriesId),
-                    String(episode.streamId)
-                ].joined(separator: "|"),
-                title: "\(seriesName) · \(episode.title)",
-                kind: "series",
-                streamURL: url
-            )
-        }
+    /// FEATURE MANCANTE aggiunta: episodio adiacente nella stagione
+    /// attualmente selezionata, ordinato per numero di episodio (come già
+    /// mostrato nella lista). `nil` ai bordi della stagione, così i
+    /// pulsanti precedente/successivo nel player si nascondono da soli
+    /// sul primo/ultimo episodio invece di restare inattivi.
+    private func adjacentEpisode(to episode: XtreamSeriesInfo.Episode, offset: Int) -> XtreamSeriesInfo.Episode? {
+        guard let season = selectedSeason, let info = seriesInfo else { return nil }
+
+        let episodes = info.episodes(forSeason: season)
+        guard let currentIndex = episodes.firstIndex(where: { $0.id == episode.id }) else { return nil }
+
+        let targetIndex = currentIndex + offset
+        guard episodes.indices.contains(targetIndex) else { return nil }
+
+        return episodes[targetIndex]
+    }
+
+    private func recordRecentlyWatched(episode: XtreamSeriesInfo.Episode, url: URL) {
+        recentlyWatched.record(
+            id: [
+                credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                credentials.username,
+                "series",
+                String(seriesId),
+                String(episode.streamId)
+            ].joined(separator: "|"),
+            title: "\(seriesName) · \(episode.title)",
+            kind: "series",
+            streamURL: url
+        )
     }
 
     private func loadSeriesInfo() async {
@@ -104,9 +146,4 @@ struct SeriesEpisodesView: View {
         }
         isLoading = false
     }
-}
-
-private struct IdentifiableURL: Identifiable {
-    let url: URL
-    var id: URL { url }
 }

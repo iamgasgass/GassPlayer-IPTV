@@ -9,6 +9,16 @@ import KSPlayer
 struct PlayerView: View {
     let url: URL
     let title: String
+
+    /// FEATURE MANCANTE aggiunta: pulsanti "precedente"/"successivo" per
+    /// scorrere canali Live TV o episodi di una serie senza uscire dal
+    /// player. `nil` = funzione non disponibile in questo contesto (es.
+    /// primo/ultimo elemento della lista, oppure chiamante che non la
+    /// implementa): il pulsante corrispondente si nasconde da solo, non
+    /// resta mai visibile ma inattivo.
+    var onPrevious: (() -> Void)?
+    var onNext: (() -> Void)?
+
     @Environment(\.dismiss) private var dismiss
     @StateObject private var controller: KSPlaybackController
 
@@ -18,14 +28,19 @@ struct PlayerView: View {
     @State private var showQualityPicker = false
     @State private var showExternalPlayerMenu = false
     @State private var showSpeedPicker = false
+    @State private var showSleepTimerPicker = false
 
-    // Selezioni correnti (usate per mostrare un segno di spunta nei picker,
-    // FEATURE MANCANTE aggiunta: prima non c'era alcun modo di sapere quale
-    // velocità/traccia/qualità fosse effettivamente attiva).
+    // Selezioni correnti (usate per mostrare un segno di spunta nei picker)
     @State private var currentPlaybackRate: Double = 1.0
     @State private var selectedAudioTrackName: String?
     @State private var selectedSubtitleTrackName: String?
     @State private var selectedVideoTrackName: String?
+
+    // FEATURE MANCANTE aggiunta: timer di spegnimento automatico (comune in
+    // tutti i player video/IPTV, utile per addormentarsi guardando un
+    // programma senza consumare batteria/dati tutta la notte).
+    @State private var sleepTimerMinutes: Int?
+    @State private var sleepTimerTask: Task<Void, Never>?
 
     // Gesti brightness/volume
     @State private var brightnessOverlay: Double = 0
@@ -34,9 +49,11 @@ struct PlayerView: View {
     @State private var showVolumeHUD = false
     @State private var hudHideTask: Task<Void, Never>?
 
-    // Feedback avanzamento/riavvolgimento (doppio tap)
-    @State private var skipFeedback: String?
-    @State private var skipFeedbackTask: Task<Void, Never>?
+    // Toast generico (feedback doppio-tap, timer, ecc.) — un solo
+    // meccanismo riusato ovunque invece di uno stato dedicato per ogni
+    // singola notifica temporanea.
+    @State private var toastMessage: String?
+    @State private var toastTask: Task<Void, Never>?
 
     // Controlli generali
     @State private var showControls = true
@@ -48,22 +65,19 @@ struct PlayerView: View {
     // finestra/multi scena (iPad Stage Manager, Slide Over, Split View):
     // la larghezza reale del player viene ora letta dalla gerarchia SwiftUI
     // stessa tramite `GeometryReader` e riusata sia per il gesto
-    // luminosità/volume sia per le nuove zone di doppio tap.
+    // luminosità/volume sia per le zone di doppio tap.
     @State private var containerWidth: CGFloat = UIScreen.main.bounds.width
 
-    // FEATURE MANCANTE aggiunta: blocco schermo per evitare tocchi
-    // accidentali durante la visione (comune in tutti i player IPTV/VOD).
     @State private var isLocked = false
 
-    // Cache dei player esterni disponibili per questo URL: `available(for:)`
-    // esegue `UIApplication.shared.canOpenURL` per ogni candidato, una
-    // chiamata non gratuita se ripetuta ad ogni valutazione di `body`
-    // (accadeva due volte: nel banner d'errore e nel confirmationDialog).
-    // Calcolata una sola volta per URL e riusata ovunque.
+    // Cache dei player esterni disponibili per questo URL.
     @State private var externalPlayers: [ExternalPlayer] = []
 
-    init(url: URL, title: String) {
-        self.url = url; self.title = title
+    init(url: URL, title: String, onPrevious: (() -> Void)? = nil, onNext: (() -> Void)? = nil) {
+        self.url = url
+        self.title = title
+        self.onPrevious = onPrevious
+        self.onNext = onNext
         _controller = StateObject(wrappedValue: KSPlaybackController(url: url, title: title))
     }
 
@@ -87,7 +101,8 @@ struct PlayerView: View {
                 controller.layer.pause()
                 hideControlsTask?.cancel()
                 hudHideTask?.cancel()
-                skipFeedbackTask?.cancel()
+                toastTask?.cancel()
+                sleepTimerTask?.cancel()
             }
             .simultaneousGesture(dragGesture)
             .onTapGesture(count: 2, coordinateSpace: .local) { location in
@@ -103,8 +118,8 @@ struct PlayerView: View {
                 if showVolumeHUD { hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay) }
             }
             .overlay {
-                if let skipFeedback {
-                    skipFeedbackOverlay(skipFeedback)
+                if let toastMessage {
+                    toastOverlay(toastMessage)
                 }
             }
             .overlay {
@@ -151,41 +166,46 @@ struct PlayerView: View {
                 }
                 Button("Annulla", role: .cancel) {}
             }
+            .confirmationDialog("Timer di spegnimento", isPresented: $showSleepTimerPicker, titleVisibility: .visible) {
+                ForEach([15, 30, 45, 60], id: \.self) { minutes in
+                    Button("\(minutes) minuti") { scheduleSleepTimer(minutes: minutes) }
+                }
+                if sleepTimerMinutes != nil {
+                    Button("Disattiva timer", role: .destructive) { cancelSleepTimer() }
+                }
+                Button("Annulla", role: .cancel) {}
+            }
     }
 
     // MARK: - Gesture handling
 
     // BUG DI PROGETTAZIONE EVITATO: uno schermo "bloccato" che si sblocca
     // con un tap qualunque non protegge da nulla (tocchi accidentali in
-    // tasca, pulizia dello schermo…). Con lo schermo bloccato un tap
-    // generico non fa nulla: l'unico modo per sbloccare è il pulsante
-    // dedicato mostrato da `lockedOverlay`.
+    // tasca, pulizia dello schermo…). A schermo bloccato un tap generico
+    // non fa nulla: l'unico modo per sbloccare è il pulsante dedicato
+    // mostrato da `lockedOverlay`.
     private func handleSingleTap() {
         guard !isLocked else { return }
         toggleControls()
     }
 
-    // FEATURE MANCANTE aggiunta: doppio tap sulla metà sinistra/destra dello
-    // schermo per riavvolgere/avanzare di 10s, gesto ormai standard in ogni
-    // player video (YouTube, Netflix, VLC…). Disabilitato sui flussi live
-    // (duration <= 0), coerentemente con i pulsanti di skip nella barra.
     private func handleDoubleTap(at location: CGPoint) {
         guard !isLocked, controller.duration > 0 else { return }
 
         let isForward = location.x > containerWidth / 2
         controller.skip(by: isForward ? 10 : -10)
-        showSkipFeedback(isForward: isForward)
+        showToast("\(isForward ? "+" : "-")10s")
         haptic()
         scheduleAutoHide()
     }
 
-    private func showSkipFeedback(isForward: Bool, seconds: Int = 10) {
-        skipFeedbackTask?.cancel()
-        skipFeedback = "\(isForward ? "+" : "-")\(seconds)s"
-        skipFeedbackTask = Task {
-            try? await Task.sleep(nanoseconds: 600_000_000)
+    private func showToast(_ message: String, duration: UInt64 = 900_000_000) {
+        toastTask?.cancel()
+        toastMessage = message
+        toastTask = Task {
+            try? await Task.sleep(nanoseconds: duration)
             guard !Task.isCancelled else { return }
-            await MainActor.run { skipFeedback = nil }
+            await MainActor.run { toastMessage = nil }
         }
     }
 
@@ -201,6 +221,50 @@ struct PlayerView: View {
     private func unlock() {
         withAnimation { isLocked = false }
         scheduleAutoHide()
+    }
+
+    /// BUG FIX ("preferenze nel menù '…' corrotte/bug al tocco"): un Menu
+    /// che chiude se stesso e, nello stesso istante, fa scattare la
+    /// presentazione di un'altra sheet/confirmationDialog è un caso noto in
+    /// SwiftUI in cui la seconda presentazione può fallire silenziosamente
+    /// o richiedere un secondo tocco (i due sistemi di presentazione
+    /// competono sulla stessa transazione di animazione). Attendere che la
+    /// chiusura del Menu sia completata prima di impostare il flag rende la
+    /// voce affidabile al primo tocco, sempre.
+    private func presentAfterMenuDismiss(_ setFlag: @escaping () -> Void) {
+        Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { setFlag() }
+        }
+    }
+
+    // MARK: - Timer di spegnimento
+
+    private func scheduleSleepTimer(minutes: Int) {
+        sleepTimerTask?.cancel()
+        sleepTimerMinutes = minutes
+        showToast("Timer impostato: \(minutes) min", duration: 1_400_000_000)
+        sleepTimerTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(minutes) * 60_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                controller.layer.pause()
+                sleepTimerMinutes = nil
+                dismiss()
+            }
+        }
+    }
+
+    private func cancelSleepTimer() {
+        sleepTimerTask?.cancel()
+        sleepTimerTask = nil
+        sleepTimerMinutes = nil
+        showToast("Timer disattivato", duration: 1_200_000_000)
+    }
+
+    private var sleepTimerMenuLabel: String {
+        sleepTimerMinutes.map { "Timer di spegnimento (\($0) min)" } ?? "Timer di spegnimento"
     }
 
     // MARK: - Layout principale
@@ -230,32 +294,40 @@ struct PlayerView: View {
                 GlassIconButton(systemImage: "pip.enter") { controller.isPipActive = true }
             }
             GlassIconButton(systemImage: "arrow.up.forward.app") { showExternalPlayerMenu = true }
-            Button {
-                haptic()
-                isLocked = true
-            } label: {
-                GlassIconGlyph(systemImage: "lock")
-            }
-            .modifier(NativeOrLegacyGlassCircle(tint: nil, isInSystemToolbar: false))
-            .accessibilityLabel("Blocca schermo")
             optionsMenu
         }
         .padding(.horizontal)
         .padding(.top, 8)
-        .safeAreaPadding(.horizontal)
+        // BUG FIX ("player disallineato oltre i bordi"): mancava il
+        // rispetto del safe-area verticale (notch/Dynamic Island in alto,
+        // home indicator in basso). Combinato con troppe icone ravvicinate
+        // nella barra superiore, gli ultimi pulsanti finivano spinti oltre
+        // il bordo destro dello schermo su iPhone più stretti. Qui si
+        // applica il safe-area a tutti i lati (non solo orizzontale) e si è
+        // rimosso un pulsante ridondante (blocco schermo, già presente nel
+        // menu "…") che affollava inutilmente la barra.
+        .safeAreaPadding()
         .background(LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom))
     }
 
     private var optionsMenu: some View {
         Menu {
             Button("Velocità di riproduzione (\(currentPlaybackRate == 1.0 ? "1x" : currentPlaybackRate.formatted() + "x"))", systemImage: "speedometer") {
-                showSpeedPicker = true
+                presentAfterMenuDismiss { showSpeedPicker = true }
             }
             Button("Qualità video\(selectedVideoTrackName.map { " (\($0))" } ?? "")", systemImage: "4k.tv") {
-                showQualityPicker = true
+                presentAfterMenuDismiss { showQualityPicker = true }
             }
-            Button("Impostazioni buffer", systemImage: "dial.low") { showBufferSettings = true }
-            Button("Audio e sottotitoli", systemImage: "text.bubble") { showTrackPicker = true }
+            Button("Impostazioni buffer", systemImage: "dial.low") {
+                presentAfterMenuDismiss { showBufferSettings = true }
+            }
+            Button("Audio e sottotitoli", systemImage: "text.bubble") {
+                presentAfterMenuDismiss { showTrackPicker = true }
+            }
+            Divider()
+            Button(sleepTimerMenuLabel, systemImage: sleepTimerMinutes != nil ? "moon.zzz.fill" : "moon.zzz") {
+                presentAfterMenuDismiss { showSleepTimerPicker = true }
+            }
             Divider()
             Button("Blocca schermo", systemImage: "lock") {
                 haptic()
@@ -294,13 +366,16 @@ struct PlayerView: View {
                 )
                 .tint(.white)
             }
-            HStack(spacing: 28) {
-                // BUG FIX: i pulsanti di skip ±15s restavano sempre attivi
-                // anche sui flussi live (duration == 0), dove `skip(by:)`
-                // calcolava un target di seek pari a `.greatestFiniteMagnitude`
-                // — un seek non valido per uno stream senza durata nota.
-                // Ora sono mostrati (e quindi utilizzabili) solo quando
-                // esiste una durata reale da percorrere.
+            HStack(spacing: 22) {
+                // FEATURE MANCANTE aggiunta: precedente/successivo. Non
+                // dipendono dalla durata del flusso: servono anche in Live
+                // TV per cambiare canale senza uscire dal player.
+                if let onPrevious {
+                    GlassIconButton(systemImage: "backward.end.fill", size: 30) {
+                        haptic()
+                        onPrevious()
+                    }
+                }
                 if controller.duration > 0 {
                     GlassIconButton(systemImage: "gobackward.15", size: 34) {
                         haptic()
@@ -320,6 +395,12 @@ struct PlayerView: View {
                         scheduleAutoHide()
                     }
                 }
+                if let onNext {
+                    GlassIconButton(systemImage: "forward.end.fill", size: 30) {
+                        haptic()
+                        onNext()
+                    }
+                }
                 if controller.duration > 0 {
                     Text("\(formatted(controller.currentTime)) / \(formatted(controller.duration))")
                         .font(.caption.monospacedDigit())
@@ -334,7 +415,7 @@ struct PlayerView: View {
         }
         .padding(.horizontal)
         .padding(.bottom, 8)
-        .safeAreaPadding(.horizontal)
+        .safeAreaPadding()
         .background(LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom))
     }
 
@@ -354,6 +435,7 @@ struct PlayerView: View {
                 .padding(.bottom, 30)
                 Spacer()
             }
+            .safeAreaPadding()
         }
         .transition(.opacity)
     }
@@ -404,7 +486,7 @@ struct PlayerView: View {
             Spacer()
             HStack { GlassIconButton(systemImage: "xmark") { dismiss() }; Spacer() }
                 .padding()
-                .safeAreaPadding(.horizontal)
+                .safeAreaPadding()
         }
     }
 
@@ -419,7 +501,7 @@ struct PlayerView: View {
                 // invece di lasciarlo scattare in background: prima, due
                 // trascinamenti ravvicinati (es. luminosità poi volume entro
                 // 0.8s) potevano far sparire l'HUD del secondo gesto ancora
-                // in corso, perché il primo `asyncAfter` non veniva annullato.
+                // in corso, perché il primo timer non veniva annullato.
                 hudHideTask?.cancel()
 
                 let delta = -value.translation.height / 200
@@ -457,9 +539,9 @@ struct PlayerView: View {
         .transition(.opacity)
     }
 
-    private func skipFeedbackOverlay(_ label: String) -> some View {
+    private func toastOverlay(_ label: String) -> some View {
         Text(label)
-            .font(.title2.weight(.bold))
+            .font(.title3.weight(.bold))
             .foregroundStyle(.white)
             .padding(.horizontal, 20)
             .padding(.vertical, 10)
@@ -582,19 +664,31 @@ struct BufferSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
 
-    private var bufferDurationBinding: Binding<Double> {
-        Binding(
-            get: { controller.layer.options.preferredForwardBufferDuration },
-            set: { controller.layer.options.preferredForwardBufferDuration = $0 }
-        )
+    // BUG FIX ("preferenze nel menù '…' corrotte/non funzionanti"): la
+    // slider era collegata direttamente a `controller.layer.options`, una
+    // proprietà NON osservata da Combine (`KSOptions` non è `@Published`).
+    // Il valore veniva sì scritto correttamente, ma l'etichetta con i
+    // secondi sotto la slider non si aggiornava a schermo durante il
+    // trascinamento, perché nulla notificava alla view di ridisegnarsi:
+    // sembrava un'impostazione "rotta" anche se in realtà veniva applicata.
+    // Ora la slider guida uno `@State` locale (che SwiftUI osserva
+    // nativamente) e lo propaga al controller ad ogni variazione.
+    @State private var bufferDuration: Double
+
+    init(controller: KSPlaybackController) {
+        self.controller = controller
+        _bufferDuration = State(initialValue: controller.layer.options.preferredForwardBufferDuration)
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Buffer") {
-                    Slider(value: bufferDurationBinding, in: 1...30, step: 1) { Text("Durata buffer") }
-                    Text("\(Int(controller.layer.options.preferredForwardBufferDuration)) secondi").foregroundStyle(.secondary)
+                    Slider(value: $bufferDuration, in: 1...30, step: 1) { Text("Durata buffer") }
+                        .onChange(of: bufferDuration) { newValue in
+                            controller.layer.options.preferredForwardBufferDuration = newValue
+                        }
+                    Text("\(Int(bufferDuration)) secondi").foregroundStyle(.secondary)
                 }
                 Section("Riproduzione") {
                     Text("Stato: \(controller.state.description)")
