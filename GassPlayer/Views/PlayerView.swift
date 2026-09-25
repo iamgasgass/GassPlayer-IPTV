@@ -329,150 +329,75 @@ struct PlayerView: View {
 
     // MARK: - Layout principale
 
+    /// BUG FIX REALE ("il menu '…' smette di rispondere dopo pochi
+    /// secondi" / "scrollando si ricarica all'inizio"): la causa non era
+    /// nella struttura del menu in sé, ma nel FATTO che `topBar` (che lo
+    /// contiene) era una `computed var` interna a `PlayerView`, la quale
+    /// osserva l'intero `controller` come `@StateObject`. `currentTime` è
+    /// `@Published` e viene aggiornato fino a 5 volte al secondo durante
+    /// la riproduzione (throttle ≥200ms in `KSPlaybackController`): OGNI
+    /// singolo tick invalida l'intero `body` di `PlayerView`, che
+    /// ricalcola anche `topBar`/`optionsMenu` pur non leggendo affatto
+    /// `currentTime` — e un `Menu` nativo aperto, quando la sua gerarchia
+    /// viene ricostruita così spesso dal genitore, viene chiuso/resettato
+    /// silenziosamente da UIKit. L'intervallo (~200ms-1s prima che
+    /// diventi percepibile) coincide esattamente con "dopo pochi secondi
+    /// non risponde più".
+    ///
+    /// Fix: `PlayerTopBar` è ora un `View` REALMENTE separato (non una
+    /// computed var), reso `Equatable` su un piccolo struct dati
+    /// (`PlayerTopBarData`) che include SOLO ciò che serve a disegnarlo —
+    /// `currentTime`/`duration` non ne fanno parte. Con `.equatable()`
+    /// applicato, SwiftUI confronta i dati prima di ridisegnare: se sono
+    /// identici (come ad ogni tick di `currentTime`), salta del tutto la
+    /// ricostruzione di quel sottoalbero, lasciando il menu aperto
+    /// indisturbato. `progressBar` resta invece una computed var normale,
+    /// perché DEVE seguire `currentTime` in tempo reale.
     private var unifiedControlSurface: some View {
         VStack {
-            topBar
+            PlayerTopBar(
+                data: PlayerTopBarData(
+                    title: title,
+                    isBuffering: controller.isBuffering,
+                    supportsPictureInPicture: controller.supportsPictureInPicture,
+                    videoGravity: controller.preferences.videoGravity,
+                    hardwareDecode: controller.preferences.hardwareDecode,
+                    currentPlaybackRate: currentPlaybackRate,
+                    selectedVideoTrackName: selectedVideoTrackName,
+                    sleepTimerMinutes: sleepTimerMinutes
+                ),
+                actions: PlayerTopBar.Actions(
+                    dismiss: { dismiss() },
+                    pipToggle: { controller.isPipActive = true },
+                    externalPlayer: { showExternalPlayerMenu = true },
+                    cycleAspect: cycleVideoGravity,
+                    aspectPicker: { presentAfterMenuDismiss { showAspectPicker = true } },
+                    channelHistory: { presentAfterMenuDismiss { showChannelHistory = true } },
+                    channelSearch: { presentAfterMenuDismiss { showChannelSearch = true } },
+                    lock: {
+                        haptic()
+                        isLocked = true
+                    },
+                    hardwareDecodeToggle: {
+                        haptic()
+                        let wasEnabled = controller.preferences.hardwareDecode
+                        controller.setHardwareDecode(!wasEnabled)
+                        showToast(wasEnabled ? "Decodifica software (FFmpeg)" : "Decodifica hardware (Metal)", duration: 1_200_000_000)
+                    },
+                    speedPicker: { presentAfterMenuDismiss { showSpeedPicker = true } },
+                    qualityPicker: { presentAfterMenuDismiss { showQualityPicker = true } },
+                    advancedSettings: { presentAfterMenuDismiss { showAdvancedSettings = true } },
+                    trackPicker: { presentAfterMenuDismiss { showTrackPicker = true } },
+                    sleepTimerPicker: { presentAfterMenuDismiss { showSleepTimerPicker = true } },
+                    airPlayCreate: { airPlayRoutePicker = $0 },
+                    airPlayTrigger: triggerAirPlayPicker,
+                    chromecastTap: { showToast("Chromecast non ancora integrato", duration: 1_400_000_000) }
+                )
+            )
+            .equatable()
             Spacer()
             progressBar
         }
-    }
-
-    /// BUG FIX ("player disallineato oltre i bordi" / "troppi tasti che
-    /// fuoriescono dallo schermo"): il cluster di icone secondarie
-    /// (AirPlay, PiP, apri con altro player, "…") non si riduce mai sotto
-    /// la sua larghezza intrinseca in un `HStack` — su schermi stretti
-    /// (iPhone piccoli, Slide Over/Stage Manager su iPad, rotazione con
-    /// notch che riduce la safe area disponibile) il numero di icone
-    /// oggi presenti può superare la larghezza disponibile e finire
-    /// tagliato oltre il bordo destro. Racchiuderlo in uno
-    /// `ScrollView(.horizontal)` non cambia nulla quando tutto entra
-    /// (nessuna indicazione di scroll visibile, nessun tasto "in più" da
-    /// notare) ma garantisce che, quando NON entra, resti comunque
-    /// raggiungibile scorrendo invece di sparire oltre lo schermo.
-    private var topBar: some View {
-        HStack {
-            GlassIconButton(systemImage: "xmark") { dismiss() }
-
-            Spacer(minLength: 8)
-
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .shadow(radius: 4)
-                .layoutPriority(1)
-
-            Spacer(minLength: 8)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    if controller.isBuffering {
-                        ProgressView().tint(.white).padding(.horizontal, 4)
-                    }
-                    AirPlayButton(onCreate: { airPlayRoutePicker = $0 })
-                        .frame(width: 30, height: 30)
-                    if controller.supportsPictureInPicture {
-                        GlassIconButton(systemImage: "pip.enter", size: 34) { controller.isPipActive = true }
-                    }
-                    GlassIconButton(systemImage: "arrow.up.forward.app", size: 34) { showExternalPlayerMenu = true }
-                    GlassIconButton(systemImage: controller.preferences.videoGravity.systemImage, size: 34) {
-                        cycleVideoGravity()
-                    }
-                    optionsMenu
-                }
-            }
-            .scrollBounceBehavior(.basedOnSize)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal)
-        .padding(.top, 8)
-        // BUG FIX ("player disallineato oltre i bordi"): mancava il
-        // rispetto del safe-area verticale (notch/Dynamic Island in alto,
-        // home indicator in basso), applicato ora su tutti i lati.
-        .safeAreaPadding()
-        .background(LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom))
-    }
-
-    /// Ricostruito per rispecchiare esattamente la struttura mostrata
-    /// dall'utente (3 gruppi con intestazione grigia, stesso ordine/testo/
-    /// icona per ogni voce): `Section` dentro un `Menu` nativo SwiftUI
-    /// produce di per sé quel pannello arrotondato con divisori e titoli
-    /// di gruppo — nessuna vista custom necessaria, stesso comportamento
-    /// affidabile di `presentAfterMenuDismiss` già in uso per le voci
-    /// esistenti.
-    private var optionsMenu: some View {
-        Menu {
-            Section("Impostazioni e controlli video") {
-                Button("Rapporto di aspetto", systemImage: "aspectratio") {
-                    presentAfterMenuDismiss { showAspectPicker = true }
-                }
-                Button("Cronologia dei canali", systemImage: "clock") {
-                    presentAfterMenuDismiss { showChannelHistory = true }
-                }
-                Button("Cerca canale", systemImage: "magnifyingglass") {
-                    presentAfterMenuDismiss { showChannelSearch = true }
-                }
-                Button("Blocca schermo", systemImage: "lock") {
-                    haptic()
-                    isLocked = true
-                }
-            }
-
-            Section("Impostazioni lettore") {
-                // Motore di decodifica: questo player usa un solo engine
-                // (KSPlayer, AVPlayer nativo + fallback FFmpeg incorporato
-                // automaticamente da KSPlayer stesso), non una scelta tra
-                // più player come in altre app — quindi questa voce
-                // corrisponde alla leva reale più vicina: `hardwareDecode`
-                // (VideoToolbox/Metal) vs decodifica software FFmpeg pura.
-                Button(
-                    controller.preferences.hardwareDecode ? "✓ Usa KSPlayer (Metal)" : "Usa KSPlayer (Metal)",
-                    systemImage: "cpu"
-                ) {
-                    haptic()
-                    controller.setHardwareDecode(!controller.preferences.hardwareDecode)
-                    showToast(controller.preferences.hardwareDecode ? "Decodifica hardware (Metal)" : "Decodifica software (FFmpeg)", duration: 1_200_000_000)
-                }
-                Button("Velocità di riproduzione (\(currentPlaybackRate == 1.0 ? "1x" : currentPlaybackRate.formatted() + "x"))", systemImage: "speedometer") {
-                    presentAfterMenuDismiss { showSpeedPicker = true }
-                }
-                Button("Qualità video\(selectedVideoTrackName.map { " (\($0))" } ?? "")", systemImage: "4k.tv") {
-                    presentAfterMenuDismiss { showQualityPicker = true }
-                }
-                Button("Impostazioni avanzate", systemImage: "slider.horizontal.3") {
-                    presentAfterMenuDismiss { showAdvancedSettings = true }
-                }
-                Button("Audio e sottotitoli", systemImage: "text.bubble") {
-                    presentAfterMenuDismiss { showTrackPicker = true }
-                }
-                Button(sleepTimerMenuLabel, systemImage: sleepTimerMinutes != nil ? "moon.zzz.fill" : "moon.zzz") {
-                    presentAfterMenuDismiss { showSleepTimerPicker = true }
-                }
-            }
-
-            Section("Trasmissione video e audio") {
-                Button("AirPlay audio", systemImage: "airplayaudio") {
-                    triggerAirPlayPicker()
-                }
-                Button("AirPlay video", systemImage: "airplayvideo") {
-                    triggerAirPlayPicker()
-                }
-                // Chromecast richiede il Google Cast SDK come nuova
-                // dipendenza SPM/CocoaPods: non presente in questo
-                // progetto e non aggiungibile alla cieca senza poter
-                // compilare/verificare qui. Voce mostrata per coerenza
-                // visiva con lo screenshot ma onestamente non funzionante
-                // finché quella dipendenza non viene aggiunta a parte.
-                Button("Chromecast (richiede Google Cast SDK)", systemImage: "tv.badge.wifi") {
-                    showToast("Chromecast non ancora integrato", duration: 1_400_000_000)
-                }
-            }
-        } label: {
-            GlassIconGlyph(systemImage: "ellipsis", size: 34)
-        }
-        .menuStyle(.button)
-        .modifier(NativeOrLegacyGlassCircle(tint: nil, isInSystemToolbar: false))
-        .accessibilityLabel("Altre opzioni")
     }
 
     /// Innesca il picker di sistema AirPlay senza dover mostrare un'altra
@@ -704,6 +629,185 @@ struct PlayerView: View {
     }
 }
 
+/// Dati puri necessari a disegnare `PlayerTopBar` — DELIBERATAMENTE non
+/// include `currentTime`/`duration` (che cambiano fino a 5 volte al
+/// secondo durante la riproduzione): è proprio questa esclusione a
+/// rendere `.equatable()` efficace nel fermare i tick di `currentTime`
+/// prima che raggiungano il menu "…" (vedi commento su
+/// `unifiedControlSurface` in `PlayerView`).
+struct PlayerTopBarData: Equatable {
+    var title: String
+    var isBuffering: Bool
+    var supportsPictureInPicture: Bool
+    var videoGravity: VideoGravityMode
+    var hardwareDecode: Bool
+    var currentPlaybackRate: Double
+    var selectedVideoTrackName: String?
+    var sleepTimerMinutes: Int?
+}
+
+/// Barra superiore del player (chiudi, titolo, icone secondarie, menu
+/// "…") come `View` REALMENTE separato da `PlayerView` — non una
+/// computed var. Questo è ciò che rende `.equatable()` efficace:
+/// applicato a una computed var non avrebbe funzionato, perché
+/// `PlayerView.body` intero sarebbe comunque stato invalidato e
+/// ricalcolato ad ogni tick di `controller.currentTime` (essendo
+/// `controller` un `@StateObject` osservato dalla stessa `PlayerView`).
+/// Come `View` a sé stante con i propri parametri, SwiftUI può
+/// confrontare `PlayerTopBarData` PRIMA di ridisegnare e, se identico
+/// (il caso comune: solo il tempo è cambiato), saltare del tutto questo
+/// sottoalbero — lasciando un `Menu` eventualmente aperto indisturbato.
+struct PlayerTopBar: View, Equatable {
+    struct Actions {
+        var dismiss: () -> Void
+        var pipToggle: () -> Void
+        var externalPlayer: () -> Void
+        var cycleAspect: () -> Void
+        var aspectPicker: () -> Void
+        var channelHistory: () -> Void
+        var channelSearch: () -> Void
+        var lock: () -> Void
+        var hardwareDecodeToggle: () -> Void
+        var speedPicker: () -> Void
+        var qualityPicker: () -> Void
+        var advancedSettings: () -> Void
+        var trackPicker: () -> Void
+        var sleepTimerPicker: () -> Void
+        var airPlayCreate: (AVRoutePickerView) -> Void
+        var airPlayTrigger: () -> Void
+        var chromecastTap: () -> Void
+    }
+
+    let data: PlayerTopBarData
+    let actions: Actions
+
+    /// Le closure in `actions` non sono confrontabili (e non serve che
+    /// lo siano: sono sempre le stesse funzioni di `PlayerView`, non
+    /// cambiano mai valore in un modo rilevante per il disegno). Il
+    /// confronto è intenzionalmente limitato a `data`.
+    static func == (lhs: PlayerTopBar, rhs: PlayerTopBar) -> Bool {
+        lhs.data == rhs.data
+    }
+
+    // BUG FIX ("player disallineato oltre i bordi" / "troppi tasti che
+    // fuoriescono dallo schermo"): il cluster di icone secondarie
+    // (AirPlay, PiP, apri con altro player, rapporto di aspetto, "…")
+    // non si riduce mai sotto la sua larghezza intrinseca in un
+    // `HStack` — su schermi stretti il numero di icone oggi presenti
+    // può superare la larghezza disponibile e finire tagliato oltre il
+    // bordo destro. Lo `ScrollView(.horizontal)` non cambia nulla
+    // quando tutto entra, ma garantisce che resti raggiungibile
+    // scorrendo quando non entra, invece di sparire.
+    var body: some View {
+        HStack {
+            GlassIconButton(systemImage: "xmark") { actions.dismiss() }
+
+            Spacer(minLength: 8)
+
+            Text(data.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .shadow(radius: 4)
+                .layoutPriority(1)
+
+            Spacer(minLength: 8)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    if data.isBuffering {
+                        ProgressView().tint(.white).padding(.horizontal, 4)
+                    }
+                    AirPlayButton(onCreate: actions.airPlayCreate)
+                        .frame(width: 30, height: 30)
+                    if data.supportsPictureInPicture {
+                        GlassIconButton(systemImage: "pip.enter", size: 34) { actions.pipToggle() }
+                    }
+                    GlassIconButton(systemImage: "arrow.up.forward.app", size: 34) { actions.externalPlayer() }
+                    GlassIconButton(systemImage: data.videoGravity.systemImage, size: 34) { actions.cycleAspect() }
+                    optionsMenu
+                }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .safeAreaPadding()
+        .background(LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom))
+    }
+
+    /// Stessa struttura a 3 sezioni con intestazione grigia mostrata
+    /// nello screenshot dell'utente (`Section` dentro un `Menu` nativo
+    /// SwiftUI produce di per sé quel pannello arrotondato con divisori
+    /// e titoli di gruppo).
+    private var optionsMenu: some View {
+        Menu {
+            Section("Impostazioni e controlli video") {
+                Button("Rapporto di aspetto", systemImage: "aspectratio") {
+                    actions.aspectPicker()
+                }
+                Button("Cronologia dei canali", systemImage: "clock") {
+                    actions.channelHistory()
+                }
+                Button("Cerca canale", systemImage: "magnifyingglass") {
+                    actions.channelSearch()
+                }
+                Button("Blocca schermo", systemImage: "lock") {
+                    actions.lock()
+                }
+            }
+
+            Section("Impostazioni lettore") {
+                Button(
+                    data.hardwareDecode ? "✓ Usa KSPlayer (Metal)" : "Usa KSPlayer (Metal)",
+                    systemImage: "cpu"
+                ) {
+                    actions.hardwareDecodeToggle()
+                }
+                Button("Velocità di riproduzione (\(data.currentPlaybackRate == 1.0 ? "1x" : data.currentPlaybackRate.formatted() + "x"))", systemImage: "speedometer") {
+                    actions.speedPicker()
+                }
+                Button("Qualità video\(data.selectedVideoTrackName.map { " (\($0))" } ?? "")", systemImage: "4k.tv") {
+                    actions.qualityPicker()
+                }
+                Button("Impostazioni avanzate", systemImage: "slider.horizontal.3") {
+                    actions.advancedSettings()
+                }
+                Button("Audio e sottotitoli", systemImage: "text.bubble") {
+                    actions.trackPicker()
+                }
+                Button(
+                    data.sleepTimerMinutes.map { "Timer di spegnimento (\($0) min)" } ?? "Timer di spegnimento",
+                    systemImage: data.sleepTimerMinutes != nil ? "moon.zzz.fill" : "moon.zzz"
+                ) {
+                    actions.sleepTimerPicker()
+                }
+            }
+
+            Section("Trasmissione video e audio") {
+                Button("AirPlay audio", systemImage: "airplayaudio") {
+                    actions.airPlayTrigger()
+                }
+                Button("AirPlay video", systemImage: "airplayvideo") {
+                    actions.airPlayTrigger()
+                }
+                // Chromecast richiede il Google Cast SDK come nuova
+                // dipendenza: non presente in questo progetto, non
+                // aggiungibile alla cieca senza poter compilare qui.
+                Button("Chromecast (richiede Google Cast SDK)", systemImage: "tv.badge.wifi") {
+                    actions.chromecastTap()
+                }
+            }
+        } label: {
+            GlassIconGlyph(systemImage: "ellipsis", size: 34)
+        }
+        .menuStyle(.button)
+        .modifier(NativeOrLegacyGlassCircle(tint: nil, isInSystemToolbar: false))
+        .accessibilityLabel("Altre opzioni")
+    }
+}
+
 /// FIX ("cambiare canale senza uscire e riaprire il player"): riflette
 /// nella UIKit view il `KSPlayerLayer` corrente del controller. Quando
 /// `controller.load(url:title:)` sostituisce `layer` con uno nuovo (stesso
@@ -717,6 +821,7 @@ struct KSPlayerContainerView: UIViewRepresentable {
 
     final class Coordinator {
         weak var attachedPlayerView: UIView?
+        weak var freezeFrameView: UIImageView?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -733,20 +838,73 @@ struct KSPlayerContainerView: UIViewRepresentable {
         attach(controller.layer.player.view, to: uiView, coordinator: context.coordinator)
     }
 
+    /// OTTIMIZZAZIONE FLUIDITÀ ("sembra che chiuda e riapra il player"):
+    /// tra lo stacco della vecchia `UIView` del player e la comparsa del
+    /// primo fotogramma del nuovo flusso (che deve prima connettersi e
+    /// bufferizzare — un IPTV lento può impiegare secondi) c'era un
+    /// taglio netto a schermo nero, percepito dall'utente esattamente
+    /// come "il player si chiude e si riapre" anche se tecnicamente non
+    /// succede mai. Prima di staccare la vecchia vista ne catturiamo uno
+    /// snapshot statico e lo mostriamo sopra al nuovo container,
+    /// sfumandolo via in dissolvenza: l'ultimo fotogramma del canale
+    /// precedente resta visibile un istante invece di un nero secco,
+    /// dando la sensazione di transizione continua tipica dello zapping
+    /// su una TV, mentre sotto il nuovo flusso ha il tempo di iniziare a
+    /// bufferizzare (lo spinner in `topBar`, guidato da
+    /// `controller.isBuffering`, resta comunque il segnale primario di
+    /// caricamento in corso).
     private func attach(_ playerView: UIView?, to container: UIView, coordinator: Coordinator) {
+        if let oldView = coordinator.attachedPlayerView, oldView.window != nil,
+           let snapshot = oldView.snapshotImage() {
+            coordinator.freezeFrameView?.removeFromSuperview()
+            let freezeFrame = UIImageView(image: snapshot)
+            freezeFrame.frame = container.bounds
+            freezeFrame.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            freezeFrame.contentMode = .scaleAspectFit
+            freezeFrame.backgroundColor = .black
+            container.addSubview(freezeFrame)
+            coordinator.freezeFrameView = freezeFrame
+
+            UIView.animate(
+                withDuration: 0.35,
+                delay: 0.2,
+                options: [.curveEaseOut],
+                animations: { freezeFrame.alpha = 0 },
+                completion: { _ in freezeFrame.removeFromSuperview() }
+            )
+        }
+
         coordinator.attachedPlayerView?.removeFromSuperview()
         coordinator.attachedPlayerView = playerView
 
         guard let playerView else { return }
 
         playerView.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(playerView)
+        // `insertSubview(_:at: 0)` invece di `addSubview`: il nuovo
+        // player deve restare SOTTO al freeze-frame appena aggiunto
+        // sopra, altrimenti la dissolvenza nasconderebbe il nuovo
+        // flusso invece del taglio a nero che dovrebbe mascherare.
+        container.insertSubview(playerView, at: 0)
         NSLayoutConstraint.activate([
             playerView.topAnchor.constraint(equalTo: container.topAnchor),
             playerView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             playerView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             playerView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ])
+    }
+}
+
+private extension UIView {
+    /// Cattura un'immagine statica dell'ultimo fotogramma renderizzato,
+    /// usata per il crossfade in `KSPlayerContainerView.attach`.
+    /// `afterScreenUpdates: false` cattura la CPU-side render tree già
+    /// presente (istantaneo, nessuna attesa di un nuovo ciclo di
+    /// rendering) — sufficiente per un fermo immagine di transizione,
+    /// non serve un frame aggiornatissimo.
+    func snapshotImage() -> UIImage? {
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        let renderer = UIGraphicsImageRenderer(bounds: bounds)
+        return renderer.image { _ in drawHierarchy(in: bounds, afterScreenUpdates: false) }
     }
 }
 
