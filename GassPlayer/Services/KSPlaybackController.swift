@@ -3,7 +3,20 @@ import AVFoundation
 import MediaPlayer
 import KSPlayer
 
-/// Modalità di adattamento del video al riquadro dello schermo.
+/// Bridge SwiftUI-friendly per KSPlayerLayer, ora l'UNICO motore di
+/// riproduzione dell'app (AVPlayer nativo + FFmpeg via KSMEPlayer, con
+/// switch automatico incorporato nella libreria stessa — vedi
+/// KSPlayerLayer.finish(player:error:), che ritenta con
+/// KSOptions.secondPlayerType su qualunque errore prima di arrendersi).
+///
+/// FIX (zapping canale/episodio senza uscire e riaprire il player):
+/// `layer` è ora `@Published`: `load(url:title:)` crea un nuovo `KSPlayerLayer`
+/// per il nuovo URL e lo assegna a questa stessa istanza di `KSPlaybackController`,
+/// che resta viva per tutta la sessione di visione. `PlayerView` (che possiede il
+/// controller come `@StateObject`) non viene mai ricreata: `KSPlayerContainerView`
+/// osserva il cambio di `layer` e si limita a staccare la vecchia `UIView` del
+/// player e agganciare la nuova nello stesso container già presente a schermo —
+/// nessuna nuova presentazione, nessun reset di stato, transizione fluida con avvio immediato.
 enum VideoGravityMode: String, CaseIterable, Identifiable {
     case fit
     case fill
@@ -103,15 +116,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.isAccurateSeek = preferences.isAccurateSeek
         options.autoDeInterlace = preferences.autoDeInterlace
         options.videoDelay = preferences.videoDelay
-
         let layer = KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
         layer.player.contentMode = preferences.videoGravity.contentMode
         return layer
     }
 
-    /// Zapping in-place immediato senza distruggere la vista del player:
-    /// Invalida e scollega il vecchio layer, istanzia il nuovo per il nuovo URL,
-    /// reimposta il delegate e avvia immediatamente la pipeline di riproduzione.
     func load(url: URL, title: String) {
         layer.delegate = nil
         layer.pause()
@@ -129,17 +138,9 @@ final class KSPlaybackController: NSObject, ObservableObject {
         let newLayer = Self.buildLayer(for: url, preferences: preferences)
         layer = newLayer
         layer.delegate = self
-
-        // Innesco esplicito immediato:
-        layer.prepareToPlay()
+        MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] = title.isEmpty ? "GassPlayer" : title
         layer.play()
         startWatchdog()
-    }
-
-    /// Innesco ausiliario di sicurezza richiamato all'aggancio nella gerarchia UIKit
-    func ensurePlaybackStarted() {
-        guard !hasEverStartedPlaying, lastError == nil else { return }
-        layer.play()
     }
 
     func reload() {
@@ -171,7 +172,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
     func resetAttempts() {
         lastError = nil
         hasEverStartedPlaying = false
-        layer.prepareToPlay()
         layer.play()
         startWatchdog()
     }
@@ -183,8 +183,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
     func select(track: MediaPlayerTrack) {
         layer.player.select(track: track)
     }
-
-    // MARK: - Impostazioni avanzate
 
     func setPreferredForwardBufferDuration(_ value: Double) {
         preferences.preferredForwardBufferDuration = value
@@ -224,11 +222,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private func startWatchdog() {
         watchdogTask?.cancel()
         watchdogTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            try? await Task.sleep(nanoseconds: 7_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard !self.hasEverStartedPlaying, self.lastError == nil else { return }
-            DebugLogger.logAsync(.warning, "KSPlaybackController: nessuna riproduzione avviata dopo 5s (stato=\(self.state)), forzo re-innesco play")
-            self.layer.prepareToPlay()
+            DebugLogger.logAsync(.warning, "KSPlaybackController: nessuna riproduzione avviata dopo 7s (stato=\(self.state)), forzo ciclo pausa->play")
+            self.layer.pause()
             self.layer.play()
         }
     }
@@ -246,8 +244,6 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
             hasEverStartedPlaying = true
             watchdogTask?.cancel()
         case .readyToPlay:
-            hasEverStartedPlaying = true
-            watchdogTask?.cancel()
             MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] = title.isEmpty ? "GassPlayer" : title
         case .error:
             lastError = "Impossibile riprodurre il flusso. Il server potrebbe non essere raggiungibile o il formato non e' supportato."
