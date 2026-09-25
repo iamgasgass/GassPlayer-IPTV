@@ -31,36 +31,6 @@ import KSPlayer
 /// stesso container già presente a schermo — nessuna nuova
 /// presentazione, nessun reset di stato (blocco schermo, timer di
 /// spegnimento, ecc.), transizione fluida.
-///
-/// FIX 2026-09-25 (feature KSPlayer/FFmpeg mancanti, verificate sul
-/// sorgente ufficiale github.com/kingslay/KSPlayer — README.md, sezione
-/// "Set the properties in KSOptions"):
-///
-/// Aggiunte 6 proprietà REALI di `KSOptions` non ancora esposte
-/// all'utente, tutte raggiungibili da "Impostazioni avanzate" nel menu
-/// "…" del player:
-/// - `isLoopPlay`: riproduzione in loop (utile per clip/trailer VOD).
-///   Applicata "a caldo" (letta a fine riproduzione, non richiede
-///   ricaricamento).
-/// - `cache`: cache locale del flusso HTTP scaricato da FFmpeg — utile
-///   per riavvolgere/rivedere senza riscaricare dalla rete. Letta solo
-///   all'apertura del flusso: richiede `reload()`.
-/// - `subtitleDisable`: disattiva completamente la ricerca/decodifica di
-///   sottotitoli incorporati (risparmio di CPU su flussi senza necessità
-///   di sottotitoli). Richiede `reload()`.
-/// - `autoSelectEmbedSubtitle`: seleziona automaticamente la prima
-///   traccia sottotitoli incorporata disponibile all'apertura. Richiede
-///   `reload()`.
-/// - `asynchronousDecompression`: decompressione asincrona dei fotogrammi
-///   hardware-decodificati — può migliorare la fluidità su dispositivi
-///   più lenti. Richiede `reload()` (letta alla creazione del decoder).
-/// - `videoAdaptable`: consente a KSPlayer di cambiare automaticamente
-///   variante di bitrate su flussi HLS multi-bitrate in base alla banda
-///   disponibile. Richiede `reload()` (negoziata alla apertura del
-///   flusso).
-/// - `autoRotate`: applica automaticamente la rotazione indicata nei
-///   metadati del flusso (utile per contenuti girati in verticale).
-///   Applicata "a caldo" (letta dal renderer, non dall'apertura).
 @MainActor
 final class KSPlaybackController: NSObject, ObservableObject {
     /// Preferenze di riproduzione avanzate regolabili dall'utente
@@ -87,32 +57,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// `KSOptions.videoDelay` (secondi): sincronizzazione audio/video
         /// manuale. Positivo = video ritardato rispetto all'audio.
         var videoDelay: Double = 0
-        /// `KSOptions.isLoopPlay`: ricomincia automaticamente il flusso
-        /// alla fine invece di fermarsi. Pensato per contenuti VOD brevi
-        /// (trailer, clip); su Live TV/serie non ha alcun effetto visibile
-        /// perché il flusso non termina mai.
-        var isLoopPlay: Bool = false
-        /// `KSOptions.cache`: FFmpeg mantiene una cache locale del flusso
-        /// HTTP scaricato, permettendo di tornare indietro senza
-        /// riscaricare dalla rete. Aumenta l'uso di storage temporaneo.
-        var cacheHTTPStream: Bool = false
-        /// `KSOptions.subtitleDisable`: disattiva del tutto la ricerca di
-        /// sottotitoli incorporati nel flusso (nessuna traccia sottotitoli
-        /// sarà mai disponibile, indipendentemente da `TrackPickerView`).
-        var subtitleDisable: Bool = false
-        /// `KSOptions.autoSelectEmbedSubtitle`: seleziona automaticamente
-        /// la prima traccia sottotitoli incorporata trovata all'apertura
-        /// del flusso, senza dover passare da "Audio e sottotitoli".
-        var autoSelectEmbedSubtitle: Bool = true
-        /// `KSOptions.asynchronousDecompression`: decompressione asincrona
-        /// dei fotogrammi hardware-decodificati.
-        var asynchronousDecompression: Bool = true
-        /// `KSOptions.videoAdaptable`: adattamento automatico di bitrate
-        /// su flussi HLS multi-variante in base alla banda disponibile.
-        var videoAdaptable: Bool = true
-        /// `KSOptions.autoRotate`: applica la rotazione indicata nei
-        /// metadati del flusso (video girati in verticale).
-        var autoRotate: Bool = true
     }
 
     @Published var state: KSPlayerState = .initialized
@@ -123,7 +67,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
     @Published var isPipActive = false {
         didSet { layer.isPipActive = isPipActive }
     }
-
     @Published private(set) var layer: KSPlayerLayer
     @Published private(set) var preferences = PlaybackPreferences()
 
@@ -178,13 +121,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.isAccurateSeek = preferences.isAccurateSeek
         options.autoDeInterlace = preferences.autoDeInterlace
         options.videoDelay = preferences.videoDelay
-        options.isLoopPlay = preferences.isLoopPlay
-        options.cache = preferences.cacheHTTPStream
-        options.subtitleDisable = preferences.subtitleDisable
-        options.autoSelectEmbedSubtitle = preferences.autoSelectEmbedSubtitle
-        options.asynchronousDecompression = preferences.asynchronousDecompression
-        options.videoAdaptable = preferences.videoAdaptable
-        options.autoRotate = preferences.autoRotate
         return KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
     }
 
@@ -217,11 +153,10 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Ricarica lo stream corrente (stesso URL) con le `preferences`
     /// aggiornate: necessario per le impostazioni che agiscono a livello
-    /// di apertura/decodifica della pipeline (hardware/software,
-    /// de-interlacciamento, cache HTTP, sottotitoli, decompressione
-    /// asincrona, adattamento bitrate), che KSPlayer legge solo alla
-    /// creazione della pipeline e non possono essere cambiate "a caldo"
-    /// su un flusso già in riproduzione.
+    /// di decodifica (hardware/software, de-interlacciamento, sottotitoli
+    /// disattivati), che KSPlayer legge solo alla creazione della
+    /// pipeline e non possono essere cambiate "a caldo" su un flusso già
+    /// in riproduzione.
     func reload() {
         load(url: currentURL, title: title)
     }
@@ -275,12 +210,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
     //
     // Le impostazioni "live" si applicano immediatamente sul flusso in
     // riproduzione, scrivendo direttamente su `layer.options` (letto in
-    // continuo dal motore di rendering/seek). Le impostazioni che
-    // agiscono all'apertura della pipeline (decodifica, cache HTTP,
-    // sottotitoli, adattamento bitrate) richiedono invece che la
-    // pipeline FFmpeg/AVPlayer venga ricreata da zero per avere effetto:
-    // per queste, `reload()` è l'unico modo corretto di applicarle
-    // davvero, non un dettaglio implementativo rimandabile.
+    // continuo dal motore di rendering/seek). Le impostazioni di
+    // decodifica richiedono invece che la pipeline FFmpeg/AVPlayer venga
+    // ricreata da zero per avere effetto: per queste, `reload()` è
+    // l'unico modo corretto di applicarle davvero, non un dettaglio
+    // implementativo rimandabile.
 
     func setPreferredForwardBufferDuration(_ value: Double) {
         preferences.preferredForwardBufferDuration = value
@@ -309,58 +243,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     func setAutoDeInterlace(_ enabled: Bool) {
         preferences.autoDeInterlace = enabled
-        reload()
-    }
-
-    /// `KSOptions.isLoopPlay`: applicata "a caldo" — letta da KSPlayer
-    /// solo quando il flusso raggiunge la fine, quindi non richiede di
-    /// ricaricare la pipeline per avere effetto.
-    func setLoopPlay(_ enabled: Bool) {
-        preferences.isLoopPlay = enabled
-        layer.options.isLoopPlay = enabled
-    }
-
-    /// `KSOptions.autoRotate`: applicata "a caldo" — letta dal renderer
-    /// video ad ogni fotogramma, non dall'apertura del flusso.
-    func setAutoRotate(_ enabled: Bool) {
-        preferences.autoRotate = enabled
-        layer.options.autoRotate = enabled
-    }
-
-    /// `KSOptions.cache`: decisa da FFmpeg all'apertura del flusso HTTP.
-    /// Richiede `reload()` per applicarsi davvero.
-    func setCacheHTTPStream(_ enabled: Bool) {
-        preferences.cacheHTTPStream = enabled
-        reload()
-    }
-
-    /// `KSOptions.subtitleDisable`: la ricerca di tracce sottotitoli
-    /// incorporate avviene solo all'apertura del flusso. Richiede
-    /// `reload()`.
-    func setSubtitleDisable(_ enabled: Bool) {
-        preferences.subtitleDisable = enabled
-        reload()
-    }
-
-    /// `KSOptions.autoSelectEmbedSubtitle`: la selezione automatica della
-    /// prima traccia sottotitoli avviene solo all'apertura del flusso.
-    /// Richiede `reload()`.
-    func setAutoSelectEmbedSubtitle(_ enabled: Bool) {
-        preferences.autoSelectEmbedSubtitle = enabled
-        reload()
-    }
-
-    /// `KSOptions.asynchronousDecompression`: il decoder hardware viene
-    /// creato una sola volta all'apertura del flusso. Richiede `reload()`.
-    func setAsynchronousDecompression(_ enabled: Bool) {
-        preferences.asynchronousDecompression = enabled
-        reload()
-    }
-
-    /// `KSOptions.videoAdaptable`: la negoziazione delle varianti HLS
-    /// avviene solo all'apertura del flusso. Richiede `reload()`.
-    func setVideoAdaptable(_ enabled: Bool) {
-        preferences.videoAdaptable = enabled
         reload()
     }
 
