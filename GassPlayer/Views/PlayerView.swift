@@ -242,15 +242,6 @@ struct PlayerView: View {
     /// competono sulla stessa transazione di animazione). Attendere che la
     /// chiusura del Menu sia completata prima di impostare il flag rende la
     /// voce affidabile al primo tocco, sempre.
-    ///
-    /// NOTA (analisi 2026-09-25): questo helper è usato da OGNI voce del
-    /// menu "…" che apre una sheet/confirmationDialog. Verificato che sia
-    /// applicato coerentemente a tutte le 4 voci che presentano un altro
-    /// livello di UI (velocità, qualità, impostazioni avanzate, audio e
-    /// sottotitoli, timer di spegnimento): nessuna le bypassa più — prima
-    /// era un rischio reale di regressione silenziosa se una nuova voce
-    /// veniva aggiunta chiamando direttamente `showX = true` invece di
-    /// passare da questo helper.
     private func presentAfterMenuDismiss(_ setFlag: @escaping () -> Void) {
         Task {
             try? await Task.sleep(nanoseconds: 350_000_000)
@@ -329,7 +320,6 @@ struct PlayerView: View {
                     if controller.isBuffering {
                         ProgressView().tint(.white).padding(.horizontal, 4)
                     }
-
                     AirPlayButton()
                         .frame(width: 30, height: 30)
                     if controller.supportsPictureInPicture {
@@ -351,44 +341,24 @@ struct PlayerView: View {
         .background(LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom))
     }
 
-    /// Menu "…": analizzato voce per voce (2026-09-25).
-    ///
-    /// - Ogni voce che apre un'altra sheet/confirmationDialog passa da
-    ///   `presentAfterMenuDismiss` (nessuna eccezione, vedi nota lì).
-    /// - "Blocca schermo" NON passa da quell'helper: non apre alcuna
-    ///   sheet/dialog, imposta solo un flag booleano locale (`isLocked`),
-    ///   quindi non esiste alcuna competizione di transazione di
-    ///   animazione da cui proteggersi — applicarlo comunque avrebbe solo
-    ///   introdotto un ritardo percepibile e ingiustificato nel bloccare
-    ///   lo schermo.
-    /// - Le etichette dinamiche (velocità corrente, traccia video
-    ///   selezionata, timer attivo) sono lette da `@State` locali
-    ///   sincronizzati dai rispettivi picker, non da `layer.options`
-    ///   diretto: coerente con il resto del file, evita che il menu
-    ///   mostri un valore "congelato" se lo stato reale cambia altrove.
     private var optionsMenu: some View {
         Menu {
             Button("Velocità di riproduzione (\(currentPlaybackRate == 1.0 ? "1x" : currentPlaybackRate.formatted() + "x"))", systemImage: "speedometer") {
                 presentAfterMenuDismiss { showSpeedPicker = true }
             }
-
             Button("Qualità video\(selectedVideoTrackName.map { " (\($0))" } ?? "")", systemImage: "4k.tv") {
                 presentAfterMenuDismiss { showQualityPicker = true }
             }
-
             Button("Impostazioni avanzate", systemImage: "slider.horizontal.3") {
                 presentAfterMenuDismiss { showAdvancedSettings = true }
             }
-
             Button("Audio e sottotitoli", systemImage: "text.bubble") {
                 presentAfterMenuDismiss { showTrackPicker = true }
             }
-
             Divider()
             Button(sleepTimerMenuLabel, systemImage: sleepTimerMinutes != nil ? "moon.zzz.fill" : "moon.zzz") {
                 presentAfterMenuDismiss { showSleepTimerPicker = true }
             }
-
             Divider()
             Button("Blocca schermo", systemImage: "lock") {
                 haptic()
@@ -444,7 +414,6 @@ struct PlayerView: View {
                         onPrevious()
                     }
                 }
-
                 if controller.duration > 0 {
                     GlassIconButton(systemImage: "gobackward.15", size: 34) {
                         haptic()
@@ -452,13 +421,11 @@ struct PlayerView: View {
                         scheduleAutoHide()
                     }
                 }
-
                 GlassIconButton(systemImage: controller.isPlaying ? "pause.fill" : "play.fill", size: 44) {
                     haptic()
                     controller.togglePlayPause()
                     scheduleAutoHide()
                 }
-
                 if controller.duration > 0 {
                     GlassIconButton(systemImage: "goforward.15", size: 34) {
                         haptic()
@@ -466,7 +433,6 @@ struct PlayerView: View {
                         scheduleAutoHide()
                     }
                 }
-
                 if let onNext {
                     GlassIconButton(systemImage: "forward.end.fill", size: 30) {
                         haptic()
@@ -509,8 +475,8 @@ struct PlayerView: View {
                 .padding(.bottom, 30)
                 Spacer()
             }
+            .safeAreaPadding()
         }
-        .safeAreaPadding()
         .transition(.opacity)
     }
 
@@ -560,8 +526,8 @@ struct PlayerView: View {
             Spacer()
             HStack { GlassIconButton(systemImage: "xmark") { dismiss() }; Spacer() }
                 .padding()
+                .safeAreaPadding()
         }
-        .safeAreaPadding()
     }
 
     // MARK: - Gesti luminosità/volume
@@ -671,7 +637,6 @@ struct AirPlayButton: UIViewRepresentable {
         view.activeTintColor = .systemBlue
         return view
     }
-
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
 
@@ -687,15 +652,12 @@ struct ExternalPlayer: Identifiable {
         if let vlcURL = URL(string: "vlc-x-callback://x-callback-url/stream?url=\(encoded)") {
             candidates.append(ExternalPlayer(displayName: "VLC", url: vlcURL))
         }
-
         if let infuseURL = URL(string: "infuse://x-callback-url/play?url=\(encoded)") {
             candidates.append(ExternalPlayer(displayName: "Infuse", url: infuseURL))
         }
-
         if let outplayerURL = URL(string: "outplayer://\(encoded)") {
             candidates.append(ExternalPlayer(displayName: "Outplayer", url: outplayerURL))
         }
-
         return candidates.filter { UIApplication.shared.canOpenURL($0.url) }
     }
 }
@@ -746,8 +708,8 @@ struct QualityPickerView: View {
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
+                            .padding()
                     }
-                    .padding()
                 }
             }
             .navigationTitle("Qualità video")
@@ -760,16 +722,11 @@ struct QualityPickerView: View {
 /// REALI di `KSOptions` (verificate sul sorgente ufficiale
 /// github.com/kingslay/KSPlayer): buffer, decodifica hardware/software,
 /// de-interlacciamento automatico, sincronizzazione audio/video, ricerca
-/// accurata, sottotitoli, cache HTTP, loop, adattamento bitrate,
-/// decompressione asincrona, rotazione automatica. Le modifiche che
-/// richiedono il riavvio della pipeline di decodifica (decodifica,
-/// de-interlacciamento, cache, sottotitoli, adattamento bitrate,
-/// decompressione asincrona) lo fanno in modo esplicito e visibile
-/// tramite `controller.reload()`, invece di illudere l'utente con un
-/// cambiamento che non si applica davvero finché il flusso non viene
-/// ricaricato. Quelle applicabili "a caldo" (buffer, sincronizzazione,
-/// ricerca accurata, loop, rotazione automatica) si vedono invece subito,
-/// senza alcuna interruzione della riproduzione in corso.
+/// accurata, sottotitoli. Le modifiche che richiedono il riavvio della
+/// pipeline di decodifica (decodifica, de-interlacciamento, sottotitoli)
+/// lo fanno in modo esplicito e visibile tramite `controller.reload()`,
+/// invece di illudere l'utente con un cambiamento che non si applica
+/// davvero finché il flusso non viene ricaricato.
 struct AdvancedSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
@@ -788,16 +745,6 @@ struct AdvancedSettingsView: View {
     @State private var isAccurateSeek: Bool
     @State private var videoDelay: Double
 
-    // FEATURE MANCANTE aggiunta (2026-09-25, proprietà KSOptions reali non
-    // ancora esposte — vedi commenti in KSPlaybackController.swift).
-    @State private var isLoopPlay: Bool
-    @State private var autoRotate: Bool
-    @State private var cacheHTTPStream: Bool
-    @State private var subtitleDisable: Bool
-    @State private var autoSelectEmbedSubtitle: Bool
-    @State private var asynchronousDecompression: Bool
-    @State private var videoAdaptable: Bool
-
     init(controller: KSPlaybackController) {
         self.controller = controller
         let prefs = controller.preferences
@@ -807,13 +754,6 @@ struct AdvancedSettingsView: View {
         _autoDeInterlace = State(initialValue: prefs.autoDeInterlace)
         _isAccurateSeek = State(initialValue: prefs.isAccurateSeek)
         _videoDelay = State(initialValue: prefs.videoDelay)
-        _isLoopPlay = State(initialValue: prefs.isLoopPlay)
-        _autoRotate = State(initialValue: prefs.autoRotate)
-        _cacheHTTPStream = State(initialValue: prefs.cacheHTTPStream)
-        _subtitleDisable = State(initialValue: prefs.subtitleDisable)
-        _autoSelectEmbedSubtitle = State(initialValue: prefs.autoSelectEmbedSubtitle)
-        _asynchronousDecompression = State(initialValue: prefs.asynchronousDecompression)
-        _videoAdaptable = State(initialValue: prefs.videoAdaptable)
     }
 
     var body: some View {
@@ -842,25 +782,14 @@ struct AdvancedSettingsView: View {
                         .onChange(of: hardwareDecode) { newValue in
                             controller.setHardwareDecode(newValue)
                         }
-
-                    Toggle("Decompressione asincrona", isOn: $asynchronousDecompression)
-                        .onChange(of: asynchronousDecompression) { newValue in
-                            controller.setAsynchronousDecompression(newValue)
-                        }
-
                     Toggle("De-interlacciamento automatico", isOn: $autoDeInterlace)
                         .onChange(of: autoDeInterlace) { newValue in
                             controller.setAutoDeInterlace(newValue)
                         }
-
-                    Toggle("Adattamento qualità automatico", isOn: $videoAdaptable)
-                        .onChange(of: videoAdaptable) { newValue in
-                            controller.setVideoAdaptable(newValue)
-                        }
                 } header: {
                     Text("Decodifica")
                 } footer: {
-                    Text("Disattiva la decodifica hardware se un canale si blocca o mostra artefatti: FFmpeg in software è più lento ma compatibile con flussi malformati. La decompressione asincrona può migliorare la fluidità su dispositivi più lenti. Il de-interlacciamento corregge l'effetto \"pettine\" tipico dei canali SD interlacciati. L'adattamento qualità cambia automaticamente variante di bitrate su flussi HLS multi-qualità in base alla banda disponibile. Tutte e quattro ricaricano il flusso per applicarsi.")
+                    Text("Disattiva la decodifica hardware se un canale si blocca o mostra artefatti: FFmpeg in software è più lento ma compatibile con flussi malformati. Il de-interlacciamento corregge l'effetto \"pettine\" tipico dei canali SD interlacciati. Entrambe ricaricano il flusso per applicarsi.")
                 }
 
                 Section {
@@ -887,49 +816,6 @@ struct AdvancedSettingsView: View {
                     Text("Posiziona la riproduzione esattamente al fotogramma richiesto invece che al keyframe più vicino: più precisa, leggermente più lenta.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-
-                Section {
-                    Toggle("Sottotitoli automatici", isOn: $autoSelectEmbedSubtitle)
-                        .onChange(of: autoSelectEmbedSubtitle) { newValue in
-                            controller.setAutoSelectEmbedSubtitle(newValue)
-                        }
-
-                    Toggle("Disattiva sottotitoli integrati", isOn: $subtitleDisable)
-                        .onChange(of: subtitleDisable) { newValue in
-                            controller.setSubtitleDisable(newValue)
-                        }
-                } header: {
-                    Text("Sottotitoli")
-                } footer: {
-                    Text("\"Sottotitoli automatici\" seleziona da sola la prima traccia sottotitoli incorporata trovata nel flusso, senza passare da \"Audio e sottotitoli\". \"Disattiva sottotitoli integrati\" impedisce del tutto la ricerca di sottotitoli nel flusso: nessuna traccia sarà mai disponibile. Entrambe ricaricano il flusso per applicarsi.")
-                }
-
-                Section {
-                    Toggle("Riproduci in loop", isOn: $isLoopPlay)
-                        .onChange(of: isLoopPlay) { newValue in
-                            controller.setLoopPlay(newValue)
-                        }
-
-                    Toggle("Rotazione automatica", isOn: $autoRotate)
-                        .onChange(of: autoRotate) { newValue in
-                            controller.setAutoRotate(newValue)
-                        }
-                } header: {
-                    Text("Video")
-                } footer: {
-                    Text("\"Riproduci in loop\" ricomincia automaticamente il contenuto alla fine: utile per clip o trailer VOD, non ha alcun effetto su Live TV o flussi senza una fine nota. \"Rotazione automatica\" applica la rotazione indicata dai metadati del video (utile per contenuti girati in verticale). Entrambe si applicano immediatamente, senza ricaricare il flusso.")
-                }
-
-                Section {
-                    Toggle("Cache flusso HTTP", isOn: $cacheHTTPStream)
-                        .onChange(of: cacheHTTPStream) { newValue in
-                            controller.setCacheHTTPStream(newValue)
-                        }
-                } header: {
-                    Text("Rete")
-                } footer: {
-                    Text("Mantiene in cache locale i dati già scaricati dal flusso, per riavvolgere senza riscaricare dalla rete: aumenta l'uso di spazio temporaneo sul dispositivo. Ricarica il flusso per applicarsi.")
                 }
 
                 Section("Riproduzione") {
@@ -975,7 +861,6 @@ struct TrackPickerView: View {
                         }
                     }
                 }
-
                 Section("Sottotitoli") {
                     ForEach(controller.subtitleTracks, id: \.trackID) { track in
                         Button {
@@ -992,7 +877,6 @@ struct TrackPickerView: View {
                             }
                         }
                     }
-
                     if controller.subtitleTracks.isEmpty {
                         Text("Nessun sottotitolo disponibile per questo flusso.")
                             .foregroundStyle(.secondary)
