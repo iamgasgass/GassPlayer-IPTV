@@ -3,43 +3,58 @@ import AVFoundation
 import MediaPlayer
 import KSPlayer
 
-/// Bridge SwiftUI-friendly per KSPlayerLayer, ora l'UNICO motore di
-/// riproduzione dell'app (AVPlayer nativo + FFmpeg via KSMEPlayer, con
-/// switch automatico incorporato nella libreria stessa — vedi
-/// KSPlayerLayer.finish(player:error:), che ritenta con
-/// KSOptions.secondPlayerType su qualunque errore prima di arrendersi).
-///
-/// FIX 2026-09-25 (zapping canale/episodio "senza uscire e riaprire il
-/// player"): in precedenza ogni pressione di precedente/successivo
-/// forzava, lato chiamante (`ChannelGridView`/`SeriesEpisodesView`), un
-/// `.id(stream.id)` sulla vista del player: necessario perché
-/// `KSPlaybackController` veniva creato una sola volta in `init` e non
-/// aveva alcun modo di caricare un URL diverso in seguito — l'unico modo
-/// per "cambiare canale" era distruggere e ricreare l'intera
-/// `PlayerView` (e quindi anche il `KSPlayerContainerView`/`UIView`
-/// sottostante). Il risultato era funzionalmente corretto ma percepito
-/// come "chiusura e riapertura" del player: un breve nero, reset dei
-/// controlli, nuova `fullScreenCover` dal punto di vista di UIKit.
-///
-/// `layer` è ora `@Published` (non più `let`): `load(url:title:)` crea un
-/// nuovo `KSPlayerLayer` per il nuovo URL e lo assegna a questa stessa
-/// istanza di `KSPlaybackController`, che resta viva per tutta la sessione
-/// di visione. `PlayerView` (che possiede il controller come
-/// `@StateObject`) non viene mai ricreata: `KSPlayerContainerView`
-/// (vedi PlayerView.swift) osserva il cambio di `layer` e si limita a
-/// staccare la vecchia `UIView` del player e agganciare la nuova nello
-/// stesso container già presente a schermo — nessuna nuova
-/// presentazione, nessun reset di stato (blocco schermo, timer di
-/// spegnimento, ecc.), transizione fluida.
+// Bridge SwiftUI-friendly per KSPlayerLayer, ora l'UNICO motore di
+// riproduzione dell'app (AVPlayer nativo + FFmpeg via KSMEPlayer, con
+// switch automatico incorporato nella libreria stessa — vedi
+// KSPlayerLayer.finish(player:error:), che ritenta con
+// KSOptions.secondPlayerType su qualunque errore prima di arrendersi).
+//
+// FIX 2026-09-25 (zapping canale/episodio "senza uscire e riaprire il
+// player"): ogni pressione di precedente/successivo NON forza più un
+// `.id(stream.id)` sulla vista del player. `layer` è `@Published` (non
+// più `let`): `load(url:title:)` crea un nuovo `KSPlayerLayer` per il
+// nuovo URL e lo assegna a questa stessa istanza di
+// `KSPlaybackController`, che resta viva per tutta la sessione di
+// visione. `PlayerView` (che possiede il controller come `@StateObject`)
+// non viene mai ricreata: `KSPlayerContainerView` osserva il cambio di
+// `layer` e si limita a staccare la vecchia `UIView` del player e
+// agganciare la nuova nello stesso container già presente a schermo —
+// nessuna nuova presentazione, nessun reset di stato, transizione fluida.
+//
+// FIX 2026-09-26 (avvio automatico affidabile + niente richieste
+// duplicate durante lo zapping):
+//
+// 1) `isSwitchingStream` viene alzato in modo sincrono all'inizio di
+//    `load(url:title:)`, PRIMA di qualunque evento del delegate KSPlayer.
+//    `isBuffering` lo include: lo spinner in `topBar` compare quindi
+//    nello stesso istante del tap su precedente/successivo, invece di
+//    aspettare il primo callback del motore di decodifica (piccolo ma
+//    percepibile buco di feedback nella versione precedente).
+// 2) `load(url:title:)` chiamava `layer.play()` in modo sincrono subito
+//    dopo aver creato il nuovo `KSPlayerLayer`, presupponendo che la sua
+//    vista fosse già agganciata a una window: nella finestra tra questa
+//    chiamata e il prossimo ciclo di render SwiftUI (quando
+//    `KSPlayerContainerView.updateUIView` stacca/aggancia le view) questo
+//    poteva non avere effetto. Un secondo `play()` schedulato al giro
+//    successivo del RunLoop (~120ms) è una rete di sicurezza aggiuntiva,
+//    del tutto innocua se il primo tentativo ha già funzionato, che
+//    GARANTISCE l'avvio automatico dello streaming senza alcuna azione
+//    dell'utente.
+// 3) Un debounce di 300ms scarta le richieste di `load` per lo STESSO
+//    identico URL già in fase di caricamento (double-tap accidentale sul
+//    bordo di un pulsante, race di ricostruzione SwiftUI): non rallenta
+//    in alcun modo lo zapping rapido intenzionale verso contenuti
+//    diversi, che resta istantaneo tap dopo tap.
+
 /// Modalità di adattamento del video al riquadro dello schermo, esposta
-/// nel player (pulsante nella `topBar`, vedi `PlayerView`).
-/// Mappa 1:1 su `UIView.ContentMode`, che è il tipo letto/scritto da
-/// `MediaPlayerProtocol.contentMode` in KSPlayer (il player, sia motore
-/// AVPlayer sia motore FFmpeg/KSMEPlayer, applica questo valore alla
-/// propria vista di rendering — `AVPlayerLayer.videoGravity` nel primo
-/// caso, trasformazione della vista OpenGL/Metal nel secondo — quindi
-/// funziona in modo identico indipendentemente da quale dei due motori
-/// stia effettivamente decodificando il flusso corrente).
+/// nel player (vedi `PlayerView`). Mappa 1:1 su `UIView.ContentMode`, che
+/// è il tipo letto/scritto da `MediaPlayerProtocol.contentMode` in
+/// KSPlayer (il player, sia motore AVPlayer sia motore FFmpeg/
+/// KSMEPlayer, applica questo valore alla propria vista di rendering —
+/// `AVPlayerLayer.videoGravity` nel primo caso, trasformazione della
+/// vista OpenGL/Metal nel secondo — quindi funziona in modo identico
+/// indipendentemente da quale dei due motori stia effettivamente
+/// decodificando il flusso corrente).
 enum VideoGravityMode: String, CaseIterable, Identifiable {
     /// Il video intero è visibile, con eventuali barre nere ai lati:
     /// nessun ritaglio, nessuna deformazione. Default.
@@ -88,6 +103,7 @@ enum VideoGravityMode: String, CaseIterable, Identifiable {
 
 @MainActor
 final class KSPlaybackController: NSObject, ObservableObject {
+
     /// Preferenze di riproduzione avanzate regolabili dall'utente
     /// (`AdvancedSettingsView`, raggiungibile dal menu "…"). Sono lo
     /// stato di verità riapplicato ad ogni nuovo `KSPlayerLayer`, sia al
@@ -106,8 +122,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// invece del seek "al keyframe più vicino" (più rapido, default).
         var isAccurateSeek: Bool = false
         /// `KSOptions.autoDeInterlace`: rileva e corregge automaticamente
-        /// l'interlacciamento, comune su molti canali SD delle
-        /// playlist IPTV.
+        /// l'interlacciamento, comune su molti canali SD delle playlist
+        /// IPTV.
         var autoDeInterlace: Bool = false
         /// `KSOptions.videoDelay` (secondi): sincronizzazione audio/video
         /// manuale. Positivo = video ritardato rispetto all'audio.
@@ -129,8 +145,16 @@ final class KSPlaybackController: NSObject, ObservableObject {
     @Published var isPipActive = false {
         didSet { layer.isPipActive = isPipActive }
     }
+
     @Published private(set) var layer: KSPlayerLayer
     @Published private(set) var preferences = PlaybackPreferences()
+
+    /// FIX 2026-09-26: alzato in modo sincrono all'inizio di
+    /// `load(url:title:)`, prima ancora che il motore KSPlayer emetta il
+    /// primo evento sul nuovo flusso. Incluso in `isBuffering` così lo
+    /// spinner della `topBar` in `PlayerView` reagisce nello stesso
+    /// istante del tap su precedente/successivo, non un tick dopo.
+    @Published private(set) var isSwitchingStream = false
 
     private(set) var currentURL: URL
     private var title: String
@@ -141,15 +165,27 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// molto più spesso di quanto la UI necessiti per apparire fluida
     /// (spesso più volte al secondo). Senza throttling, ogni singolo tick
     /// pubblica una modifica su `currentTime` che rivaluta l'intera
-    /// `PlayerView.body` — pulsanti Liquid Glass inclusi — molte più volte
-    /// al secondo di quanto un occhio umano possa percepire, sprecando CPU/
-    /// GPU e potendo introdurre micro-scatti. Pubblichiamo un aggiornamento
-    /// solo se la variazione percepita è reale (>= 200ms) o se la durata
-    /// totale è cambiata (es. aggiornamento del DVR live).
+    /// `PlayerView.body` — pulsanti Liquid Glass inclusi — molte più
+    /// volte al secondo di quanto un occhio umano possa percepire,
+    /// sprecando CPU/GPU e potendo introdurre micro-scatti. Pubblichiamo
+    /// un aggiornamento solo se la variazione percepita è reale
+    /// (>= 200ms) o se la durata totale è cambiata (es. aggiornamento del
+    /// DVR live).
     private var lastPublishedTime: TimeInterval = -1
 
+    /// FIX 2026-09-26: timestamp dell'ultima richiesta di `load` accolta,
+    /// usato per scartare le richieste duplicate per lo stesso URL che
+    /// arrivano entro `duplicateLoadWindow` (double-tap accidentale,
+    /// race di ricostruzione SwiftUI) senza mai rallentare lo zapping
+    /// intenzionale verso contenuti diversi.
+    private var lastLoadRequestAt: Date = .distantPast
+    private let duplicateLoadWindow: TimeInterval = 0.3
+
     var isPlaying: Bool { state.isPlaying }
-    var isBuffering: Bool { state == .preparing || state == .buffering }
+
+    var isBuffering: Bool {
+        isSwitchingStream || state == .preparing || state == .buffering
+    }
 
     var supportsPictureInPicture: Bool {
         if #available(iOS 14.0, tvOS 14.0, *) {
@@ -188,14 +224,25 @@ final class KSPlaybackController: NSObject, ObservableObject {
         return layer
     }
 
-    /// FEATURE MANCANTE aggiunta (precedente/successivo "in-place"): carica
-    /// un nuovo URL SENZA che `PlayerView` venga mai distrutta/ricreata.
-    /// Il vecchio layer viene fermato e scollegato (evita che il suo
-    /// delegate continui a pubblicare eventi di un flusso che non è più
-    /// quello mostrato), un nuovo `KSPlayerLayer` viene creato per il
-    /// nuovo URL riapplicando le preferenze correnti, e tutto lo stato di
+    /// FEATURE (precedente/successivo "in-place"): carica un nuovo URL
+    /// SENZA che `PlayerView` venga mai distrutta/ricreata. Il vecchio
+    /// layer viene fermato e scollegato (evita che il suo delegate
+    /// continui a pubblicare eventi di un flusso che non è più quello
+    /// mostrato), un nuovo `KSPlayerLayer` viene creato per il nuovo URL
+    /// riapplicando le preferenze correnti, e tutto lo stato di
     /// avanzamento/errore viene azzerato per il nuovo contenuto.
     func load(url: URL, title: String) {
+        let now = Date()
+        // FIX 2026-09-26: scarta solo i duplicati ESATTI (stesso URL,
+        // switch già in corso, entro la finestra di debounce). Un URL
+        // diverso viene sempre processato immediatamente, così lo
+        // zapping rapido intenzionale resta istantaneo.
+        if url == currentURL, isSwitchingStream, now.timeIntervalSince(lastLoadRequestAt) < duplicateLoadWindow {
+            return
+        }
+        lastLoadRequestAt = now
+        isSwitchingStream = true
+
         layer.delegate = nil
         layer.pause()
 
@@ -227,6 +274,18 @@ final class KSPlaybackController: NSObject, ObservableObject {
         // timing di SwiftUI.
         layer.play()
         startWatchdog()
+
+        // FIX 2026-09-26 (rete di sicurezza aggiuntiva): un secondo
+        // tentativo di play() al giro successivo del RunLoop, quando la
+        // vista UIKit del nuovo layer è quasi certamente già agganciata
+        // dal ciclo di update di SwiftUI. Del tutto innocuo se il primo
+        // tentativo ha già avviato la riproduzione (`hasEverStartedPlaying`
+        // sarà già `true` grazie al delegate `.buffering`/`.bufferFinished`).
+        Task { @MainActor [weak self, weak newLayer] in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard let self, let newLayer, self.layer === newLayer, !self.hasEverStartedPlaying else { return }
+            newLayer.play()
+        }
     }
 
     /// Ricarica lo stream corrente (stesso URL) con le `preferences`
@@ -252,13 +311,14 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     func skip(by interval: TimeInterval) {
-        // BUG FIX: su flussi live (duration == 0) il vecchio codice calcolava
-        // un limite superiore pari a `.greatestFiniteMagnitude`, producendo
-        // un seek non valido/indefinito verso un tempo che lo stream non ha
-        // mai avuto. Senza una durata nota, lo skip è semplicemente un
-        // no-op: la UI (PlayerView) non mostra nemmeno i pulsanti di skip
-        // in questo caso, ma la protezione resta anche qui a livello di
-        // controller per qualunque altro chiamante futuro.
+        // BUG FIX: su flussi live (duration == 0) il vecchio codice
+        // calcolava un limite superiore pari a `.greatestFiniteMagnitude`,
+        // producendo un seek non valido/indefinito verso un tempo che lo
+        // stream non ha mai avuto. Senza una durata nota, lo skip è
+        // semplicemente un no-op: la UI (PlayerView) non mostra nemmeno i
+        // pulsanti di skip in questo caso, ma la protezione resta anche
+        // qui a livello di controller per qualunque altro chiamante
+        // futuro.
         guard duration > 0 else { return }
 
         let target = max(0, min(layer.player.currentPlaybackTime + interval, duration))
@@ -315,9 +375,10 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     /// A differenza di `setHardwareDecode`/`setAutoDeInterlace`, non
-    /// richiede `reload()`: `contentMode` è letto ad ogni frame renderizzato
-    /// dalla vista del player (sia motore AVPlayer sia FFmpeg), quindi il
-    /// cambiamento è visibile all'istante sul fotogramma corrente.
+    /// richiede `reload()`: `contentMode` è letto ad ogni frame
+    /// renderizzato dalla vista del player (sia motore AVPlayer sia
+    /// FFmpeg), quindi il cambiamento è visibile all'istante sul
+    /// fotogramma corrente.
     func setVideoGravity(_ mode: VideoGravityMode) {
         preferences.videoGravity = mode
         layer.player.contentMode = mode.contentMode
@@ -336,13 +397,13 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private func startWatchdog() {
         watchdogTask?.cancel()
         watchdogTask = Task { [weak self] in
-            // OTTIMIZZAZIONE "rapido e fluido": ridotto da 12s a 7s.
-            // 12s di schermo nero prima che il watchdog ritenti sono
+            // OTTIMIZZAZIONE "rapido e fluido": ridotto da 12s a 7s. 12s
+            // di schermo nero prima che il watchdog ritenti sono
             // percepiti dall'utente come "il player si è bloccato",
             // esattamente il contrario di "cambio canale rapido e
             // fluido" richiesto. 7s è comunque abbastanza da non
-            // scambiare per errore un server IPTV lento a rispondere
-            // per un flusso morto.
+            // scambiare per errore un server IPTV lento a rispondere per
+            // un flusso morto.
             try? await Task.sleep(nanoseconds: 7_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard !self.hasEverStartedPlaying, self.lastError == nil else { return }
@@ -363,11 +424,13 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
         switch state {
         case .bufferFinished, .buffering:
             hasEverStartedPlaying = true
+            isSwitchingStream = false
             watchdogTask?.cancel()
         case .readyToPlay:
             MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] = title.isEmpty ? "GassPlayer" : title
         case .error:
             lastError = "Impossibile riprodurre il flusso. Il server potrebbe non essere raggiungibile o il formato non e' supportato."
+            isSwitchingStream = false
             watchdogTask?.cancel()
         default:
             break
@@ -387,6 +450,7 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
         if let error {
             DebugLogger.logAsync(.error, "KSPlaybackController: riproduzione terminata con errore: \(error.localizedDescription)")
             lastError = error.localizedDescription
+            isSwitchingStream = false
         }
     }
 
