@@ -212,6 +212,20 @@ final class KSPlaybackController: NSObject, ObservableObject {
         let newLayer = Self.buildLayer(for: url, preferences: preferences)
         layer = newLayer
         layer.delegate = self
+        // BUG FIX ("il flusso non parte automaticamente" dopo prec/succ):
+        // `isAutoPlay: true` passato a `KSPlayerLayer.init` in
+        // `buildLayer` presuppone che la vista del player sia già
+        // agganciata a una window quando l'auto-play interno scatta.
+        // Qui invece il layer viene creato PRIMA che
+        // `KSPlayerContainerView.updateUIView` (SwiftUI, prossimo ciclo
+        // di render) stacchi la vecchia UIView e agganci quella nuova:
+        // in quella finestra temporale l'auto-play interno può non
+        // avere effetto. Chiamare `play()` esplicitamente qui è
+        // ridondante se l'auto-play interno ha già funzionato (play() su
+        // un player già in play è un no-op sicuro) ma GARANTISCE
+        // l'avvio quando non ha funzionato — nessuna dipendenza dal
+        // timing di SwiftUI.
+        layer.play()
         startWatchdog()
     }
 
@@ -322,10 +336,17 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private func startWatchdog() {
         watchdogTask?.cancel()
         watchdogTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            // OTTIMIZZAZIONE "rapido e fluido": ridotto da 12s a 7s.
+            // 12s di schermo nero prima che il watchdog ritenti sono
+            // percepiti dall'utente come "il player si è bloccato",
+            // esattamente il contrario di "cambio canale rapido e
+            // fluido" richiesto. 7s è comunque abbastanza da non
+            // scambiare per errore un server IPTV lento a rispondere
+            // per un flusso morto.
+            try? await Task.sleep(nanoseconds: 7_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard !self.hasEverStartedPlaying, self.lastError == nil else { return }
-            DebugLogger.logAsync(.warning, "KSPlaybackController: nessuna riproduzione avviata dopo 12s (stato=\(self.state)), forzo ciclo pausa->play")
+            DebugLogger.logAsync(.warning, "KSPlaybackController: nessuna riproduzione avviata dopo 7s (stato=\(self.state)), forzo ciclo pausa->play")
             self.layer.pause()
             self.layer.play()
         }
