@@ -18,17 +18,11 @@ struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var controller: KSPlaybackController
 
-    // FEATURE aggiunta (menu "…" — sezioni "Cronologia dei canali" /
-    // "Cerca canale"): entrambe leggono dati già gestiti altrove
-    // nell'app (`RecentlyWatchedStore`, già @Published e persistito;
-    // `GlobalSearchView`, già funzionante altrove) invece di duplicarne
-    // la logica qui. Sono environment object già iniettati sulla radice
-    // della gerarchia (`ContentView`) e propagati automaticamente
-    // attraverso la `fullScreenCover` che presenta questo player.
+    // Environment objects per cronologia canali e ricerca globale
     @EnvironmentObject private var recentlyWatched: RecentlyWatchedStore
     @EnvironmentObject private var sourceManager: SourceManager
 
-    // Picker/menu
+    // Picker e menu modali
     @State private var showTrackPicker = false
     @State private var showAdvancedSettings = false
     @State private var showQualityPicker = false
@@ -39,7 +33,7 @@ struct PlayerView: View {
     @State private var showChannelHistory = false
     @State private var showChannelSearch = false
 
-    // Selezioni correnti (usate per mostrare un segno di spunta nei picker)
+    // Selezioni correnti
     @State private var currentPlaybackRate: Double = 1.0
     @State private var selectedAudioTrackName: String?
     @State private var selectedSubtitleTrackName: String?
@@ -49,18 +43,18 @@ struct PlayerView: View {
     @State private var sleepTimerMinutes: Int?
     @State private var sleepTimerTask: Task<Void, Never>?
 
-    // Gesti brightness/volume
+    // Gesti brightness / volume
     @State private var brightnessOverlay: Double = 0
     @State private var volumeOverlay: Double = 0
     @State private var showBrightnessHUD = false
     @State private var showVolumeHUD = false
     @State private var hudHideTask: Task<Void, Never>?
 
-    // Toast generico (feedback doppio-tap, timer, ecc.)
+    // Toast generico per feedback visivo
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
 
-    // Controlli generali
+    // Controlli generali di riproduzione
     @State private var showControls = true
     @State private var hideControlsTask: Task<Void, Never>?
     @State private var isScrubbing = false
@@ -70,15 +64,6 @@ struct PlayerView: View {
     @State private var externalPlayers: [ExternalPlayer] = []
     @State private var airPlayRoutePicker: AVRoutePickerView?
 
-    /// BUG FIX ("preferenze nel menù '…' corrotte al tocco"): mentre un
-    /// picker/dialog è aperto il timer di auto-hide dei controlli
-    /// continuava comunque a scorrere; se l'utente impiegava più di 4
-    /// secondi a decidere, `unifiedControlSurface` — che contiene il
-    /// pulsante "…" stesso — passava a `opacity(0)` /
-    /// `allowsHitTesting(false)`, rendendo il resto dei controlli
-    /// irraggiungibili finché non si ritoccava lo schermo. Questo
-    /// computed riunisce tutti i flag di presentazione in un unico punto
-    /// osservabile da `.onChange`.
     private var isAnyModalPresented: Bool {
         showTrackPicker || showAdvancedSettings || showQualityPicker
             || showExternalPlayerMenu || showSpeedPicker || showSleepTimerPicker
@@ -94,142 +79,148 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        KSPlayerContainerView(controller: controller)
-            .ignoresSafeArea()
-            .background(
-                GeometryReader { geo in
-                    Color.clear
-                        .onAppear { containerWidth = geo.size.width }
-                        .onChange(of: geo.size) { newValue in containerWidth = newValue.width }
-                }
-            )
-            .onAppear {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            // FIX CRITICO: URL e Titolo passati direttamente a KSPlayerContainerView.
+            // Quando SwiftUI aggiorna PlayerView per un nuovo canale/episodio,
+            // KSPlayerContainerView.updateUIView esegue IMMEDIATAMENTE e in modo sincrono
+            // il caricamento e l'aggancio del nuovo flusso, eliminando qualsiasi ritardo
+            // di zapping a 1 passo indietro o trasmissione del canale precedente.
+            KSPlayerContainerView(url: url, title: title, controller: controller)
+                .ignoresSafeArea()
+
+            // Spinner di buffering centrale pulito durante il caricamento o cambio canale
+            if controller.isBuffering {
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                    .scaleEffect(1.4)
+                    .transition(.opacity)
+            }
+        }
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { containerWidth = geo.size.width }
+                    .onChange(of: geo.size) { newValue in containerWidth = newValue.width }
+            }
+        )
+        .onAppear {
+            scheduleAutoHide()
+        }
+        .task(id: url) {
+            externalPlayers = ExternalPlayer.available(for: url)
+        }
+        .onChange(of: isAnyModalPresented) { presented in
+            if presented {
+                hideControlsTask?.cancel()
+            } else {
                 scheduleAutoHide()
             }
-            .task(id: url) {
-                externalPlayers = ExternalPlayer.available(for: url)
+        }
+        .onDisappear {
+            controller.layer.pause()
+            hideControlsTask?.cancel()
+            hudHideTask?.cancel()
+            toastTask?.cancel()
+            sleepTimerTask?.cancel()
+        }
+        .simultaneousGesture(dragGesture)
+        .onTapGesture(count: 2, coordinateSpace: .local) { location in
+            handleDoubleTap(at: location)
+        }
+        .onTapGesture {
+            handleSingleTap()
+        }
+        .overlay {
+            if showBrightnessHUD { hudOverlay(icon: "sun.max.fill", value: brightnessOverlay) }
+        }
+        .overlay {
+            if showVolumeHUD { hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay) }
+        }
+        .overlay {
+            if let toastMessage {
+                toastOverlay(toastMessage)
             }
-            // FEATURE MANCANTE aggiunta (precedente/successivo "in-place"):
-            // quando il chiamante (ChannelGridView/SeriesEpisodesView)
-            // aggiorna l'elemento selezionato tramite `onPrevious`/`onNext`,
-            // SwiftUI ricostruisce questa `PlayerView` con un nuovo `url`
-            // MANTENENDO la stessa identità di vista (nessun `.id()`, niente
-            // dismiss/ri-presentazione della fullScreenCover): qui basta
-            // dire al controller — che resta vivo per tutta la sessione —
-            // di caricare il nuovo URL. `KSPlayerContainerView` sotto
-            // reagisce da sola al cambio di `controller.layer`.
-            .onChange(of: url) { newValue in
-                controller.load(url: newValue, title: title)
+        }
+        .overlay {
+            if isLocked {
+                lockedOverlay
+            } else if let errorMessage = controller.lastError {
+                playbackErrorBanner(errorMessage)
+            } else {
+                unifiedControlSurface
+                    .opacity(showControls ? 1 : 0)
+                    .allowsHitTesting(showControls)
+                    .animation(.easeInOut(duration: 0.2), value: showControls)
             }
-            .onChange(of: isAnyModalPresented) { presented in
-                if presented {
-                    hideControlsTask?.cancel()
-                } else {
-                    scheduleAutoHide()
+        }
+        .statusBarHidden(true)
+        .sheet(isPresented: $showTrackPicker) {
+            TrackPickerView(
+                controller: controller,
+                selectedAudioTrackName: $selectedAudioTrackName,
+                selectedSubtitleTrackName: $selectedSubtitleTrackName
+            )
+        }
+        .sheet(isPresented: $showAdvancedSettings) {
+            AdvancedSettingsView(controller: controller)
+        }
+        .sheet(isPresented: $showQualityPicker) {
+            QualityPickerView(controller: controller, selectedTrackName: $selectedVideoTrackName)
+        }
+        .confirmationDialog("Apri con un altro player", isPresented: $showExternalPlayerMenu, titleVisibility: .visible) {
+            ForEach(externalPlayers) { player in
+                Button(player.displayName) {
+                    controller.layer.pause()
+                    UIApplication.shared.open(player.url)
                 }
             }
-            .onDisappear {
-                controller.layer.pause()
-                hideControlsTask?.cancel()
-                hudHideTask?.cancel()
-                toastTask?.cancel()
-                sleepTimerTask?.cancel()
-            }
-            .simultaneousGesture(dragGesture)
-            .onTapGesture(count: 2, coordinateSpace: .local) { location in
-                handleDoubleTap(at: location)
-            }
-            .onTapGesture {
-                handleSingleTap()
-            }
-            .overlay {
-                if showBrightnessHUD { hudOverlay(icon: "sun.max.fill", value: brightnessOverlay) }
-            }
-            .overlay {
-                if showVolumeHUD { hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay) }
-            }
-            .overlay {
-                if let toastMessage {
-                    toastOverlay(toastMessage)
+            Button("Annulla", role: .cancel) {}
+        }
+        .confirmationDialog("Velocità di riproduzione", isPresented: $showSpeedPicker, titleVisibility: .visible) {
+            ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { rate in
+                Button(speedLabel(for: rate)) {
+                    controller.setPlaybackRate(Float(rate))
+                    currentPlaybackRate = rate
                 }
             }
-            .overlay {
-                if isLocked {
-                    lockedOverlay
-                } else if let errorMessage = controller.lastError {
-                    playbackErrorBanner(errorMessage)
-                } else {
-                    unifiedControlSurface
-                        .opacity(showControls ? 1 : 0)
-                        .allowsHitTesting(showControls)
-                        .animation(.easeInOut(duration: 0.2), value: showControls)
+            Button("Annulla", role: .cancel) {}
+        }
+        .confirmationDialog("Timer di spegnimento", isPresented: $showSleepTimerPicker, titleVisibility: .visible) {
+            ForEach([15, 30, 45, 60], id: \.self) { minutes in
+                Button("\(minutes) minuti") { scheduleSleepTimer(minutes: minutes) }
+            }
+            if sleepTimerMinutes != nil {
+                Button("Disattiva timer", role: .destructive) { cancelSleepTimer() }
+            }
+            Button("Annulla", role: .cancel) {}
+        }
+        .confirmationDialog("Rapporto di aspetto", isPresented: $showAspectPicker, titleVisibility: .visible) {
+            ForEach(VideoGravityMode.allCases) { mode in
+                Button(mode == controller.preferences.videoGravity ? "✓ \(mode.label)" : mode.label) {
+                    controller.setVideoGravity(mode)
                 }
             }
-            .statusBarHidden(true)
-            .sheet(isPresented: $showTrackPicker) {
-                TrackPickerView(
-                    controller: controller,
-                    selectedAudioTrackName: $selectedAudioTrackName,
-                    selectedSubtitleTrackName: $selectedSubtitleTrackName
-                )
-            }
-            .sheet(isPresented: $showAdvancedSettings) {
-                AdvancedSettingsView(controller: controller)
-            }
-            .sheet(isPresented: $showQualityPicker) {
-                QualityPickerView(controller: controller, selectedTrackName: $selectedVideoTrackName)
-            }
-            .confirmationDialog("Apri con un altro player", isPresented: $showExternalPlayerMenu, titleVisibility: .visible) {
-                ForEach(externalPlayers) { player in
-                    Button(player.displayName) {
-                        controller.layer.pause()
-                        UIApplication.shared.open(player.url)
-                    }
+            Button("Annulla", role: .cancel) {}
+        }
+        .sheet(isPresented: $showChannelHistory) {
+            ChannelHistoryView(
+                items: recentlyWatched.items.filter { $0.kind == "live" },
+                onSelect: { item in
+                    controller.layer.pause()
+                    controller.load(url: item.streamURL, title: item.title)
+                    showChannelHistory = false
                 }
-                Button("Annulla", role: .cancel) {}
-            }
-            .confirmationDialog("Velocità di riproduzione", isPresented: $showSpeedPicker, titleVisibility: .visible) {
-                ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { rate in
-                    Button(speedLabel(for: rate)) {
-                        controller.setPlaybackRate(Float(rate))
-                        currentPlaybackRate = rate
-                    }
-                }
-                Button("Annulla", role: .cancel) {}
-            }
-            .confirmationDialog("Timer di spegnimento", isPresented: $showSleepTimerPicker, titleVisibility: .visible) {
-                ForEach([15, 30, 45, 60], id: \.self) { minutes in
-                    Button("\(minutes) minuti") { scheduleSleepTimer(minutes: minutes) }
-                }
-                if sleepTimerMinutes != nil {
-                    Button("Disattiva timer", role: .destructive) { cancelSleepTimer() }
-                }
-                Button("Annulla", role: .cancel) {}
-            }
-            .confirmationDialog("Rapporto di aspetto", isPresented: $showAspectPicker, titleVisibility: .visible) {
-                ForEach(VideoGravityMode.allCases) { mode in
-                    Button(mode == controller.preferences.videoGravity ? "✓ \(mode.label)" : mode.label) {
-                        controller.setVideoGravity(mode)
-                    }
-                }
-                Button("Annulla", role: .cancel) {}
-            }
-            .sheet(isPresented: $showChannelHistory) {
-                ChannelHistoryView(
-                    items: recentlyWatched.items.filter { $0.kind == "live" },
-                    onSelect: { item in
-                        controller.load(url: item.streamURL, title: item.title)
-                        showChannelHistory = false
-                    }
-                )
-            }
-            .sheet(isPresented: $showChannelSearch) {
-                GlobalSearchView()
-                    .environmentObject(sourceManager)
-            }
+            )
+        }
+        .sheet(isPresented: $showChannelSearch) {
+            GlobalSearchView()
+                .environmentObject(sourceManager)
+        }
     }
 
-    // MARK: - Gesture handling
+    // MARK: - Gestures
 
     private func handleSingleTap() {
         guard !isLocked else { return }
@@ -246,10 +237,6 @@ struct PlayerView: View {
         scheduleAutoHide()
     }
 
-    /// FEATURE MANCANTE aggiunta: adattamento video (Adatta/Riempi/Stira),
-    /// raggiungibile dalla voce "Rapporto di aspetto" nel menu "…" (il
-    /// tasto rapido dedicato in `topBar` è stato sostituito da "Blocca
-    /// schermo" su richiesta esplicita — vedi commento in `PlayerTopBar`).
     private func showToast(_ message: String, duration: UInt64 = 900_000_000) {
         toastTask?.cancel()
         toastMessage = message
@@ -274,14 +261,6 @@ struct PlayerView: View {
         scheduleAutoHide()
     }
 
-    /// BUG FIX ("preferenze nel menù '…' corrotte/bug al tocco"): un Menu
-    /// che chiude se stesso e, nello stesso istante, fa scattare la
-    /// presentazione di un'altra sheet/confirmationDialog è un caso noto in
-    /// SwiftUI in cui la seconda presentazione può fallire silenziosamente
-    /// o richiedere un secondo tocco (i due sistemi di presentazione
-    /// competono sulla stessa transazione di animazione). Attendere che la
-    /// chiusura del Menu sia completata prima di impostare il flag rende la
-    /// voce affidabile al primo tocco, sempre.
     private func presentAfterMenuDismiss(_ setFlag: @escaping () -> Void) {
         Task {
             try? await Task.sleep(nanoseconds: 350_000_000)
@@ -290,7 +269,7 @@ struct PlayerView: View {
         }
     }
 
-    // MARK: - Timer di spegnimento
+    // MARK: - Sleep Timer
 
     private func scheduleSleepTimer(minutes: Int) {
         sleepTimerTask?.cancel()
@@ -314,36 +293,8 @@ struct PlayerView: View {
         showToast("Timer disattivato", duration: 1_200_000_000)
     }
 
-    private var sleepTimerMenuLabel: String {
-        sleepTimerMinutes.map { "Timer di spegnimento (\($0) min)" } ?? "Timer di spegnimento"
-    }
+    // MARK: - Layout Principale
 
-    // MARK: - Layout principale
-
-    /// BUG FIX REALE ("il menu '…' smette di rispondere dopo pochi
-    /// secondi" / "scrollando si ricarica all'inizio"): la causa non era
-    /// nella struttura del menu in sé, ma nel FATTO che `topBar` (che lo
-    /// contiene) era una `computed var` interna a `PlayerView`, la quale
-    /// osserva l'intero `controller` come `@StateObject`. `currentTime` è
-    /// `@Published` e viene aggiornato fino a 5 volte al secondo durante
-    /// la riproduzione (throttle ≥200ms in `KSPlaybackController`): OGNI
-    /// singolo tick invalida l'intero `body` di `PlayerView`, che
-    /// ricalcola anche `topBar`/`optionsMenu` pur non leggendo affatto
-    /// `currentTime` — e un `Menu` nativo aperto, quando la sua gerarchia
-    /// viene ricostruita così spesso dal genitore, viene chiuso/resettato
-    /// silenziosamente da UIKit. L'intervallo (~200ms-1s prima che
-    /// diventi percepibile) coincide esattamente con "dopo pochi secondi
-    /// non risponde più".
-    ///
-    /// Fix: `PlayerTopBar` è ora un `View` REALMENTE separato (non una
-    /// computed var), reso `Equatable` su un piccolo struct dati
-    /// (`PlayerTopBarData`) che include SOLO ciò che serve a disegnarlo —
-    /// `currentTime`/`duration` non ne fanno parte. Con `.equatable()`
-    /// applicato, SwiftUI confronta i dati prima di ridisegnare: se sono
-    /// identici (come ad ogni tick di `currentTime`), salta del tutto la
-    /// ricostruzione di quel sottoalbero, lasciando il menu aperto
-    /// indisturbato. `progressBar` resta invece una computed var normale,
-    /// perché DEVE seguire `currentTime` in tempo reale.
     private var unifiedControlSurface: some View {
         VStack {
             PlayerTopBar(
@@ -390,31 +341,14 @@ struct PlayerView: View {
         }
     }
 
-    /// Innesca il picker di sistema AirPlay senza dover mostrare un'altra
-    /// `AVRoutePickerView` visibile a schermo: `AVRoutePickerView` non è
-    /// programmabile via API pubblica dedicata, ma incapsula internamente
-    /// un `UIButton` che risponde a `sendActions(for: .touchUpInside)` —
-    /// tecnica ampiamente usata proprio per innescarla da un tasto
-    /// personalizzato. Se Apple cambiasse quella gerarchia interna in una
-    /// futura versione di iOS, questa chiamata diventerebbe semplicemente
-    /// un no-op silenzioso (nessun crash, nessun errore di compilazione):
-    /// per questo qui c'è un solo punto di innesco condiviso da entrambe
-    /// le voci "AirPlay audio/video", riutilizzando la STESSA istanza già
-    /// visibile nella `topBar` invece di crearne una seconda nascosta.
     private func triggerAirPlayPicker() {
         guard let picker = airPlayRoutePicker else { return }
         picker.subviews.compactMap { $0 as? UIButton }.first?.sendActions(for: .touchUpInside)
     }
 
-
     private var progressBar: some View {
         VStack(spacing: 8) {
             if controller.duration > 0 {
-                // BUG FIX: la barra di avanzamento, se trascinata per più di
-                // 4 secondi, spariva sotto al dito perché il timer di
-                // auto-hide dei controlli non teneva conto dello scrubbing
-                // in corso. Ora il timer viene sospeso durante il
-                // trascinamento e riprogrammato solo al rilascio.
                 Slider(
                     value: Binding(
                         get: { controller.currentTime },
@@ -433,19 +367,14 @@ struct PlayerView: View {
                 .tint(.white)
             }
 
-            // BUG FIX ("troppi tasti che fuoriescono dallo schermo"): i
-            // pulsanti di trasporto (precedente/-15/play-pausa/+15/
-            // successivo) sono ora su una riga TUTTA loro, senza dover
-            // condividere lo spazio orizzontale con l'etichetta del tempo:
-            // prima, su schermi stretti con precedente+successivo
-            // visibili, l'intera fila (5 icone + testo "mm:ss / mm:ss")
-            // poteva superare la larghezza disponibile e finire tagliata
-            // oltre il bordo. Al centro dello schermo, dimensione fissa e
-            // sempre ampiamente entro la larghezza minima di un iPhone.
+            // CORREZIONE MANIACALE HSTACK TRASPORTO / ZAPPING:
+            // Al tap di Precedente/Successivo, arresta istantaneamente il vecchio flusso (`controller.layer.pause()`)
+            // e invoca l'azione del genitore (`onPrevious` / `onNext`) per passare al nuovo canale/episodio.
             HStack(spacing: 22) {
                 if let onPrevious {
                     GlassIconButton(systemImage: "backward.end.fill", size: 30) {
                         haptic()
+                        controller.layer.pause()
                         onPrevious()
                     }
                 }
@@ -471,6 +400,7 @@ struct PlayerView: View {
                 if let onNext {
                     GlassIconButton(systemImage: "forward.end.fill", size: 30) {
                         haptic()
+                        controller.layer.pause()
                         onNext()
                     }
                 }
@@ -554,6 +484,30 @@ struct PlayerView: View {
                 if !externalPlayers.isEmpty {
                     Button("Apri con un altro player") { showExternalPlayerMenu = true }
                 }
+                if onPrevious != nil || onNext != nil {
+                    HStack(spacing: 24) {
+                        if let onPrevious {
+                            Button {
+                                haptic()
+                                controller.layer.pause()
+                                onPrevious()
+                            } label: {
+                                Label("Precedente", systemImage: "backward.end.fill")
+                            }
+                        }
+                        if let onNext {
+                            Button {
+                                haptic()
+                                controller.layer.pause()
+                                onNext()
+                            } label: {
+                                Label("Successivo", systemImage: "forward.end.fill")
+                            }
+                        }
+                    }
+                    .font(.subheadline)
+                    .padding(.top, 4)
+                }
             }
             .padding()
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -565,7 +519,7 @@ struct PlayerView: View {
         }
     }
 
-    // MARK: - Gesti luminosità/volume
+    // MARK: - Gesti Luminosità / Volume
 
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 10)
@@ -619,12 +573,8 @@ struct PlayerView: View {
     }
 }
 
-/// Dati puri necessari a disegnare `PlayerTopBar` — DELIBERATAMENTE non
-/// include `currentTime`/`duration` (che cambiano fino a 5 volte al
-/// secondo durante la riproduzione): è proprio questa esclusione a
-/// rendere `.equatable()` efficace nel fermare i tick di `currentTime`
-/// prima che raggiungano il menu "…" (vedi commento su
-/// `unifiedControlSurface` in `PlayerView`).
+// MARK: - TopBar Data & View
+
 struct PlayerTopBarData: Equatable {
     var title: String
     var isBuffering: Bool
@@ -636,17 +586,6 @@ struct PlayerTopBarData: Equatable {
     var sleepTimerMinutes: Int?
 }
 
-/// Barra superiore del player (chiudi, titolo, icone secondarie, menu
-/// "…") come `View` REALMENTE separato da `PlayerView` — non una
-/// computed var. Questo è ciò che rende `.equatable()` efficace:
-/// applicato a una computed var non avrebbe funzionato, perché
-/// `PlayerView.body` intero sarebbe comunque stato invalidato e
-/// ricalcolato ad ogni tick di `controller.currentTime` (essendo
-/// `controller` un `@StateObject` osservato dalla stessa `PlayerView`).
-/// Come `View` a sé stante con i propri parametri, SwiftUI può
-/// confrontare `PlayerTopBarData` PRIMA di ridisegnare e, se identico
-/// (il caso comune: solo il tempo è cambiato), saltare del tutto questo
-/// sottoalbero — lasciando un `Menu` eventualmente aperto indisturbato.
 struct PlayerTopBar: View, Equatable {
     struct Actions {
         var dismiss: () -> Void
@@ -670,23 +609,10 @@ struct PlayerTopBar: View, Equatable {
     let data: PlayerTopBarData
     let actions: Actions
 
-    /// Le closure in `actions` non sono confrontabili (e non serve che
-    /// lo siano: sono sempre le stesse funzioni di `PlayerView`, non
-    /// cambiano mai valore in un modo rilevante per il disegno). Il
-    /// confronto è intenzionalmente limitato a `data`.
     static func == (lhs: PlayerTopBar, rhs: PlayerTopBar) -> Bool {
         lhs.data == rhs.data
     }
 
-    // BUG FIX ("player disallineato oltre i bordi" / "troppi tasti che
-    // fuoriescono dallo schermo"): il cluster di icone secondarie
-    // (AirPlay, PiP, apri con altro player, rapporto di aspetto, "…")
-    // non si riduce mai sotto la sua larghezza intrinseca in un
-    // `HStack` — su schermi stretti il numero di icone oggi presenti
-    // può superare la larghezza disponibile e finire tagliato oltre il
-    // bordo destro. Lo `ScrollView(.horizontal)` non cambia nulla
-    // quando tutto entra, ma garantisce che resti raggiungibile
-    // scorrendo quando non entra, invece di sparire.
     var body: some View {
         HStack {
             GlassIconButton(systemImage: "xmark") { actions.dismiss() }
@@ -713,14 +639,6 @@ struct PlayerTopBar: View, Equatable {
                         GlassIconButton(systemImage: "pip.enter", size: 34) { actions.pipToggle() }
                     }
                     GlassIconButton(systemImage: "arrow.up.forward.app", size: 34) { actions.externalPlayer() }
-                    // RICHIESTA UTENTE: il tasto rapido in barra passa da
-                    // "rapporto di aspetto" a "blocca schermo" ("molto più
-                    // utile" in un player live IPTV, dove il rapporto di
-                    // aspetto si tocca una volta ogni tanto e il blocco
-                    // schermo serve spesso per evitare tocchi accidentali
-                    // mentre il telefono è in tasca/borsa). La voce
-                    // "Rapporto di aspetto" NON è stata rimossa: resta
-                    // raggiungibile dal menu "…", identica a prima.
                     GlassIconButton(systemImage: "lock", size: 34) { actions.lock() }
                     optionsMenu
                 }
@@ -734,10 +652,6 @@ struct PlayerTopBar: View, Equatable {
         .background(LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom))
     }
 
-    /// Stessa struttura a 3 sezioni con intestazione grigia mostrata
-    /// nello screenshot dell'utente (`Section` dentro un `Menu` nativo
-    /// SwiftUI produce di per sé quel pannello arrotondato con divisori
-    /// e titoli di gruppo).
     private var optionsMenu: some View {
         Menu {
             Section("Impostazioni e controlli video") {
@@ -789,9 +703,6 @@ struct PlayerTopBar: View, Equatable {
                 Button("AirPlay video", systemImage: "airplayvideo") {
                     actions.airPlayTrigger()
                 }
-                // Chromecast richiede il Google Cast SDK come nuova
-                // dipendenza: non presente in questo progetto, non
-                // aggiungibile alla cieca senza poter compilare qui.
                 Button("Chromecast (richiede Google Cast SDK)", systemImage: "tv.badge.wifi") {
                     actions.chromecastTap()
                 }
@@ -805,20 +716,32 @@ struct PlayerTopBar: View, Equatable {
     }
 }
 
-/// FIX ("cambiare canale senza uscire e riaprire il player"): riflette
-/// nella UIKit view il `KSPlayerLayer` corrente del controller. Quando
-/// `controller.load(url:title:)` sostituisce `layer` con uno nuovo (stesso
-/// controller, stessa `PlayerView`, nessuna nuova presentazione),
-/// `updateUIView` se ne accorge e scollega la vecchia `player.view`
-/// agganciando quella nuova nello STESSO container già a schermo — non
-/// viene mai ricreato l'intero `UIView` del player, quindi nessun nero,
-/// nessuna nuova transizione di presentazione, nessun reset dei controlli.
+// MARK: - KSPlayer Container Representable
+
+/// Render Container per KSPlayer con gestione in-place ultra-ottimizzata.
+/// Riceve direttamente URL e Titolo. Quando l'URL cambia (es. zapping in Live TV o Serie TV),
+/// `updateUIView` esegue in modo sincrono:
+/// 1) Lo spegnimento del vecchio layer per bloccare istantaneamente il flusso e l'audio precedenti.
+/// 2) Il caricamento (`controller.load`) e l'aggancio del nuovo layer nel container senza sfarfallio o ritardi.
+/// 3) La deallocazione immediata di qualsiasi texture video residua del canale precedente.
 struct KSPlayerContainerView: UIViewRepresentable {
-    let controller: KSPlaybackController
+    let url: URL
+    let title: String
+    @ObservedObject var controller: KSPlaybackController
 
     final class Coordinator {
+        var currentURL: URL?
+        weak var currentLayer: KSPlayerLayer?
         weak var attachedPlayerView: UIView?
-        weak var freezeFrameView: UIImageView?
+        var pendingPlayRetry: [DispatchWorkItem]?
+        var stateCancellable: AnyCancellable?
+
+        func cancelPendingTasks() {
+            pendingPlayRetry?.forEach { $0.cancel() }
+            pendingPlayRetry = nil
+            stateCancellable?.cancel()
+            stateCancellable = nil
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -826,91 +749,101 @@ struct KSPlayerContainerView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
         container.backgroundColor = .black
-        attach(controller.layer.player.view, to: container, coordinator: context.coordinator)
+        context.coordinator.currentURL = url
+        attach(controller.layer, in: container, coordinator: context.coordinator)
         return container
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
-        guard controller.layer.player.view !== context.coordinator.attachedPlayerView else { return }
-        attach(controller.layer.player.view, to: uiView, coordinator: context.coordinator)
-    }
+        let coordinator = context.coordinator
 
-    /// OTTIMIZZAZIONE FLUIDITÀ ("sembra che chiuda e riapra il player"):
-    /// tra lo stacco della vecchia `UIView` del player e la comparsa del
-    /// primo fotogramma del nuovo flusso (che deve prima connettersi e
-    /// bufferizzare — un IPTV lento può impiegare secondi) c'era un
-    /// taglio netto a schermo nero, percepito dall'utente esattamente
-    /// come "il player si chiude e si riapre" anche se tecnicamente non
-    /// succede mai. Prima di staccare la vecchia vista ne catturiamo uno
-    /// snapshot statico e lo mostriamo sopra al nuovo container,
-    /// sfumandolo via in dissolvenza: l'ultimo fotogramma del canale
-    /// precedente resta visibile un istante invece di un nero secco,
-    /// dando la sensazione di transizione continua tipica dello zapping
-    /// su una TV, mentre sotto il nuovo flusso ha il tempo di iniziare a
-    /// bufferizzare (lo spinner in `topBar`, guidato da
-    /// `controller.isBuffering`, resta comunque il segnale primario di
-    /// caricamento in corso).
-    private func attach(_ playerView: UIView?, to container: UIView, coordinator: Coordinator) {
-        if let oldView = coordinator.attachedPlayerView, oldView.window != nil,
-           let snapshot = oldView.snapshotImage() {
-            coordinator.freezeFrameView?.removeFromSuperview()
-            let freezeFrame = UIImageView(image: snapshot)
-            freezeFrame.frame = container.bounds
-            freezeFrame.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            freezeFrame.contentMode = .scaleAspectFit
-            freezeFrame.backgroundColor = .black
-            container.addSubview(freezeFrame)
-            coordinator.freezeFrameView = freezeFrame
-
-            UIView.animate(
-                withDuration: 0.35,
-                delay: 0.2,
-                options: [.curveEaseOut],
-                animations: { freezeFrame.alpha = 0 },
-                completion: { _ in freezeFrame.removeFromSuperview() }
-            )
+        // Se l'URL è cambiato rispetto a quello correntemente renderizzato
+        if coordinator.currentURL != url {
+            coordinator.currentURL = url
+            // 1. Arresta immediatamente il vecchio flusso
+            controller.layer.pause()
+            // 2. Carica in tempo reale il nuovo URL e Titolo nel controller
+            controller.load(url: url, title: title)
+            // 3. Riaggancia il layer del nuovo flusso nel container
+            attach(controller.layer, in: uiView, coordinator: coordinator)
+            return
         }
 
-        coordinator.attachedPlayerView?.removeFromSuperview()
+        let layer = controller.layer
+        let currentView = layer.player.view
+
+        // Se il layer o la playerView interna è stata rigenerata dal controller
+        if coordinator.currentLayer !== layer || coordinator.attachedPlayerView !== currentView {
+            attach(layer, in: uiView, coordinator: coordinator)
+        }
+    }
+
+    private func attach(_ layer: KSPlayerLayer, in container: UIView, coordinator: Coordinator) {
+        coordinator.cancelPendingTasks()
+
+        // Rimuove e pulisce all'istante la vista precedente per non lasciare nessun fotogramma congelato
+        if let oldPlayerView = coordinator.attachedPlayerView {
+            oldPlayerView.removeFromSuperview()
+            coordinator.attachedPlayerView = nil
+        }
+        container.subviews.forEach { $0.removeFromSuperview() }
+
+        coordinator.currentLayer = layer
+
+        guard let playerView = layer.player.view else { return }
         coordinator.attachedPlayerView = playerView
 
-        guard let playerView else { return }
+        // La vista parte a trasparenza zero (sfondo nero puro) durante la connessione/decodifica del nuovo canale
+        playerView.alpha = 0
 
-        playerView.translatesAutoresizingMaskIntoConstraints = false
-        // `insertSubview(_:at: 0)` invece di `addSubview`: il nuovo
-        // player deve restare SOTTO al freeze-frame appena aggiunto
-        // sopra, altrimenti la dissolvenza nasconderebbe il nuovo
-        // flusso invece del taglio a nero che dovrebbe mascherare.
-        container.insertSubview(playerView, at: 0)
-        NSLayoutConstraint.activate([
-            playerView.topAnchor.constraint(equalTo: container.topAnchor),
-            playerView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            playerView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            playerView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-        ])
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        UIView.performWithoutAnimation {
+            playerView.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(playerView)
+            NSLayoutConstraint.activate([
+                playerView.topAnchor.constraint(equalTo: container.topAnchor),
+                playerView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                playerView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                playerView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            ])
+            container.layoutIfNeeded()
+        }
+        CATransaction.commit()
+
+        // Rivelazione immediata appena il nuovo canale inizia a trasmettere fotogrammi reali
+        coordinator.stateCancellable = controller.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak controller, weak playerView] _ in
+                DispatchQueue.main.async {
+                    guard let controller, let playerView else { return }
+                    if controller.isPlaying && !controller.isBuffering && playerView.alpha < 1 {
+                        UIView.animate(withDuration: 0.15) {
+                            playerView.alpha = 1.0
+                        }
+                    }
+                }
+            }
+
+        // Avvio immediato della riproduzione e retry dedicati
+        layer.play()
+        let retries = [0.05, 0.2, 0.5, 1.0].map { delay in
+            let item = DispatchWorkItem { [weak layer, weak controller, weak playerView] in
+                layer?.play()
+                if let controller, let playerView, controller.isPlaying, !controller.isBuffering {
+                    playerView.alpha = 1.0
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+            return item
+        }
+        coordinator.pendingPlayRetry = retries
     }
 }
 
-private extension UIView {
-    /// Cattura un'immagine statica dell'ultimo fotogramma renderizzato,
-    /// usata per il crossfade in `KSPlayerContainerView.attach`.
-    /// `afterScreenUpdates: false` cattura la CPU-side render tree già
-    /// presente (istantaneo, nessuna attesa di un nuovo ciclo di
-    /// rendering) — sufficiente per un fermo immagine di transizione,
-    /// non serve un frame aggiornatissimo.
-    func snapshotImage() -> UIImage? {
-        guard bounds.width > 0, bounds.height > 0 else { return nil }
-        let renderer = UIGraphicsImageRenderer(bounds: bounds)
-        return renderer.image { _ in drawHierarchy(in: bounds, afterScreenUpdates: false) }
-    }
-}
+// MARK: - AirPlay, External Player, Audio Slider
 
 struct AirPlayButton: UIViewRepresentable {
-    /// Espone al chiamante la `AVRoutePickerView` appena creata, così il
-    /// menu "…" può innescarla a distanza (vedi `triggerAirPlayPicker`)
-    /// riusando questa STESSA istanza invece di crearne una seconda
-    /// invisibile — un'unica `AVRoutePickerView` per sessione di
-    /// riproduzione, come previsto dalla view stessa.
     var onCreate: ((AVRoutePickerView) -> Void)? = nil
 
     func makeUIView(context: Context) -> AVRoutePickerView {
@@ -957,6 +890,8 @@ enum MPVolumeSlider {
     }
 }
 
+// MARK: - Modals & Pickers
+
 struct QualityPickerView: View {
     @ObservedObject var controller: KSPlaybackController
     @Binding var selectedTrackName: String?
@@ -1001,26 +936,10 @@ struct QualityPickerView: View {
     }
 }
 
-/// Impostazioni avanzate del motore KSPlayer+FFmpeg, tutte su proprietà
-/// REALI di `KSOptions` (verificate sul sorgente ufficiale
-/// github.com/kingslay/KSPlayer): buffer, decodifica hardware/software,
-/// de-interlacciamento automatico, sincronizzazione audio/video, ricerca
-/// accurata, sottotitoli. Le modifiche che richiedono il riavvio della
-/// pipeline di decodifica (decodifica, de-interlacciamento, sottotitoli)
-/// lo fanno in modo esplicito e visibile tramite `controller.reload()`,
-/// invece di illudere l'utente con un cambiamento che non si applica
-/// davvero finché il flusso non viene ricaricato.
 struct AdvancedSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
 
-    // BUG FIX ("preferenze nel menù '…' corrotte/non funzionanti"): come
-    // per il buffer, ogni slider/toggle qui guida uno `@State` locale
-    // (osservato nativamente da SwiftUI) sincronizzato con
-    // `controller.preferences`/`layer.options` ad ogni variazione, invece
-    // di leggere/scrivere `layer.options` direttamente nel `body` — che
-    // non essendo `@Published`-osservato lascia l'interfaccia "congelata"
-    // sul valore iniziale anche quando il valore reale è cambiato.
     @State private var preferredBuffer: Double
     @State private var maxBuffer: Double
     @State private var hardwareDecode: Bool
@@ -1172,12 +1091,6 @@ struct TrackPickerView: View {
     }
 }
 
-/// Sheet "Cronologia dei canali", raggiungibile dal menu "…": elenca i
-/// canali live aperti di recente (`RecentlyWatchedStore`, già alimentato
-/// altrove nell'app ad ogni riproduzione) e permette di riaprirli
-/// nello STESSO player, in-place, con `controller.load(url:title:)` —
-/// stesso meccanismo già usato per precedente/successivo, nessuna nuova
-/// presentazione del player.
 struct ChannelHistoryView: View {
     let items: [RecentlyWatchedItem]
     let onSelect: (RecentlyWatchedItem) -> Void
@@ -1216,9 +1129,6 @@ struct ChannelHistoryView: View {
     }
 }
 
-/// `ContentUnavailableView` esiste solo da iOS 17: questo fallback usa
-/// lo stesso identico markup su iOS 16, evitando di alzare a forza la
-/// deployment target del progetto solo per questa sheet.
 struct ContentUnavailableViewCompat: View {
     let title: String
     let message: String
