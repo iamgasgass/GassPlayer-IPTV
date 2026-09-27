@@ -3,54 +3,48 @@ import AVFoundation
 import MediaPlayer
 import KSPlayer
 
-/// Bridge SwiftUI-friendly per KSPlayerLayer, ora l'UNICO motore di
+/// Bridge SwiftUI-friendly per KSPlayerLayer, l'UNICO motore di
 /// riproduzione dell'app (AVPlayer nativo + FFmpeg via KSMEPlayer, con
 /// switch automatico incorporato nella libreria stessa — vedi
 /// KSPlayerLayer.finish(player:error:), che ritenta con
 /// KSOptions.secondPlayerType su qualunque errore prima di arrendersi).
 ///
-/// FIX 2026-09-25 (zapping canale/episodio "senza uscire e riaprire il
-/// player"): in precedenza ogni pressione di precedente/successivo
-/// forzava, lato chiamante (`ChannelGridView`/`SeriesEpisodesView`), un
-/// `.id(stream.id)` sulla vista del player: necessario perché
-/// `KSPlaybackController` veniva creato una sola volta in `init` e non
-/// aveva alcun modo di caricare un URL diverso in seguito — l'unico modo
-/// per "cambiare canale" era distruggere e ricreare l'intera
-/// `PlayerView` (e quindi anche il `KSPlayerContainerView`/`UIView`
-/// sottostante). Il risultato era funzionalmente corretto ma percepito
-/// come "chiusura e riapertura" del player: un breve nero, reset dei
-/// controlli, nuova `fullScreenCover` dal punto di vista di UIKit.
+/// AGGIORNAMENTO 2026-09-27 — ESPOSIZIONE COMPLETA DELLE CAPACITÀ DI
+/// KSPlayer/FFmpeg: `PlaybackPreferences` ora copre l'intera superficie
+/// pubblica e documentata di `KSOptions` (buffer, decodifica hardware/
+/// software, sincronizzazione A/V, ricerca accurata/flags, de‑interlacciamento,
+/// sottotitoli incorporati/immagine, filtri FFmpeg audio/video, opzioni
+/// grezze del format-context/decoder/avOptions, intestazioni HTTP
+/// personalizzate, cache HTTP, probing di rete, riproduzione in loop,
+/// tempo/velocità di partenza, adattamento automatico del bitrate e
+/// rendering panoramico 360°/VR). Ogni proprietà è applicata in
+/// `buildLayer(for:preferences:)` ad ogni apertura/ricarica del flusso, in
+/// modo che nessuna preferenza scelta dall'utente venga mai persa durante
+/// lo zapping canale/episodio (`load(url:title:)` ricrea il layer da zero
+/// riapplicando SEMPRE `preferences` per intero).
 ///
-/// `layer` è ora `@Published` (non più `let`): `load(url:title:)` crea un
-/// nuovo `KSPlayerLayer` per il nuovo URL e lo assegna a questa stessa
+/// FIX 2026-09-25 (zapping canale/episodio "senza uscire e riaprire il
+/// player"): `layer` è `@Published` (non `let`): `load(url:title:)` crea
+/// un nuovo `KSPlayerLayer` per il nuovo URL e lo assegna a questa stessa
 /// istanza di `KSPlaybackController`, che resta viva per tutta la sessione
 /// di visione. `PlayerView` (che possiede il controller come
 /// `@StateObject`) non viene mai ricreata: `KSPlayerContainerView`
-/// (vedi PlayerView.swift) osserva il cambio di `layer` e si limita a
-/// staccare la vecchia `UIView` del player e agganciare la nuova nello
-/// stesso container già presente a schermo — nessuna nuova
-/// presentazione, nessun reset di stato (blocco schermo, timer di
-/// spegnimento, ecc.), transizione fluida.
-/// Modalità di adattamento del video al riquadro dello schermo, esposta
-/// nel player (pulsante nella `topBar`, vedi `PlayerView`).
-/// Mappa 1:1 su `UIView.ContentMode`, che è il tipo letto/scritto da
-/// `MediaPlayerProtocol.contentMode` in KSPlayer (il player, sia motore
-/// AVPlayer sia motore FFmpeg/KSMEPlayer, applica questo valore alla
-/// propria vista di rendering — `AVPlayerLayer.videoGravity` nel primo
-/// caso, trasformazione della vista OpenGL/Metal nel secondo — quindi
-/// funziona in modo identico indipendentemente da quale dei due motori
-/// stia effettivamente decodificando il flusso corrente).
+/// osserva il cambio di `layer` e si limita a staccare la vecchia `UIView`
+/// del player e agganciare la nuova nello stesso container già presente a
+/// schermo — nessuna nuova presentazione, nessun reset di stato.
+
+/// Modalità di adattamento del video al riquadro dello schermo.
+/// Mappa 1:1 su `UIView.ContentMode`, letto/scritto da
+/// `MediaPlayerProtocol.contentMode` in KSPlayer: si applica in tempo
+/// reale sulla vista di rendering corrente (AVPlayerLayer o vista
+/// Metal/OpenGL di KSMEPlayer), quindi funziona identicamente
+/// indipendentemente da quale motore stia decodificando il flusso.
 enum VideoGravityMode: String, CaseIterable, Identifiable {
-    /// Il video intero è visibile, con eventuali barre nere ai lati:
-    /// nessun ritaglio, nessuna deformazione. Default.
+    /// Il video intero è visibile, con eventuali barre nere ai lati.
     case fit
-    /// Il video riempie tutto il riquadro ritagliando le parti che
-    /// eccedono: nessuna barra nera, nessuna deformazione, ma parte
-    /// dell'immagine (di solito i bordi) non è visibile.
+    /// Il video riempie tutto il riquadro ritagliando le parti che eccedono.
     case fill
-    /// Il video viene stirato per riempire esattamente il riquadro:
-    /// nessuna barra nera, nessun ritaglio, ma l'immagine viene
-    /// deformata se le proporzioni non corrispondono.
+    /// Il video viene stirato per riempire esattamente il riquadro.
     case stretch
 
     var id: String { rawValue }
@@ -86,39 +80,217 @@ enum VideoGravityMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Modalità di rendering panoramico/360°, mappata su `KSOptions.DisplayEnum`
+/// (una delle capacità distintive di KSPlayer: "360° panorama video").
+/// `.plane` è la riproduzione normale piatta; `.vr` e `.vrBox` proiettano
+/// il fotogramma su una sfera Metal per contenuti equirettangolari a 360°,
+/// rispettivamente in modalità singola e "a scatola" (side-by-side per
+/// visori). Richiede la ricostruzione del layer perché KSPlayer istanzia
+/// il renderer panoramico solo in fase di apertura del flusso.
+enum PanoramaMode: String, CaseIterable, Identifiable {
+    case plane
+    case vr
+    case vrBox
+
+    var id: String { rawValue }
+
+    var displayMode: DisplayEnum {
+        switch self {
+        case .plane: return .plane
+        case .vr: return .vr
+        case .vrBox: return .vrBox
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .plane: return "Normale"
+        case .vr: return "Panoramico 360° (VR)"
+        case .vrBox: return "Panoramico 360° (VR Box)"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .plane: return "rectangle"
+        case .vr: return "globe"
+        case .vrBox: return "cube"
+        }
+    }
+}
+
+/// Preset comuni per `KSOptions.seekFlags` (flag FFmpeg `AVSEEK_FLAG_*`
+/// passati direttamente ad `av_seek_frame`). Esposti come preset invece
+/// che come bitmask grezza per restare utilizzabili dall'interfaccia,
+/// pur mantenendo il valore `Int32` letterale richiesto da KSOptions.
+enum SeekFlagPreset: String, CaseIterable, Identifiable {
+    /// Nessun flag: ricerca rapida al keyframe più vicino (default FFmpeg).
+    case fast
+    /// `AVSEEK_FLAG_BYTE` (2): ricerca basata su offset di byte, utile per
+    /// flussi senza timestamp affidabili.
+    case byteAccurate
+    /// `AVSEEK_FLAG_ANY` (4): consente di posizionarsi su fotogrammi non
+    /// keyframe, più preciso su flussi con GOP molto lunghi.
+    case anyFrame
+    /// `AVSEEK_FLAG_FRAME` (8): ricerca basata su indice di fotogramma.
+    case frameIndexed
+
+    var id: String { rawValue }
+
+    var flagValue: Int32 {
+        switch self {
+        case .fast: return 0
+        case .byteAccurate: return 2
+        case .anyFrame: return 4
+        case .frameIndexed: return 8
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .fast: return "Rapida (predefinita)"
+        case .byteAccurate: return "Accurata per byte"
+        case .anyFrame: return "Qualsiasi fotogramma"
+        case .frameIndexed: return "Indicizzata per fotogramma"
+        }
+    }
+}
+
 @MainActor
 final class KSPlaybackController: NSObject, ObservableObject {
+
     /// Preferenze di riproduzione avanzate regolabili dall'utente
-    /// (`AdvancedSettingsView`, raggiungibile dal menu "…"). Sono lo
-    /// stato di verità riapplicato ad ogni nuovo `KSPlayerLayer`, sia al
-    /// primo avvio sia ad ogni cambio canale/episodio: senza questo,
-    /// zappare canale avrebbe azzerato silenziosamente tutte le
-    /// preferenze scelte dall'utente per la sessione corrente.
+    /// (`AdvancedSettingsView`, raggiungibile dal menu "…"). Coprono
+    /// l'intera superficie pubblica di `KSOptions`/FFmpeg che KSPlayer
+    /// espone, e sono lo stato di verità riapplicato ad ogni nuovo
+    /// `KSPlayerLayer`, sia al primo avvio sia ad ogni cambio
+    /// canale/episodio: senza questo, zappare canale avrebbe azzerato
+    /// silenziosamente tutte le preferenze scelte per la sessione corrente.
     struct PlaybackPreferences {
+        // MARK: Buffer
+        /// `KSOptions.preferredForwardBufferDuration`: buffer minimo (s)
+        /// prima di iniziare/riprendere la riproduzione.
         var preferredForwardBufferDuration: Double = 5
+        /// `KSOptions.maxBufferDuration`: buffer massimo (s) prima che il
+        /// caricamento venga sospeso.
         var maxBufferDuration: Double = 30
-        /// `KSOptions.hardwareDecode`: decodifica hardware (VideoToolbox)
-        /// vs software (FFmpeg puro). Utile per aggirare flussi H.264/
-        /// H.265 malformati che il decoder hardware rifiuta ma FFmpeg in
-        /// software riesce comunque a decodificare.
+
+        // MARK: Decodifica (FFmpeg / VideoToolbox)
+        /// `KSOptions.hardwareDecode`: VideoToolbox vs software (FFmpeg
+        /// puro), utile per aggirare flussi H.264/H.265 malformati.
         var hardwareDecode: Bool = true
-        /// `KSOptions.isAccurateSeek`: seek fotogramma-esatto (più lento)
-        /// invece del seek "al keyframe più vicino" (più rapido, default).
+        /// `KSOptions.asynchronousDecompression`: decompressione hardware
+        /// asincrona, riduce gli stalli su decoder hardware lenti.
+        var asynchronousDecompression: Bool = true
+        /// `KSOptions.syncDecodeVideo` / `syncDecodeAudio`: decodifica
+        /// sincrona invece che su thread dedicati — utile in diagnosi per
+        /// isolare artefatti dovuti a race condition nella pipeline.
+        var syncDecodeVideo: Bool = false
+        var syncDecodeAudio: Bool = false
+        /// `KSOptions.lowres`: riduce la risoluzione di decodifica FFmpeg
+        /// (0 = piena risoluzione, 1 = metà, 2 = un quarto). Utile su
+        /// dispositivi poco potenti o per scrub/preview veloci.
+        var lowres: UInt8 = 0
+        /// `KSOptions.videoDisable`: disabilita completamente la traccia
+        /// video — modalità "solo audio" per stream radio IPTV.
+        var videoDisable: Bool = false
+
+        // MARK: Ricerca / sincronizzazione A/V
+        /// `KSOptions.isAccurateSeek`: seek fotogramma-esatto invece del
+        /// keyframe più vicino.
         var isAccurateSeek: Bool = false
-        /// `KSOptions.autoDeInterlace`: rileva e corregge automaticamente
-        /// l'interlacciamento, comune su molti canali SD delle
-        /// playlist IPTV.
+        /// `KSOptions.seekFlags`: flag FFmpeg passati a `av_seek_frame`.
+        var seekFlags: Int32 = 0
+        /// `KSOptions.autoDeInterlace`: rilevamento/correzione automatica
+        /// dell'interlacciamento (comune su canali SD IPTV).
         var autoDeInterlace: Bool = false
-        /// `KSOptions.videoDelay` (secondi): sincronizzazione audio/video
-        /// manuale. Positivo = video ritardato rispetto all'audio.
+        /// `KSOptions.videoDelay` (s): sincronizzazione video manuale,
+        /// positivo = video ritardato rispetto all'audio.
         var videoDelay: Double = 0
-        /// Modalità di adattamento del video al riquadro (vedi
-        /// `VideoGravityMode`). A differenza di decodifica/
-        /// de-interlacciamento, questa si applica al volo (proprietà
-        /// della vista di rendering, non della pipeline FFmpeg) e viene
-        /// comunque riportata qui perché deve sopravvivere allo zapping
-        /// canale/episodio (`load(url:title:)` ricrea il layer da zero).
+        /// `KSOptions.subtitleDelay` (s): sincronizzazione sottotitoli.
+        var subtitleDelay: Double = 0
+
+        // MARK: Sottotitoli (testo, immagine, Closed Captions)
+        /// `KSOptions.subtitleDisable`: disattiva completamente il
+        /// sottosistema sottotitoli.
+        var subtitleDisable: Bool = false
+        /// `KSOptions.autoSelectEmbedSubtitle`: selezione automatica della
+        /// prima traccia sottotitoli incorporata nel flusso.
+        var autoSelectEmbedSubtitle: Bool = true
+        /// `KSOptions.isSeekImageSubtitle`: mantiene visibile l'ultimo
+        /// sottotitolo immagine (es. PGS/DVB) durante il seek.
+        var isSeekImageSubtitle: Bool = false
+
+        // MARK: Rendering
+        /// Modalità di adattamento del video al riquadro. Si applica al
+        /// volo (proprietà della vista, non della pipeline FFmpeg) ma è
+        /// comunque persistita qui perché deve sopravvivere allo zapping.
         var videoGravity: VideoGravityMode = .fit
+        /// `KSOptions.display`: modalità piatta/VR/VR box per contenuti
+        /// panoramici 360°.
+        var panoramaMode: PanoramaMode = .plane
+        /// `KSOptions.autoRotate`: applica automaticamente la rotazione
+        /// indicata nei metadati del flusso.
+        var autoRotate: Bool = true
+
+        // MARK: Adattamento qualità / comportamento riproduzione
+        /// `KSOptions.videoAdaptable`: switch automatico tra bitrate
+        /// multipli su playlist HLS/DASH multi-variante in base alla rete.
+        var videoAdaptable: Bool = true
+        /// `KSOptions.isLoopPlay`: riproduzione in loop automatico a fine
+        /// flusso (contenuti brevi/VOD).
+        var isLoopPlay: Bool = false
+        /// `KSOptions.isSecondOpen`: apertura rapida ("secondo open") del
+        /// flusso per un avvio percepito più veloce.
+        var isSecondOpen: Bool = true
+        /// `KSOptions.isSeekedAutoPlay`: riprende automaticamente la
+        /// riproduzione dopo un seek manuale.
+        var isSeekedAutoPlay: Bool = true
+        /// `KSOptions.startPlayTime` (s): posizione di partenza, applicata
+        /// solo al successivo `load(url:title:)` (es. riprendi da dove
+        /// avevi interrotto).
+        var startPlayTime: TimeInterval = 0
+        /// `KSOptions.startPlayRate`: velocità di riproduzione iniziale.
+        var startPlayRate: Float = 1.0
+
+        // MARK: Rete
+        /// `KSOptions.userAgent`: intestazione User-Agent HTTP.
+        var userAgent: String? = "GassPlayer/1.0"
+        /// `KSOptions.referer`: intestazione Referer HTTP.
+        var referer: String?
+        /// Intestazioni HTTP personalizzate aggiuntive, applicate tramite
+        /// `KSOptions.appendHeader(_:)` — utile per playlist IPTV che
+        /// richiedono token/cookie/Origin specifici.
+        var customHTTPHeaders: [String: String] = [:]
+        /// `KSOptions.cache`: cache HTTP lato FFmpeg (solo protocollo
+        /// http/https).
+        var httpCacheEnabled: Bool = false
+        /// `KSOptions.probesize`: quantità di dati (byte) analizzata da
+        /// FFmpeg per il probing del formato — aumentarla aiuta con
+        /// flussi IPTV che annunciano male le proprie tracce.
+        var probesize: Int64?
+        /// `KSOptions.maxAnalyzeDuration`: durata massima (in unità di
+        /// timebase FFmpeg) dedicata all'analisi del flusso in apertura.
+        var maxAnalyzeDuration: Int64?
+
+        // MARK: Filtri FFmpeg
+        /// `KSOptions.videoFilters`: catena di filtri video FFmpeg
+        /// (sintassi `libavfilter`, es. `"hflip"`, `"eq=contrast=1.2"`).
+        var videoFilters: [String] = []
+        /// `KSOptions.audioFilters`: catena di filtri audio FFmpeg (es.
+        /// `"volume=2.0"`, `"aecho=0.8:0.9:1000:0.3"`).
+        var audioFilters: [String] = []
+
+        // MARK: Opzioni FFmpeg grezze (potere assoluto, per utenti avanzati)
+        /// `KSOptions.formatContextOptions`: opzioni passate direttamente
+        /// ad `AVFormatContext` (es. `"reconnect": "1"`, `"rtsp_transport": "tcp"`).
+        /// Unite ADDITIVAMENTE ai default della libreria, mai sovrascritte.
+        var formatContextOptions: [String: String] = [:]
+        /// `KSOptions.decoderOptions`: opzioni passate al decoder FFmpeg
+        /// selezionato (es. `"threads": "4"`).
+        var decoderOptions: [String: String] = [:]
+        /// `KSOptions.avOptions`: opzioni FFmpeg generiche di libreria.
+        var avOptions: [String: String] = [:]
     }
 
     @Published var state: KSPlayerState = .initialized
@@ -129,6 +301,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
     @Published var isPipActive = false {
         didSet { layer.isPipActive = isPipActive }
     }
+
     @Published private(set) var layer: KSPlayerLayer
     @Published private(set) var preferences = PlaybackPreferences()
 
@@ -138,14 +311,9 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private var hasEverStartedPlaying = false
 
     /// OTTIMIZZAZIONE FLUIDITÀ: KSPlayer invoca il delegate di avanzamento
-    /// molto più spesso di quanto la UI necessiti per apparire fluida
-    /// (spesso più volte al secondo). Senza throttling, ogni singolo tick
-    /// pubblica una modifica su `currentTime` che rivaluta l'intera
-    /// `PlayerView.body` — pulsanti Liquid Glass inclusi — molte più volte
-    /// al secondo di quanto un occhio umano possa percepire, sprecando CPU/
-    /// GPU e potendo introdurre micro-scatti. Pubblichiamo un aggiornamento
-    /// solo se la variazione percepita è reale (>= 200ms) o se la durata
-    /// totale è cambiata (es. aggiornamento del DVR live).
+    /// molto più spesso di quanto la UI necessiti per apparire fluida.
+    /// Pubblichiamo un aggiornamento solo se la variazione percepita è
+    /// reale (>= 200ms) o se la durata totale è cambiata (es. DVR live).
     private var lastPublishedTime: TimeInterval = -1
 
     var isPlaying: Bool { state.isPlaying }
@@ -167,34 +335,91 @@ final class KSPlaybackController: NSObject, ObservableObject {
         startWatchdog()
     }
 
-    /// Costruisce un nuovo `KSPlayerLayer` con le opzioni derivate dalle
-    /// `PlaybackPreferences` correnti. Metodo `static` (non di istanza)
+    /// Costruisce un nuovo `KSPlayerLayer` applicando l'INTERA superficie
+    /// di `PlaybackPreferences` (quindi l'intera superficie esposta di
+    /// KSOptions/FFmpeg) alle opzioni del nuovo layer. Metodo `static`
     /// perché deve poter essere chiamato anche dall'`init`, prima che
-    /// `super.init()` completi (Swift non permette di chiamare metodi di
-    /// istanza su `self` prima di quel punto).
+    /// `super.init()` completi.
     private static func buildLayer(for url: URL, preferences: PlaybackPreferences) -> KSPlayerLayer {
         let options = KSOptions()
+
+        // Buffer
         options.preferredForwardBufferDuration = preferences.preferredForwardBufferDuration
         options.maxBufferDuration = preferences.maxBufferDuration
-        options.registerRemoteControll = true
-        options.canStartPictureInPictureAutomaticallyFromInline = true
-        options.userAgent = "GassPlayer/1.0"
+
+        // Decodifica
         options.hardwareDecode = preferences.hardwareDecode
+        options.asynchronousDecompression = preferences.asynchronousDecompression
+        options.syncDecodeVideo = preferences.syncDecodeVideo
+        options.syncDecodeAudio = preferences.syncDecodeAudio
+        options.lowres = preferences.lowres
+        options.videoDisable = preferences.videoDisable
+
+        // Ricerca / sincronizzazione
         options.isAccurateSeek = preferences.isAccurateSeek
+        options.seekFlags = preferences.seekFlags
         options.autoDeInterlace = preferences.autoDeInterlace
         options.videoDelay = preferences.videoDelay
+        options.subtitleDelay = preferences.subtitleDelay
+
+        // Sottotitoli
+        options.subtitleDisable = preferences.subtitleDisable
+        options.autoSelectEmbedSubtitle = preferences.autoSelectEmbedSubtitle
+        options.isSeekImageSubtitle = preferences.isSeekImageSubtitle
+
+        // Rendering / panorama
+        options.display = preferences.panoramaMode.displayMode
+        options.autoRotate = preferences.autoRotate
+
+        // Adattamento / comportamento riproduzione
+        options.videoAdaptable = preferences.videoAdaptable
+        options.isLoopPlay = preferences.isLoopPlay
+        options.isSecondOpen = preferences.isSecondOpen
+        options.isSeekedAutoPlay = preferences.isSeekedAutoPlay
+        options.startPlayTime = preferences.startPlayTime
+        options.startPlayRate = preferences.startPlayRate
+
+        // Rete
+        options.userAgent = preferences.userAgent
+        options.referer = preferences.referer
+        if !preferences.customHTTPHeaders.isEmpty {
+            options.appendHeader(preferences.customHTTPHeaders)
+        }
+        options.cache = preferences.httpCacheEnabled
+        options.probesize = preferences.probesize
+        options.maxAnalyzeDuration = preferences.maxAnalyzeDuration
+
+        // Filtri FFmpeg
+        options.videoFilters = preferences.videoFilters
+        options.audioFilters = preferences.audioFilters
+
+        // Opzioni FFmpeg grezze — unite ai default della libreria senza
+        // rimpiazzarli, così i reconnect/timeout impostati internamente
+        // da KSOptions restano attivi anche con override dell'utente.
+        if !preferences.formatContextOptions.isEmpty {
+            options.formatContextOptions.merge(preferences.formatContextOptions.mapValues { $0 as Any }) { _, new in new }
+        }
+        if !preferences.decoderOptions.isEmpty {
+            options.decoderOptions.merge(preferences.decoderOptions.mapValues { $0 as Any }) { _, new in new }
+        }
+        if !preferences.avOptions.isEmpty {
+            options.avOptions.merge(preferences.avOptions.mapValues { $0 as Any }) { _, new in new }
+        }
+
+        // Invariato rispetto alla configurazione precedente
+        options.registerRemoteControll = true
+        options.canStartPictureInPictureAutomaticallyFromInline = true
+
         let layer = KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
         layer.player.contentMode = preferences.videoGravity.contentMode
         return layer
     }
 
-    /// FEATURE MANCANTE aggiunta (precedente/successivo "in-place"): carica
-    /// un nuovo URL SENZA che `PlayerView` venga mai distrutta/ricreata.
-    /// Il vecchio layer viene fermato e scollegato (evita che il suo
-    /// delegate continui a pubblicare eventi di un flusso che non è più
-    /// quello mostrato), un nuovo `KSPlayerLayer` viene creato per il
-    /// nuovo URL riapplicando le preferenze correnti, e tutto lo stato di
-    /// avanzamento/errore viene azzerato per il nuovo contenuto.
+    /// Carica un nuovo URL SENZA che `PlayerView` venga mai
+    /// distrutta/ricreata. Il vecchio layer viene fermato e scollegato, un
+    /// nuovo `KSPlayerLayer` viene creato riapplicando integralmente le
+    /// `preferences` correnti (incluse TUTTE le opzioni FFmpeg avanzate),
+    /// e tutto lo stato di avanzamento/errore viene azzerato.
     func load(url: URL, title: String) {
         layer.delegate = nil
         layer.pause()
@@ -212,29 +437,18 @@ final class KSPlaybackController: NSObject, ObservableObject {
         let newLayer = Self.buildLayer(for: url, preferences: preferences)
         layer = newLayer
         layer.delegate = self
-        // BUG FIX ("il flusso non parte automaticamente" dopo prec/succ):
-        // `isAutoPlay: true` passato a `KSPlayerLayer.init` in
-        // `buildLayer` presuppone che la vista del player sia già
-        // agganciata a una window quando l'auto-play interno scatta.
-        // Qui invece il layer viene creato PRIMA che
-        // `KSPlayerContainerView.updateUIView` (SwiftUI, prossimo ciclo
-        // di render) stacchi la vecchia UIView e agganci quella nuova:
-        // in quella finestra temporale l'auto-play interno può non
-        // avere effetto. Chiamare `play()` esplicitamente qui è
-        // ridondante se l'auto-play interno ha già funzionato (play() su
-        // un player già in play è un no-op sicuro) ma GARANTISCE
-        // l'avvio quando non ha funzionato — nessuna dipendenza dal
-        // timing di SwiftUI.
+        // Chiamata esplicita a play() ridondante ma sicura: garantisce
+        // l'avvio anche quando l'auto-play interno non ha effetto perché
+        // la vista non è ancora agganciata a una window.
         layer.play()
         startWatchdog()
     }
 
     /// Ricarica lo stream corrente (stesso URL) con le `preferences`
     /// aggiornate: necessario per le impostazioni che agiscono a livello
-    /// di decodifica (hardware/software, de-interlacciamento, sottotitoli
-    /// disattivati), che KSPlayer legge solo alla creazione della
-    /// pipeline e non possono essere cambiate "a caldo" su un flusso già
-    /// in riproduzione.
+    /// di apertura/pipeline (decodifica, sottotitoli, rete, filtri, opzioni
+    /// FFmpeg grezze, panorama), che KSPlayer legge solo alla creazione
+    /// della pipeline e non possono essere cambiate "a caldo".
     func reload() {
         load(url: currentURL, title: title)
     }
@@ -252,15 +466,9 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     func skip(by interval: TimeInterval) {
-        // BUG FIX: su flussi live (duration == 0) il vecchio codice calcolava
-        // un limite superiore pari a `.greatestFiniteMagnitude`, producendo
-        // un seek non valido/indefinito verso un tempo che lo stream non ha
-        // mai avuto. Senza una durata nota, lo skip è semplicemente un
-        // no-op: la UI (PlayerView) non mostra nemmeno i pulsanti di skip
-        // in questo caso, ma la protezione resta anche qui a livello di
-        // controller per qualunque altro chiamante futuro.
+        // Su flussi live (duration == 0) lo skip è un no-op: senza una
+        // durata nota non esiste un limite superiore valido per il seek.
         guard duration > 0 else { return }
-
         let target = max(0, min(layer.player.currentPlaybackTime + interval, duration))
         seek(to: target)
     }
@@ -284,15 +492,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         layer.player.select(track: track)
     }
 
-    // MARK: - Impostazioni avanzate (KSOptions, vedi PlaybackPreferences)
-    //
-    // Le impostazioni "live" si applicano immediatamente sul flusso in
-    // riproduzione, scrivendo direttamente su `layer.options` (letto in
-    // continuo dal motore di rendering/seek). Le impostazioni di
-    // decodifica richiedono invece che la pipeline FFmpeg/AVPlayer venga
-    // ricreata da zero per avere effetto: per queste, `reload()` è
-    // l'unico modo corretto di applicarle davvero, non un dettaglio
-    // implementativo rimandabile.
+    // MARK: - Buffer (applicazione live, nessun reload necessario)
 
     func setPreferredForwardBufferDuration(_ value: Double) {
         preferences.preferredForwardBufferDuration = value
@@ -304,9 +504,16 @@ final class KSPlaybackController: NSObject, ObservableObject {
         layer.options.maxBufferDuration = value
     }
 
+    // MARK: - Sincronizzazione / ricerca (applicazione live)
+
     func setVideoDelay(_ value: Double) {
         preferences.videoDelay = value
         layer.options.videoDelay = value
+    }
+
+    func setSubtitleDelay(_ value: Double) {
+        preferences.subtitleDelay = value
+        layer.options.subtitleDelay = value
     }
 
     func setAccurateSeek(_ enabled: Bool) {
@@ -314,14 +521,42 @@ final class KSPlaybackController: NSObject, ObservableObject {
         layer.options.isAccurateSeek = enabled
     }
 
-    /// A differenza di `setHardwareDecode`/`setAutoDeInterlace`, non
-    /// richiede `reload()`: `contentMode` è letto ad ogni frame renderizzato
-    /// dalla vista del player (sia motore AVPlayer sia FFmpeg), quindi il
-    /// cambiamento è visibile all'istante sul fotogramma corrente.
+    func setSeekFlags(_ preset: SeekFlagPreset) {
+        preferences.seekFlags = preset.flagValue
+        layer.options.seekFlags = preset.flagValue
+    }
+
+    func setSeekedAutoPlay(_ enabled: Bool) {
+        preferences.isSeekedAutoPlay = enabled
+        layer.options.isSeekedAutoPlay = enabled
+    }
+
+    // MARK: - Rendering (applicazione live)
+
+    /// A differenza di decodifica/de-interlacciamento, non richiede
+    /// `reload()`: `contentMode` è letto ad ogni frame renderizzato,
+    /// quindi il cambiamento è visibile all'istante sul fotogramma corrente.
     func setVideoGravity(_ mode: VideoGravityMode) {
         preferences.videoGravity = mode
         layer.player.contentMode = mode.contentMode
     }
+
+    func setAutoRotate(_ enabled: Bool) {
+        preferences.autoRotate = enabled
+        layer.options.autoRotate = enabled
+    }
+
+    func setVideoAdaptable(_ enabled: Bool) {
+        preferences.videoAdaptable = enabled
+        layer.options.videoAdaptable = enabled
+    }
+
+    func setLoopPlay(_ enabled: Bool) {
+        preferences.isLoopPlay = enabled
+        layer.options.isLoopPlay = enabled
+    }
+
+    // MARK: - Decodifica (richiede reload: la pipeline FFmpeg va ricreata)
 
     func setHardwareDecode(_ enabled: Bool) {
         preferences.hardwareDecode = enabled
@@ -333,16 +568,188 @@ final class KSPlaybackController: NSObject, ObservableObject {
         reload()
     }
 
+    func setAsynchronousDecompression(_ enabled: Bool) {
+        preferences.asynchronousDecompression = enabled
+        reload()
+    }
+
+    func setSyncDecodeVideo(_ enabled: Bool) {
+        preferences.syncDecodeVideo = enabled
+        reload()
+    }
+
+    func setSyncDecodeAudio(_ enabled: Bool) {
+        preferences.syncDecodeAudio = enabled
+        reload()
+    }
+
+    func setLowres(_ value: UInt8) {
+        preferences.lowres = value
+        reload()
+    }
+
+    func setVideoDisabled(_ disabled: Bool) {
+        preferences.videoDisable = disabled
+        reload()
+    }
+
+    func setPanoramaMode(_ mode: PanoramaMode) {
+        preferences.panoramaMode = mode
+        reload()
+    }
+
+    func setSecondOpen(_ enabled: Bool) {
+        preferences.isSecondOpen = enabled
+        reload()
+    }
+
+    /// Applicati solo al successivo `load(url:title:)` (es. "riprendi da
+    /// dove avevi interrotto"): non hanno effetto retroattivo su un
+    /// flusso già aperto, quindi non richiedono un reload immediato.
+    func setStartPlayTime(_ value: TimeInterval) {
+        preferences.startPlayTime = value
+    }
+
+    func setStartPlayRate(_ value: Float) {
+        preferences.startPlayRate = value
+    }
+
+    // MARK: - Sottotitoli (richiede reload: il sottosistema si inizializza in apertura)
+
+    func setSubtitleDisabled(_ disabled: Bool) {
+        preferences.subtitleDisable = disabled
+        reload()
+    }
+
+    func setAutoSelectEmbedSubtitle(_ enabled: Bool) {
+        preferences.autoSelectEmbedSubtitle = enabled
+        reload()
+    }
+
+    func setSeekImageSubtitle(_ enabled: Bool) {
+        preferences.isSeekImageSubtitle = enabled
+        reload()
+    }
+
+    // MARK: - Rete (richiede reload: intestazioni/proxy si applicano all'apertura HTTP)
+
+    func setUserAgent(_ value: String?) {
+        preferences.userAgent = value
+        reload()
+    }
+
+    func setReferer(_ value: String?) {
+        preferences.referer = value
+        reload()
+    }
+
+    func setCustomHeader(key: String, value: String) {
+        guard !key.isEmpty else { return }
+        preferences.customHTTPHeaders[key] = value
+        reload()
+    }
+
+    func removeCustomHeader(key: String) {
+        preferences.customHTTPHeaders.removeValue(forKey: key)
+        reload()
+    }
+
+    func setHTTPCacheEnabled(_ enabled: Bool) {
+        preferences.httpCacheEnabled = enabled
+        reload()
+    }
+
+    func setProbesize(_ value: Int64?) {
+        preferences.probesize = value
+        reload()
+    }
+
+    func setMaxAnalyzeDuration(_ value: Int64?) {
+        preferences.maxAnalyzeDuration = value
+        reload()
+    }
+
+    // MARK: - Filtri FFmpeg (richiede reload: i grafi filtro si costruiscono in apertura)
+
+    func addVideoFilter(_ filter: String) {
+        let trimmed = filter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        preferences.videoFilters.append(trimmed)
+        reload()
+    }
+
+    func removeVideoFilter(at index: Int) {
+        guard preferences.videoFilters.indices.contains(index) else { return }
+        preferences.videoFilters.remove(at: index)
+        reload()
+    }
+
+    func clearVideoFilters() {
+        guard !preferences.videoFilters.isEmpty else { return }
+        preferences.videoFilters.removeAll()
+        reload()
+    }
+
+    func addAudioFilter(_ filter: String) {
+        let trimmed = filter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        preferences.audioFilters.append(trimmed)
+        reload()
+    }
+
+    func removeAudioFilter(at index: Int) {
+        guard preferences.audioFilters.indices.contains(index) else { return }
+        preferences.audioFilters.remove(at: index)
+        reload()
+    }
+
+    func clearAudioFilters() {
+        guard !preferences.audioFilters.isEmpty else { return }
+        preferences.audioFilters.removeAll()
+        reload()
+    }
+
+    // MARK: - Opzioni FFmpeg grezze (potere assoluto, richiede reload)
+
+    func setFormatContextOption(key: String, value: String) {
+        guard !key.isEmpty else { return }
+        preferences.formatContextOptions[key] = value
+        reload()
+    }
+
+    func removeFormatContextOption(key: String) {
+        preferences.formatContextOptions.removeValue(forKey: key)
+        reload()
+    }
+
+    func setDecoderOption(key: String, value: String) {
+        guard !key.isEmpty else { return }
+        preferences.decoderOptions[key] = value
+        reload()
+    }
+
+    func removeDecoderOption(key: String) {
+        preferences.decoderOptions.removeValue(forKey: key)
+        reload()
+    }
+
+    func setAVOption(key: String, value: String) {
+        guard !key.isEmpty else { return }
+        preferences.avOptions[key] = value
+        reload()
+    }
+
+    func removeAVOption(key: String) {
+        preferences.avOptions.removeValue(forKey: key)
+        reload()
+    }
+
     private func startWatchdog() {
         watchdogTask?.cancel()
         watchdogTask = Task { [weak self] in
-            // OTTIMIZZAZIONE "rapido e fluido": ridotto da 12s a 7s.
-            // 12s di schermo nero prima che il watchdog ritenti sono
-            // percepiti dall'utente come "il player si è bloccato",
-            // esattamente il contrario di "cambio canale rapido e
-            // fluido" richiesto. 7s è comunque abbastanza da non
-            // scambiare per errore un server IPTV lento a rispondere
-            // per un flusso morto.
+            // 7s di schermo nero prima che il watchdog ritenti: abbastanza
+            // per non scambiare per errore un server IPTV lento a
+            // rispondere per un flusso morto, ma percepito come "rapido".
             try? await Task.sleep(nanoseconds: 7_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard !self.hasEverStartedPlaying, self.lastError == nil else { return }
@@ -377,7 +784,6 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
     func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
         let durationChanged = totalTime != duration
         guard durationChanged || abs(currentTime - lastPublishedTime) >= 0.2 else { return }
-
         lastPublishedTime = currentTime
         self.currentTime = currentTime
         self.duration = totalTime
