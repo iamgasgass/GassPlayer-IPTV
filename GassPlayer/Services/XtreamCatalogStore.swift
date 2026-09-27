@@ -137,6 +137,28 @@ actor CachedXtreamRepository {
         return result
     }
 
+    /// Dettaglio di un singolo VOD (trama/cast/backdrop/rating), con la
+    /// stessa cache breve (TTL 300s) già usata per `seriesInfo`. Usata
+    /// dalla scheda dettaglio film aperta al tap sulla locandina.
+    func vodInfo(
+        vodId: Int,
+        forceRefresh: Bool = false
+    ) async throws -> XtreamVODInfo {
+        let key = "\(cachePrefix).vod.info.\(vodId)"
+
+        if !forceRefresh,
+           let cached: XtreamVODInfo = await CacheService.shared.value(for: key) {
+            return cached
+        }
+
+        let result = try await RetryPolicy.withRetry(shouldRetry: Self.shouldRetry) {
+            try await self.api.fetchVODInfo(vodId: vodId)
+        }
+
+        await CacheService.shared.set(result, for: key, ttl: 300)
+        return result
+    }
+
     /// Invalida la cache relativa a un tipo di contenuto specifico, oppure
     /// l'intera sorgente se `kind` e' `nil`. A differenza di una versione
     /// precedente, un `kind` esplicito NON invalida piu' l'intera sorgente:
@@ -159,6 +181,7 @@ actor CachedXtreamRepository {
             await CacheService.shared.invalidate(prefix: "\(prefix)categories.movie")
             await CacheService.shared.invalidate(prefix: "\(prefix)streams.movie.")
             await CacheService.shared.invalidate(prefix: "\(prefix)catalog.movie")
+            await CacheService.shared.invalidate(prefix: "\(prefix)vod.info.")
 
         case .series:
             await CacheService.shared.invalidate(prefix: "\(prefix)categories.series")

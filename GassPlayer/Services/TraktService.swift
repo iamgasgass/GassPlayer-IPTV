@@ -15,6 +15,16 @@ struct TraktToken: Codable {
     }
 }
 
+/// Risposta dell'endpoint pubblico "/movies/{id}/ratings" o
+/// "/shows/{id}/ratings": non richiede un utente autenticato, solo un
+/// `client_id` Trakt valido nell'header — per questo `ratings(imdbId:)`
+/// sotto funziona anche senza login Trakt, purché l'utente abbia
+/// registrato un proprio Client ID nelle Impostazioni → Trakt.tv.
+struct TraktRatings: Decodable {
+    let rating: Double
+    let votes: Int
+}
+
 actor TraktService {
     private let clientId: String
     private let clientSecret: String
@@ -39,6 +49,25 @@ actor TraktService {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw XtreamError.wrongCredentials }
         return try JSONDecoder().decode(TraktToken.self, from: data)
+    }
+
+    /// Voto medio Trakt (community) per un film/serie, identificato dal suo
+    /// IMDb id. Pubblico: non richiede token utente, solo l'header
+    /// `trakt-api-key` con il `clientId` con cui è stata creata l'istanza.
+    func ratings(imdbId: String, isSeries: Bool) async throws -> TraktRatings {
+        let path = isSeries ? "shows" : "movies"
+        var request = URLRequest(url: base.appendingPathComponent("\(path)/\(imdbId)/ratings"))
+        request.httpMethod = "GET"
+        request.setValue(clientId, forHTTPHeaderField: "trakt-api-key")
+        request.setValue("2", forHTTPHeaderField: "trakt-api-version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw XtreamError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+
+        return try JSONDecoder().decode(TraktRatings.self, from: data)
     }
 
     func scrobbleStart(token: String, imdbId: String, progress: Double) async {

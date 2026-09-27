@@ -349,6 +349,21 @@ extension KeyedDecodingContainer {
     }
 }
 
+// MARK: - Favorite identity
+
+extension XtreamCredentials {
+    /// Stesso identico formato già usato "inline" in `ChannelGridView`
+    /// (`host|username|kind|streamId`, host normalizzato minuscolo/trim):
+    /// centralizzato qui così le nuove schede dettaglio (film/serie) e la
+    /// griglia calcolano sempre lo stesso id per lo stesso contenuto,
+    /// condizione necessaria perché il cuoricino resti sincronizzato tra
+    /// le due UI.
+    func favoriteID(kind: XtreamStreamKind, streamId: Int) -> String {
+        let normalizedHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return [normalizedHost, username, kind.rawValue, String(streamId)].joined(separator: "|")
+    }
+}
+
 // MARK: - String utilities
 
 extension String {

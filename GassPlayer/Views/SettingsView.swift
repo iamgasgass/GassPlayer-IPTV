@@ -11,7 +11,14 @@ struct SettingsView: View {
     @EnvironmentObject var contentManagement: ContentManagementService
 
     @StateObject private var cloudSync = CloudSyncService()
-    @StateObject private var downloadManager = DownloadManager()
+    // FIX: prima si creava qui un'istanza NUOVA e isolata di
+    // `DownloadManager` — il toggle "Download solo Wi-Fi" modificava
+    // quell'istanza, ma i download reali avviati dalle schede dettaglio
+    // film/serie (icona "download") usano `DownloadManager.shared`: due
+    // oggetti diversi, quindi il toggle non aveva alcun effetto pratico
+    // sui download effettivi. Ora questa vista osserva la stessa istanza
+    // condivisa: un solo stato, coerente ovunque nell'app.
+    @ObservedObject private var downloadManager = DownloadManager.shared
     @ObservedObject private var catalogSettings = CatalogSettings.shared
     @ObservedObject private var epgManager = EPGManager.shared
     @ObservedObject private var traktAccount = TraktAccountManager.shared
@@ -171,6 +178,7 @@ struct SettingsView: View {
                     librarySection
                     catalogSection
                     historySection
+                    metadataSection
                     servicesSection
                     securitySection
                     diagnosticsSection
@@ -585,6 +593,36 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(recentlyWatched.items.isEmpty)
+        }
+    }
+
+    /// Nuova sezione "Metadati": prima non esisteva ALCUN punto della UI
+    /// per inserire una API key TMDB, rendendo di fatto irraggiungibile
+    /// per l'utente l'arricchimento (poster reali, cast, loghi, voti) già
+    /// implementato in `TMDBService` — e usato dalle schede dettaglio
+    /// film/serie. Aggiunta qui anche la chiave OMDb (facoltativa, per
+    /// IMDb/Rotten Tomatoes/Metacritic nella sezione "VALUTAZIONI").
+    private var metadataSection: some View {
+        SettingsSection(
+            title: "Metadati",
+            subtitle: "Poster, trame, cast e valutazioni reali",
+            symbol: "sparkles.rectangle.stack",
+            tint: .indigo
+        ) {
+            NavigationLink {
+                MetadataSettingsView()
+            } label: {
+                SettingsRow(
+                    title: "TMDB e OMDb",
+                    detail: TMDBService.hasAPIKey
+                        ? "TMDB configurato\(OMDbService.hasAPIKey ? " · OMDb configurato" : "")"
+                        : "Nessuna API key configurata",
+                    symbol: "key.fill",
+                    tint: .indigo,
+                    showsChevron: true
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
 

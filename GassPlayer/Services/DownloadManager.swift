@@ -3,6 +3,13 @@ import Combine
 
 @MainActor
 final class DownloadManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
+    /// Istanza condivisa: usata dalle schede dettaglio film/serie (icona
+    /// "download" sotto il pulsante di riproduzione) così il progresso è
+    /// visibile/coerente indipendentemente da quale vista ha avviato il
+    /// download, senza dover far passare l'oggetto da `SettingsView` come
+    /// `@EnvironmentObject` in tutto l'albero delle viste.
+    static let shared = DownloadManager()
+
     @Published var activeDownloads: [UUID: Double] = [:]
 
     /// Persistito su `UserDefaults` (prima si azzerava ad ogni riavvio) e

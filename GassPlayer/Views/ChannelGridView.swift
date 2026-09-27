@@ -231,6 +231,12 @@ struct ChannelGridView: View {
     @State private var selectedCategory: CategorySelection = .all
     @State private var selectedStream: XtreamStream?
     @State private var selectedSeries: XtreamSeriesItem?
+    /// Film selezionato per la nuova scheda dettaglio (hero + valutazioni +
+    /// cast): a differenza di `selectedStream` (Live TV, riproduzione
+    /// diretta) il tap su una locandina VOD apre prima questa scheda, che
+    /// avvia la riproduzione vera e propria solo al tocco di "Riproduci il
+    /// film".
+    @State private var selectedMovieForDetail: XtreamStream?
 
     /// `nil` = mai interrogato; `.some(nil)` = interrogato ma nessun
     /// programma disponibile (evita retry continui); `.some(program)` =
@@ -508,12 +514,16 @@ struct ChannelGridView: View {
                     )
                 }
             }
-            .navigationDestination(item: $selectedSeries) { series in
+            .fullScreenCover(item: $selectedSeries) { series in
                 SeriesEpisodesView(
                     credentials: credentials,
                     seriesId: series.seriesId,
-                    seriesName: series.name
+                    seriesName: series.name,
+                    fallbackCoverURLString: series.cover
                 )
+            }
+            .fullScreenCover(item: $selectedMovieForDetail) { stream in
+                MovieDetailView(credentials: credentials, stream: stream)
             }
             .fullScreenCover(isPresented: $showEPGGuide) {
                 // EPGGridView legge i canali live direttamente da
@@ -913,7 +923,11 @@ struct ChannelGridView: View {
                 ? (epgByStream[stream.streamId] ?? nil)
                 : nil,
             onTap: {
-                selectedStream = stream
+                if kind == .movie {
+                    selectedMovieForDetail = stream
+                } else {
+                    selectedStream = stream
+                }
             },
             onFavoriteToggle: {
                 contentManagement.toggleFavorite(
@@ -1065,12 +1079,7 @@ struct ChannelGridView: View {
     }
 
     private func favoriteID(for stream: XtreamStream) -> String {
-        let host = credentials.host
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-
-        return [host, credentials.username, kind.rawValue, String(stream.streamId)]
-            .joined(separator: "|")
+        credentials.favoriteID(kind: kind, streamId: stream.streamId)
     }
 
     /// Precarica in background stagioni/episodi di una serie non appena la

@@ -56,7 +56,7 @@ struct GlobalSearchView: View {
             .fullScreenCover(item: $selectedPlayable) { playable in
                 AdaptivePlayerView(url: playable.url, title: playable.title)
             }
-            .navigationDestination(item: $selectedSeries) { selection in
+            .fullScreenCover(item: $selectedSeries) { selection in
                 SeriesEpisodesView(credentials: selection.credentials, seriesId: selection.seriesId, seriesName: selection.name)
             }
         }

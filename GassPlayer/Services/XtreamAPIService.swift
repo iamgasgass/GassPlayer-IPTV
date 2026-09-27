@@ -331,6 +331,28 @@ actor XtreamAPIService {
         return stableDeduplicated(globalStreams + collected)
     }
 
+    // MARK: - VOD detail
+
+    /// Dettaglio di un film VOD (`get_vod_info`): trama, cast, genere,
+    /// backdrop e rating forniti dal provider, base immediata per la
+    /// scheda dettaglio mostrata al tap sulla locandina, prima/in assenza
+    /// dell'arricchimento TMDB.
+    func fetchVODInfo(vodId: Int) async throws -> XtreamVODInfo {
+        do {
+            return try JSONDecoder().decode(
+                XtreamVODInfo.self,
+                from: try await data(
+                    action: "get_vod_info",
+                    extra: ["vod_id": String(vodId)]
+                )
+            )
+        } catch let error as XtreamError {
+            throw error
+        } catch {
+            throw XtreamError.decoding(error)
+        }
+    }
+
     // MARK: - Series
 
     func fetchSeriesList(categoryId: String? = nil) async throws -> [XtreamSeriesItem] {

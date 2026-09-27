@@ -34,6 +34,131 @@ private struct TMDBSearchResponse: Decodable {
     let results: [TMDBSearchResult]
 }
 
+// MARK: - Dettaglio arricchito (scheda "locandina" con cast, loghi, voti)
+
+struct TMDBGenre: Decodable, Hashable {
+    let id: Int
+    let name: String
+}
+
+struct TMDBCastMember: Decodable, Identifiable, Hashable {
+    let id: Int
+    let name: String
+    let character: String?
+    let profilePath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, character
+        case profilePath = "profile_path"
+    }
+
+    var profileURL: URL? {
+        guard let profilePath, !profilePath.isEmpty else { return nil }
+        return URL(string: "https://image.tmdb.org/t/p/w185\(profilePath)")
+    }
+}
+
+struct TMDBCredits: Decodable {
+    let cast: [TMDBCastMember]
+}
+
+struct TMDBImageLogo: Decodable {
+    let filePath: String
+    let iso6391: String?
+
+    enum CodingKeys: String, CodingKey {
+        case filePath = "file_path"
+        case iso6391 = "iso_639_1"
+    }
+}
+
+struct TMDBImages: Decodable {
+    let logos: [TMDBImageLogo]
+}
+
+struct TMDBExternalIDs: Decodable {
+    let imdbId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case imdbId = "imdb_id"
+    }
+}
+
+/// Dettaglio completo di un titolo (film o serie), ottenuto con una sola
+/// richiesta grazie a `append_to_response=credits,images,external_ids`:
+/// evita 3-4 chiamate separate per ogni scheda aperta dall'utente.
+struct TMDBDetails: Decodable {
+    let id: Int
+    let overview: String?
+    let genres: [TMDBGenre]?
+    /// Presente solo per i film.
+    let runtime: Int?
+    /// Presente solo per le serie (durata media per episodio).
+    let episodeRunTime: [Int]?
+    let voteAverage: Double?
+    let backdropPath: String?
+    let posterPath: String?
+    let releaseDate: String?
+    let firstAirDate: String?
+    let credits: TMDBCredits?
+    let images: TMDBImages?
+    let externalIds: TMDBExternalIDs?
+
+    enum CodingKeys: String, CodingKey {
+        case id, overview, genres, runtime, credits, images
+        case episodeRunTime = "episode_run_time"
+        case voteAverage = "vote_average"
+        case backdropPath = "backdrop_path"
+        case posterPath = "poster_path"
+        case releaseDate = "release_date"
+        case firstAirDate = "first_air_date"
+        case externalIds = "external_ids"
+    }
+
+    var year: String? {
+        let date = releaseDate ?? firstAirDate
+        guard let date, date.count >= 4 else { return nil }
+        return String(date.prefix(4))
+    }
+
+    var runtimeMinutes: Int? {
+        runtime ?? episodeRunTime?.first
+    }
+
+    var backdropURL: URL? {
+        guard let backdropPath, !backdropPath.isEmpty else { return nil }
+        return URL(string: "https://image.tmdb.org/t/p/w1280\(backdropPath)")
+    }
+
+    var posterURL: URL? {
+        guard let posterPath, !posterPath.isEmpty else { return nil }
+        return URL(string: "https://image.tmdb.org/t/p/w500\(posterPath)")
+    }
+
+    /// Logo del titolo (immagine "wordmark" trasparente, come mostrata
+    /// sopra il backdrop nelle schede stile streaming): si preferisce
+    /// l'italiano, poi l'inglese, poi il primo logo disponibile in
+    /// qualunque lingua (spesso senza testo, es. un simbolo).
+    var logoURL: URL? {
+        guard let logos = images?.logos, !logos.isEmpty else { return nil }
+
+        let preferred = logos.first { $0.iso6391 == "it" }
+            ?? logos.first { $0.iso6391 == "en" }
+            ?? logos.first
+
+        guard let filePath = preferred?.filePath else { return nil }
+        return URL(string: "https://image.tmdb.org/t/p/w500\(filePath)")
+    }
+
+    var genreNames: [String] {
+        (genres ?? []).map(\.name)
+    }
+
+    func topCast(_ limit: Int = 12) -> [TMDBCastMember] {
+        Array((credits?.cast ?? []).prefix(limit))
+    }
+}
+
 enum TMDBError: LocalizedError {
     case missingAPIKey
     case noResults
@@ -65,6 +190,11 @@ actor TMDBService {
 
     private let session: URLSession
     private var cache: [String: TMDBSearchResult] = [:]
+    /// Cache dei dettagli completi (cast/loghi/external id), separata da
+    /// quella di `lookup`: stessa vita dell'istanza condivisa, evita di
+    /// rifare `append_to_response` ad ogni riapertura della stessa scheda
+    /// nella stessa sessione dell'app.
+    private var detailsCache: [String: TMDBDetails] = [:]
     /// FIX: le ricerche fallite (nessuna corrispondenza) non venivano mai
     /// memorizzate — solo i successi. Con le celle di LazyVGrid che si
     /// deallocano/ricreano scorrendo (didAttemptLookup e' uno @State per
@@ -143,5 +273,45 @@ actor TMDBService {
         } catch {
             throw TMDBError.network(error)
         }
+    }
+
+    /// Dettaglio completo per un id TMDB già noto (cast, loghi, external
+    /// id IMDb, genere, durata). Una sola richiesta HTTP grazie a
+    /// `append_to_response`.
+    func details(id: Int, isSeries: Bool) async throws -> TMDBDetails {
+        guard let apiKey = UserDefaults.standard.string(forKey: Self.apiKeyDefaultsKey), !apiKey.isEmpty else {
+            throw TMDBError.missingAPIKey
+        }
+
+        let cacheKey = "\(isSeries ? "tv" : "movie")::\(id)"
+        if let cached = detailsCache[cacheKey] { return cached }
+
+        let endpoint = isSeries ? "tv/\(id)" : "movie/\(id)"
+        var components = URLComponents(string: "https://api.themoviedb.org/3/\(endpoint)")!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "language", value: "it-IT"),
+            URLQueryItem(name: "append_to_response", value: "credits,images,external_ids"),
+            URLQueryItem(name: "include_image_language", value: "it,en,null")
+        ]
+        guard let url = components.url else { throw TMDBError.noResults }
+
+        do {
+            let (data, _) = try await session.data(from: url)
+            let decoded = try JSONDecoder().decode(TMDBDetails.self, from: data)
+            detailsCache[cacheKey] = decoded
+            return decoded
+        } catch let error as TMDBError {
+            throw error
+        } catch {
+            throw TMDBError.network(error)
+        }
+    }
+
+    /// Scorciatoia usata dalle schede dettaglio: cerca il titolo su TMDB e,
+    /// se trovato, ne recupera subito anche il dettaglio completo.
+    func fullDetails(title: String, isSeries: Bool) async throws -> TMDBDetails {
+        let found = try await lookup(title: title, isSeries: isSeries)
+        return try await details(id: found.id, isSeries: isSeries)
     }
 }
