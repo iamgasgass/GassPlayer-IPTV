@@ -10,19 +10,15 @@ struct PlayerView: View {
     let url: URL
     let title: String
 
-    /// Precedente/successivo: `nil` = non disponibile in questo contesto
-    /// (bordo della lista, o chiamante che non la implementa).
     var onPrevious: (() -> Void)?
     var onNext: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var controller: KSPlaybackController
 
-    // Environment objects per cronologia canali e ricerca globale
     @EnvironmentObject private var recentlyWatched: RecentlyWatchedStore
     @EnvironmentObject private var sourceManager: SourceManager
 
-    // Picker e menu modali
     @State private var showTrackPicker = false
     @State private var showAdvancedSettings = false
     @State private var showQualityPicker = false
@@ -33,28 +29,23 @@ struct PlayerView: View {
     @State private var showChannelHistory = false
     @State private var showChannelSearch = false
 
-    // Selezioni correnti
     @State private var currentPlaybackRate: Double = 1.0
     @State private var selectedAudioTrackName: String?
     @State private var selectedSubtitleTrackName: String?
     @State private var selectedVideoTrackName: String?
 
-    // Timer di spegnimento automatico
     @State private var sleepTimerMinutes: Int?
     @State private var sleepTimerTask: Task<Void, Never>?
 
-    // Gesti brightness / volume
     @State private var brightnessOverlay: Double = 0
     @State private var volumeOverlay: Double = 0
     @State private var showBrightnessHUD = false
     @State private var showVolumeHUD = false
     @State private var hudHideTask: Task<Void, Never>?
 
-    // Toast generico per feedback visivo
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
 
-    // Controlli generali di riproduzione
     @State private var showControls = true
     @State private var hideControlsTask: Task<Void, Never>?
     @State private var isScrubbing = false
@@ -90,7 +81,6 @@ struct PlayerView: View {
             KSPlayerContainerView(url: url, title: title, controller: controller)
                 .ignoresSafeArea()
 
-            // Spinner di buffering centrale pulito durante il caricamento o cambio canale
             if controller.isBuffering {
                 ProgressView()
                     .progressViewStyle(CircularProgressViewStyle(tint: .white))
@@ -366,10 +356,6 @@ struct PlayerView: View {
                 .tint(.white)
             }
 
-            // CORREZIONE MANIACALE HSTACK TRASPORTO / ZAPPING:
-            // Al tap di Precedente/Successivo, arresta istantaneamente il vecchio flusso
-            // e invoca l'azione del genitore (`onPrevious` / `onNext`) per passare al nuovo
-            // canale/episodio.
             HStack(spacing: 22) {
                 if let onPrevious {
                     GlassIconButton(systemImage: "backward.end.fill", size: 30) {
@@ -716,12 +702,6 @@ struct PlayerTopBar: View, Equatable {
 
 // MARK: - KSPlayer Container Representable
 
-/// Render Container per KSPlayer con gestione in-place ultra-ottimizzata.
-/// Riceve direttamente URL e Titolo. Quando l'URL cambia (es. zapping in Live TV o Serie TV),
-/// `updateUIView` esegue in modo sincrono:
-/// 1) Lo spegnimento del vecchio layer per bloccare istantaneamente il flusso e l'audio precedenti.
-/// 2) Il caricamento (`controller.load`) e l'aggancio del nuovo layer nel container senza sfarfallio o ritardi.
-/// 3) La deallocazione immediata di qualsiasi texture video residua del canale precedente.
 struct KSPlayerContainerView: UIViewRepresentable {
     let url: URL
     let title: String
@@ -755,14 +735,10 @@ struct KSPlayerContainerView: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {
         let coordinator = context.coordinator
 
-        // Se l'URL è cambiato rispetto a quello correntemente renderizzato
         if coordinator.currentURL != url {
             coordinator.currentURL = url
-            // 1. Arresta immediatamente il vecchio flusso
             controller.layer.pause()
-            // 2. Carica in tempo reale il nuovo URL e Titolo nel controller
             controller.load(url: url, title: title)
-            // 3. Riaggancia il layer del nuovo flusso nel container
             attach(controller.layer, in: uiView, coordinator: coordinator)
             return
         }
@@ -770,7 +746,6 @@ struct KSPlayerContainerView: UIViewRepresentable {
         let layer = controller.layer
         let currentView = layer.player.view
 
-        // Se il layer o la playerView interna è stata rigenerata dal controller
         if coordinator.currentLayer !== layer || coordinator.attachedPlayerView !== currentView {
             attach(layer, in: uiView, coordinator: coordinator)
         }
@@ -779,7 +754,6 @@ struct KSPlayerContainerView: UIViewRepresentable {
     private func attach(_ layer: KSPlayerLayer, in container: UIView, coordinator: Coordinator) {
         coordinator.cancelPendingTasks()
 
-        // Rimuove e pulisce all'istante la vista precedente per non lasciare nessun fotogramma congelato
         if let oldPlayerView = coordinator.attachedPlayerView {
             oldPlayerView.removeFromSuperview()
             coordinator.attachedPlayerView = nil
@@ -791,7 +765,6 @@ struct KSPlayerContainerView: UIViewRepresentable {
         guard let playerView = layer.player.view else { return }
         coordinator.attachedPlayerView = playerView
 
-        // La vista parte a trasparenza zero (sfondo nero puro) durante la connessione/decodifica del nuovo canale
         playerView.alpha = 0
 
         CATransaction.begin()
@@ -809,7 +782,6 @@ struct KSPlayerContainerView: UIViewRepresentable {
         }
         CATransaction.commit()
 
-        // Rivelazione immediata appena il nuovo canale inizia a trasmettere fotogrammi reali
         coordinator.stateCancellable = controller.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak controller, weak playerView] _ in
@@ -823,7 +795,6 @@ struct KSPlayerContainerView: UIViewRepresentable {
                 }
             }
 
-        // Avvio immediato della riproduzione e retry dedicati
         layer.play()
         let retries = [0.05, 0.2, 0.5, 1.0].map { delay in
             let item = DispatchWorkItem { [weak layer, weak controller, weak playerView] in
@@ -936,26 +907,20 @@ struct QualityPickerView: View {
     }
 }
 
-/// Pannello impostazioni avanzate: espone la superficie di
-/// `KSPlaybackController.PlaybackPreferences` confermata compatibile con
-/// la versione di `KSOptions`/FFmpeg installata in questo progetto. I
-/// campi della sezione "Rete"/"Opzioni FFmpeg avanzate" rappresentano
-/// SEMPRE override facoltativi ADDITIVI sopra: (1) i default calcolati
-/// automaticamente in base al protocollo dell'URL corrente e (2) la
-/// sequenza di FINO A 2 retry automatici e silenziosi (User-Agent
-/// browser + Referer auto-derivato, poi anche decodifica software forzata
-/// e probing esteso) che il controller esegue da solo ad ogni fallimento
-/// di apertura, PRIMA di mostrare qualunque errore (vedi nota "ANALISI
-/// MANIACALE" nel file del controller).
+/// Pannello impostazioni avanzate. Oltre alle preferenze regolabili qui,
+/// il player applica SEMPRE (senza bisogno di alcuna interazione):
+/// 4 opzioni generiche `AVFormatContext` valide per QUALUNQUE contenitore
+/// (MP4/MOV, MKV/WebM, AVI, TS/M2TS, FLV, ASF/WMV, VOB/MPG, OGV, 3GP, ...),
+/// i default di rete sensibili al protocollo dell'URL, e — in caso di
+/// fallimento — fino a 2 retry automatici e silenziosi. Vedi le note in
+/// testa a `KSPlaybackController.swift` per il dettaglio completo.
 struct AdvancedSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
 
-    // Buffer
     @State private var preferredBuffer: Double
     @State private var maxBuffer: Double
 
-    // Decodifica
     @State private var hardwareDecode: Bool
     @State private var asynchronousDecompression: Bool
     @State private var syncDecodeVideo: Bool
@@ -964,26 +929,21 @@ struct AdvancedSettingsView: View {
     @State private var videoDisable: Bool
     @State private var secondOpen: Bool
 
-    // Ricerca / sincronizzazione
     @State private var isAccurateSeek: Bool
     @State private var seekFlagPreset: SeekFlagPreset
     @State private var autoDeInterlace: Bool
     @State private var videoDelay: Double
     @State private var seekedAutoPlay: Bool
 
-    // Sottotitoli
     @State private var autoSelectEmbedSubtitle: Bool
     @State private var seekImageSubtitle: Bool
 
-    // Rendering
     @State private var panoramaMode: PanoramaMode
     @State private var autoRotate: Bool
 
-    // Riproduzione
     @State private var videoAdaptable: Bool
     @State private var loopPlay: Bool
 
-    // Rete
     @State private var userAgent: String
     @State private var referer: String
     @State private var httpCacheEnabled: Bool
@@ -992,11 +952,9 @@ struct AdvancedSettingsView: View {
     @State private var newHeaderKey: String = ""
     @State private var newHeaderValue: String = ""
 
-    // Filtri FFmpeg
     @State private var newVideoFilter: String = ""
     @State private var newAudioFilter: String = ""
 
-    // Opzioni FFmpeg grezze
     @State private var newFormatOptionKey: String = ""
     @State private var newFormatOptionValue: String = ""
     @State private var newDecoderOptionKey: String = ""
@@ -1004,9 +962,6 @@ struct AdvancedSettingsView: View {
     @State private var newAVOptionKey: String = ""
     @State private var newAVOptionValue: String = ""
 
-    /// Placeholder informativi: mostrano il default robusto sempre
-    /// attivo (proprietà tipizzate, non dizionario grezzo) quando
-    /// l'utente non ha impostato un override esplicito.
     private let probesizeDefaultPlaceholder = "10000000 (predefinito, già attivo)"
     private let maxAnalyzeDurationDefaultPlaceholder = "10000000 (predefinito, già attivo)"
 
@@ -1119,6 +1074,10 @@ struct AdvancedSettingsView: View {
 
                     Toggle("Riprendi automaticamente dopo il seek", isOn: $seekedAutoPlay)
                         .onChange(of: seekedAutoPlay) { newValue in controller.setSeekedAutoPlay(newValue) }
+
+                    Text("Il seek su qualsiasi fotogramma (non solo keyframe) è già abilitato di serie per tutti i contenitori (\"seek2any\").")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section {
@@ -1278,7 +1237,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Opzioni FFmpeg avanzate")
                 } footer: {
-                    Text("Questo elenco mostra solo le chiavi aggiunte manualmente: i default automatici di rete sono calcolati internamente in base al protocollo dell'URL. Per utenti esperti: valori errati possono impedire l'apertura del flusso, in particolare su protocolli diversi da quello per cui l'opzione è pensata.")
+                    Text("Questo elenco mostra solo le chiavi aggiunte manualmente. Sono SEMPRE già attivi, per qualunque contenitore (MP4/MKV/AVI/TS/FLV/ASF/VOB/OGV/3GP...): \"err_detect=ignore_err\" (tollera pacchetti corrotti), \"avoid_negative_ts=make_zero\" (normalizza timestamp negativi), \"correct_ts_overflow\" (corregge overflow su flussi molto lunghi) e \"seek2any\" (seek su qualsiasi fotogramma). Per utenti esperti: valori errati possono impedire l'apertura del flusso.")
                 }
 
                 Section("Riproduzione") {
