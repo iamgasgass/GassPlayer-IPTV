@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Scheda dettaglio serie TV con supporto layout proporzionato per iPhone
 struct SeriesEpisodesView: View {
     let credentials: XtreamCredentials
     let seriesId: Int
@@ -102,7 +103,8 @@ struct SeriesEpisodesView: View {
         }
     }
 
-    // MARK: - Stati di caricamento/errore
+    // MARK: - Stati di Caricamento / Errore
+
     private var loadingView: some View {
         VStack(spacing: 12) {
             ProgressView()
@@ -124,7 +126,8 @@ struct SeriesEpisodesView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    // MARK: - Contenuto principale
+    // MARK: - Contenuto Principale
+
     private func detailContent(_ info: XtreamSeriesInfo) -> some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -152,8 +155,9 @@ struct SeriesEpisodesView: View {
                     if let overview = detail.overview, !overview.isEmpty {
                         Text(overview)
                             .font(.subheadline)
-                            .foregroundStyle(.primary.opacity(0.9))
+                            .foregroundStyle(.primary.opacity(0.88))
                             .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                     } else if isLoadingDetail {
                         ProgressView()
@@ -168,8 +172,9 @@ struct SeriesEpisodesView: View {
                     episodesSection(info)
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 32)
+                .padding(.top, 14)
+                .padding(.bottom, 34)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .frame(maxWidth: .infinity)
@@ -177,9 +182,10 @@ struct SeriesEpisodesView: View {
         .background(Color(uiColor: .systemBackground))
     }
 
-    // MARK: - Riga icone
+    // MARK: - Riga Icone
+
     private var iconRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             MediaIconButton(
                 systemImage: isFavorite ? "heart.fill" : "heart",
                 tint: isFavorite ? .red : .primary,
@@ -210,9 +216,10 @@ struct SeriesEpisodesView: View {
         }
     }
 
-    // MARK: - Sezione episodi
+    // MARK: - Sezione Episodi
+
     private func episodesSection(_ info: XtreamSeriesInfo) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             Text("EPISODI")
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
@@ -226,7 +233,7 @@ struct SeriesEpisodesView: View {
             }
 
             if let selectedSeason {
-                LazyVStack(spacing: 12) {
+                VStack(spacing: 16) {
                     ForEach(info.episodes(forSeason: selectedSeason)) { episode in
                         episodeRow(episode, season: selectedSeason)
                     }
@@ -234,6 +241,7 @@ struct SeriesEpisodesView: View {
                 .padding(.top, 4)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func seasonChip(_ season: Int) -> some View {
@@ -247,7 +255,7 @@ struct SeriesEpisodesView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .background(isSelected ? Color.accentColor : Color(uiColor: .secondarySystemFill), in: Capsule())
+                .background(isSelected ? Color.accentColor : Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -257,14 +265,19 @@ struct SeriesEpisodesView: View {
             selectedSeason = season
             selectedEpisode = episode
         } label: {
-            HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 episodeThumbnail(episode)
-                    .frame(width: 104, height: 60)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 180)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("\(episode.code(seasonFallback: season)) · \(episode.title)")
-                        .font(.subheadline.weight(.semibold))
+                    Text("\(episode.code(seasonFallback: season))")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+
+                    Text(episode.title)
+                        .font(.subheadline.weight(.bold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
@@ -273,12 +286,9 @@ struct SeriesEpisodesView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
+                            .padding(.top, 1)
                     }
-
-                    Spacer(minLength: 0)
                 }
-
-                Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
         }
@@ -302,15 +312,17 @@ struct SeriesEpisodesView: View {
     }
 
     private var episodeThumbnailPlaceholder: some View {
-        Rectangle()
-            .fill(Color(uiColor: .secondarySystemFill))
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color(uiColor: .secondarySystemBackground))
             .overlay {
-                Image(systemName: "play.rectangle.fill")
-                    .foregroundStyle(.secondary)
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.white.opacity(0.8))
             }
     }
 
-    // MARK: - Riproduzione / ripresa
+    // MARK: - Riproduzione / Ripresa
+
     private var resumeEpisode: (season: Int, episode: XtreamSeriesInfo.Episode)? {
         guard let info = seriesInfo else { return nil }
 
@@ -328,6 +340,7 @@ struct SeriesEpisodesView: View {
                 return (season, episode)
             }
         }
+
         return nil
     }
 
@@ -349,8 +362,10 @@ struct SeriesEpisodesView: View {
             selectedEpisode = resume.episode
             return
         }
+
         guard let season = info.sortedSeasonNumbers.first,
               let episode = info.episodes(forSeason: season).first else { return }
+
         selectedSeason = season
         selectedEpisode = episode
     }
@@ -363,6 +378,7 @@ struct SeriesEpisodesView: View {
         }
 
         guard let episode = target, let url = episodeStreamURL(for: episode) else { return }
+
         let id = UUID()
         downloadId = id
         downloadManager.startDownload(url: url, id: id)
@@ -376,10 +392,13 @@ struct SeriesEpisodesView: View {
 
     private func adjacentEpisode(to episode: XtreamSeriesInfo.Episode, offset: Int) -> XtreamSeriesInfo.Episode? {
         guard let season = selectedSeason, let info = seriesInfo else { return nil }
+
         let episodes = info.episodes(forSeason: season)
         guard let currentIndex = episodes.firstIndex(where: { $0.id == episode.id }) else { return nil }
+
         let targetIndex = currentIndex + offset
         guard episodes.indices.contains(targetIndex) else { return nil }
+
         return episodes[targetIndex]
     }
 
@@ -398,9 +417,11 @@ struct SeriesEpisodesView: View {
         )
     }
 
-    // MARK: - Caricamento
+    // MARK: - Caricamento Dati
+
     private func loadSeriesInfo() async {
-        isLoading = true; errorMessage = nil
+        isLoading = true
+        errorMessage = nil
         let repository = CachedXtreamRepository(credentials: credentials)
         do {
             let info = try await repository.seriesInfo(seriesId: seriesId)
@@ -422,6 +443,7 @@ struct SeriesEpisodesView: View {
 
     private func loadDetail(_ info: XtreamSeriesInfo) async {
         isLoadingDetail = true
+
         let seed = MediaDetailSeed(
             title: seriesName,
             isSeries: true,
@@ -433,6 +455,7 @@ struct SeriesEpisodesView: View {
             runtimeMinutes: nil,
             xtreamRating: info.details?.rating.flatMap { Double($0.replacingOccurrences(of: ",", with: ".")) }
         )
+
         detail = await MediaDetailLoader.load(seed)
         isLoadingDetail = false
     }

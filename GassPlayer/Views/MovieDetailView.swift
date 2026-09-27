@@ -1,11 +1,13 @@
 import SwiftUI
 
+/// Riproduzione in corso dalla scheda dettaglio del film
 private struct MoviePlaybackTarget: Identifiable {
     let id = UUID()
     let url: URL
     let title: String
 }
 
+/// Scheda dettaglio di un VOD ottimizzata per iPhone senza sovraestensioni
 struct MovieDetailView: View {
     let credentials: XtreamCredentials
     let stream: XtreamStream
@@ -68,8 +70,9 @@ struct MovieDetailView: View {
                     if let overview = detail.overview, !overview.isEmpty {
                         Text(overview)
                             .font(.subheadline)
-                            .foregroundStyle(.primary.opacity(0.9))
+                            .foregroundStyle(.primary.opacity(0.88))
                             .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                     } else if isLoadingDetail {
                         ProgressView()
@@ -82,8 +85,9 @@ struct MovieDetailView: View {
                     MediaCastSection(cast: detail.cast)
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 32)
+                .padding(.top, 14)
+                .padding(.bottom, 34)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .frame(maxWidth: .infinity)
@@ -116,9 +120,10 @@ struct MovieDetailView: View {
         }
     }
 
-    // MARK: - Riga icone
+    // MARK: - Riga Icone e Azioni Rapide
+
     private var iconRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             MediaIconButton(
                 systemImage: isFavorite ? "heart.fill" : "heart",
                 tint: isFavorite ? .red : .primary,
@@ -150,6 +155,7 @@ struct MovieDetailView: View {
     }
 
     // MARK: - Azioni
+
     private func play() {
         guard let url = api.streamURL(for: stream, kind: .movie) else { return }
         playbackTarget = MoviePlaybackTarget(url: url, title: stream.name)
@@ -167,9 +173,11 @@ struct MovieDetailView: View {
         downloadManager.startDownload(url: url, id: id)
     }
 
-    // MARK: - Caricamento dettaglio
+    // MARK: - Caricamento Dettaglio
+
     private func loadDetail() async {
         isLoadingDetail = true
+
         let fetchedVODInfo = try? await CachedXtreamRepository(credentials: credentials).vodInfo(vodId: stream.streamId)
         vodInfo = fetchedVODInfo
 
