@@ -73,11 +73,6 @@ struct PlayerView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // FIX CRITICO: URL e Titolo passati direttamente a KSPlayerContainerView.
-            // Quando SwiftUI aggiorna PlayerView per un nuovo canale/episodio,
-            // KSPlayerContainerView.updateUIView esegue IMMEDIATAMENTE e in modo sincrono
-            // il caricamento e l'aggancio del nuovo flusso, eliminando qualsiasi ritardo
-            // di zapping a 1 passo indietro o trasmissione del canale precedente.
             KSPlayerContainerView(url: url, title: title, controller: controller)
                 .ignoresSafeArea()
 
@@ -907,13 +902,12 @@ struct QualityPickerView: View {
     }
 }
 
-/// Pannello impostazioni avanzate. Oltre alle preferenze regolabili qui,
-/// il player applica SEMPRE (senza bisogno di alcuna interazione):
-/// 4 opzioni generiche `AVFormatContext` valide per QUALUNQUE contenitore
-/// (MP4/MOV, MKV/WebM, AVI, TS/M2TS, FLV, ASF/WMV, VOB/MPG, OGV, 3GP, ...),
-/// i default di rete sensibili al protocollo dell'URL, e — in caso di
-/// fallimento — fino a 2 retry automatici e silenziosi. Vedi le note in
-/// testa a `KSPlaybackController.swift` per il dettaglio completo.
+/// Pannello impostazioni avanzate. Il player applica SEMPRE: 4 opzioni
+/// generiche `AVFormatContext` valide per qualunque contenitore, i
+/// default di rete sensibili al protocollo dell'URL, e — in caso di
+/// fallimento — fino a 2 retry automatici e silenziosi (User-Agent
+/// browser + Referer + TLS relaxato, poi anche decodifica software e
+/// probing esteso). Vedi le note in testa a `KSPlaybackController.swift`.
 struct AdvancedSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
@@ -947,6 +941,7 @@ struct AdvancedSettingsView: View {
     @State private var userAgent: String
     @State private var referer: String
     @State private var httpCacheEnabled: Bool
+    @State private var allowInsecureTLS: Bool
     @State private var probesizeText: String
     @State private var maxAnalyzeDurationText: String
     @State private var newHeaderKey: String = ""
@@ -991,6 +986,7 @@ struct AdvancedSettingsView: View {
         _userAgent = State(initialValue: prefs.userAgent ?? "")
         _referer = State(initialValue: prefs.referer ?? "")
         _httpCacheEnabled = State(initialValue: prefs.httpCacheEnabled)
+        _allowInsecureTLS = State(initialValue: prefs.allowInsecureTLS)
         _probesizeText = State(initialValue: prefs.probesize.map(String.init) ?? "")
         _maxAnalyzeDurationText = State(initialValue: prefs.maxAnalyzeDuration.map(String.init) ?? "")
     }
@@ -1040,7 +1036,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Decodifica FFmpeg")
                 } footer: {
-                    Text("Se un film VOD non si apre più dopo aver attivato molte opzioni qui, prova prima \"Riprova\" in fondo al pannello: ogni voce ricarica il flusso da zero con le nuove impostazioni.")
+                    Text("Se un film VOD non si apre più dopo aver attivato molte opzioni qui, prova prima \"Riprova\" in fondo al pannello.")
                 }
 
                 Section {
@@ -1061,20 +1057,14 @@ struct AdvancedSettingsView: View {
                 Section("Ricerca") {
                     Toggle("Ricerca accurata", isOn: $isAccurateSeek)
                         .onChange(of: isAccurateSeek) { newValue in controller.setAccurateSeek(newValue) }
-                    Text("Posiziona la riproduzione esattamente al fotogramma richiesto invece che al keyframe più vicino: più precisa, leggermente più lenta.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
                     Picker("Modalità di ricerca FFmpeg", selection: $seekFlagPreset) {
                         ForEach(SeekFlagPreset.allCases) { preset in
                             Text(preset.label).tag(preset)
                         }
                     }
                     .onChange(of: seekFlagPreset) { newValue in controller.setSeekFlags(newValue) }
-
                     Toggle("Riprendi automaticamente dopo il seek", isOn: $seekedAutoPlay)
                         .onChange(of: seekedAutoPlay) { newValue in controller.setSeekedAutoPlay(newValue) }
-
                     Text("Il seek su qualsiasi fotogramma (non solo keyframe) è già abilitato di serie per tutti i contenitori (\"seek2any\").")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1155,6 +1145,12 @@ struct AdvancedSettingsView: View {
                     Toggle("Cache HTTP (FFmpeg)", isOn: $httpCacheEnabled)
                         .onChange(of: httpCacheEnabled) { newValue in controller.setHTTPCacheEnabled(newValue) }
 
+                    Toggle("Ignora certificati TLS non validi", isOn: $allowInsecureTLS)
+                        .onChange(of: allowInsecureTLS) { newValue in controller.setAllowInsecureTLS(newValue) }
+                    Text("Attiva SOLO se sai che il provider usa certificati HTTPS self-signed o scaduti: evita che il primo tentativo fallisca sempre inutilmente prima del retry automatico che già lo aggira.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
                     TextField(probesizeDefaultPlaceholder, text: $probesizeText)
                         .keyboardType(.numberPad)
                         .onSubmit { controller.setProbesize(probesizeText.isEmpty ? nil : Int64(probesizeText)) }
@@ -1164,7 +1160,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Rete")
                 } footer: {
-                    Text("Se un film VOD non si apre, il player ritenta già in automatico fino a 2 volte (User-Agent da browser + Referer dedotto dal dominio, poi anche decodifica software forzata e probing esteso) prima di mostrare qualunque errore. Imposta qui uno User-Agent/Referer fisso solo se un provider specifico lo richiede in modo esplicito.")
+                    Text("Se un film VOD non si apre, il player ritenta già in automatico fino a 2 volte: User-Agent da browser + Referer dedotto dal dominio + certificato TLS non verificato, poi anche decodifica software forzata e probing esteso. Se anche questi 3 tentativi falliscono in modo identico, il problema è quasi certamente lato server (link scaduto/irraggiungibile) o un codec assente dal build FFmpeg — non risolvibile da nessuna opzione client.")
                 }
 
                 Section {
@@ -1237,7 +1233,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Opzioni FFmpeg avanzate")
                 } footer: {
-                    Text("Questo elenco mostra solo le chiavi aggiunte manualmente. Sono SEMPRE già attivi, per qualunque contenitore (MP4/MKV/AVI/TS/FLV/ASF/VOB/OGV/3GP...): \"err_detect=ignore_err\" (tollera pacchetti corrotti), \"avoid_negative_ts=make_zero\" (normalizza timestamp negativi), \"correct_ts_overflow\" (corregge overflow su flussi molto lunghi) e \"seek2any\" (seek su qualsiasi fotogramma). Per utenti esperti: valori errati possono impedire l'apertura del flusso.")
+                    Text("Sono SEMPRE già attivi, per qualunque contenitore: \"err_detect=ignore_err\", \"avoid_negative_ts=make_zero\", \"correct_ts_overflow\" e \"seek2any\". Per utenti esperti: valori errati possono impedire l'apertura del flusso.")
                 }
 
                 Section("Riproduzione") {
