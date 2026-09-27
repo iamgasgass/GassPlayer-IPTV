@@ -1,13 +1,12 @@
 import SwiftUI
 
-/// Riproduzione in corso dalla scheda dettaglio del film
 private struct MoviePlaybackTarget: Identifiable {
     let id = UUID()
     let url: URL
     let title: String
 }
 
-/// Scheda dettaglio di un VOD ottimizzata per iPhone senza sovraestensioni
+/// Scheda dettaglio di un VOD (Film) con larghezza vincolata per impedire l'estensione/zoom asincrono
 struct MovieDetailView: View {
     let credentials: XtreamCredentials
     let stream: XtreamStream
@@ -44,55 +43,68 @@ struct MovieDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                MediaHeroHeader(
-                    title: stream.name,
-                    logoURL: detail.logoURL,
-                    backdropURL: detail.backdropURL,
-                    fallbackImageURLString: stream.streamIcon,
-                    onClose: { dismiss() }
-                )
-
-                VStack(alignment: .leading, spacing: 16) {
-                    MediaMetaRow(
-                        ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
-                        secondaryText: detail.runtimeLabel ?? detail.year,
-                        genres: detail.genres
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(spacing: 0) {
+                    // Header Backdrop
+                    MediaHeroHeader(
+                        title: stream.name,
+                        logoURL: detail.logoURL,
+                        backdropURL: detail.backdropURL,
+                        fallbackImageURLString: stream.streamIcon,
+                        onClose: { dismiss() }
                     )
+                    .frame(width: geometry.size.width)
 
-                    MediaPlayButton(title: "Riproduci il film") {
-                        play()
+                    // Blocco centrale
+                    VStack(spacing: 16) {
+                        MediaMetaRow(
+                            ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
+                            secondaryText: detail.runtimeLabel ?? detail.year,
+                            genres: detail.genres
+                        )
+
+                        MediaPlayButton(title: "Riproduci il film") {
+                            play()
+                        }
+
+                        iconRow
+
+                        if let overview = detail.overview, !overview.isEmpty {
+                            Text(overview)
+                                .font(.subheadline)
+                                .foregroundStyle(.primary.opacity(0.92))
+                                .lineSpacing(3)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if isLoadingDetail {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 8)
+                        }
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+                    .frame(width: geometry.size.width)
 
-                    iconRow
-
-                    if let overview = detail.overview, !overview.isEmpty {
-                        Text(overview)
-                            .font(.subheadline)
-                            .foregroundStyle(.primary.opacity(0.88))
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else if isLoadingDetail {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 8)
-                    }
-
+                    // Sezione Valutazioni
                     MediaRatingsSection(ratings: detail.ratings)
+                        .padding(.top, 18)
+                        .frame(width: geometry.size.width, alignment: .leading)
 
+                    // Sezione Cast
                     MediaCastSection(cast: detail.cast)
+                        .padding(.top, 18)
+                        .padding(.bottom, 40)
+                        .frame(width: geometry.size.width, alignment: .leading)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 34)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: geometry.size.width)
             }
+            .scrollIndicators(.hidden)
+            .ignoresSafeArea(edges: .top)
+            .background(Color(uiColor: .systemBackground))
         }
-        .frame(maxWidth: .infinity)
-        .ignoresSafeArea(edges: .top)
-        .background(Color(uiColor: .systemBackground))
         .task(id: stream.streamId) {
             await loadDetail()
         }
@@ -120,13 +132,13 @@ struct MovieDetailView: View {
         }
     }
 
-    // MARK: - Riga Icone e Azioni Rapide
+    // MARK: - Riga icone
 
     private var iconRow: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             MediaIconButton(
                 systemImage: isFavorite ? "heart.fill" : "heart",
-                tint: isFavorite ? .red : .primary,
+                tint: isFavorite ? .red : .white,
                 accessibilityLabel: isFavorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"
             ) {
                 contentManagement.toggleFavorite(id: favoriteID, title: stream.name, kind: XtreamStreamKind.movie.rawValue)
@@ -141,7 +153,7 @@ struct MovieDetailView: View {
 
             MediaIconButton(
                 systemImage: downloadProgress == 1 ? "checkmark.circle.fill" : "arrow.down.circle",
-                tint: downloadProgress == 1 ? .green : .primary,
+                tint: downloadProgress == 1 ? .green : .white,
                 progress: downloadProgress,
                 accessibilityLabel: "Scarica"
             ) {
@@ -173,7 +185,7 @@ struct MovieDetailView: View {
         downloadManager.startDownload(url: url, id: id)
     }
 
-    // MARK: - Caricamento Dettaglio
+    // MARK: - Caricamento dettaglio
 
     private func loadDetail() async {
         isLoadingDetail = true

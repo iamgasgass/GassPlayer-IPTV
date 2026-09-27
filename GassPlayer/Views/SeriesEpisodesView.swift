@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Scheda dettaglio serie TV con supporto layout proporzionato per iPhone
+/// Scheda dettaglio di una serie TV con GeometryReader per prevenire l'estensione/zoom asincrono post-caricamento
 struct SeriesEpisodesView: View {
     let credentials: XtreamCredentials
     let seriesId: Int
@@ -103,7 +103,7 @@ struct SeriesEpisodesView: View {
         }
     }
 
-    // MARK: - Stati di Caricamento / Errore
+    // MARK: - Stati di caricamento/errore
 
     private var loadingView: some View {
         VStack(spacing: 12) {
@@ -111,7 +111,7 @@ struct SeriesEpisodesView: View {
             Text("Caricamento serie...").font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationBarTitleDisplayMode(.inline)
+        .background(Color(uiColor: .systemBackground))
     }
 
     private func errorView(_ message: String) -> some View {
@@ -122,73 +122,88 @@ struct SeriesEpisodesView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle(seriesName)
-        .navigationBarTitleDisplayMode(.inline)
-    }
-
-    // MARK: - Contenuto Principale
-
-    private func detailContent(_ info: XtreamSeriesInfo) -> some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                MediaHeroHeader(
-                    title: seriesName,
-                    logoURL: detail.logoURL,
-                    backdropURL: detail.backdropURL,
-                    fallbackImageURLString: fallbackCoverURLString,
-                    onClose: { dismiss() }
-                )
-
-                VStack(alignment: .leading, spacing: 16) {
-                    MediaMetaRow(
-                        ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
-                        secondaryText: detail.year,
-                        genres: detail.genres
-                    )
-
-                    MediaPlayButton(title: playButtonTitle) {
-                        playResumeOrFirstEpisode(info)
-                    }
-
-                    iconRow
-
-                    if let overview = detail.overview, !overview.isEmpty {
-                        Text(overview)
-                            .font(.subheadline)
-                            .foregroundStyle(.primary.opacity(0.88))
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else if isLoadingDetail {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 8)
-                    }
-
-                    MediaRatingsSection(ratings: detail.ratings)
-
-                    MediaCastSection(cast: detail.cast)
-
-                    episodesSection(info)
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 34)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .ignoresSafeArea(edges: .top)
         .background(Color(uiColor: .systemBackground))
     }
 
-    // MARK: - Riga Icone
+    // MARK: - Contenuto principale
+
+    private func detailContent(_ info: XtreamSeriesInfo) -> some View {
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(spacing: 0) {
+                    // Header
+                    MediaHeroHeader(
+                        title: seriesName,
+                        logoURL: detail.logoURL,
+                        backdropURL: detail.backdropURL,
+                        fallbackImageURLString: fallbackCoverURLString,
+                        onClose: { dismiss() }
+                    )
+                    .frame(width: geometry.size.width)
+
+                    // Blocco centrale
+                    VStack(spacing: 16) {
+                        MediaMetaRow(
+                            ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
+                            secondaryText: detail.year,
+                            genres: detail.genres
+                        )
+
+                        MediaPlayButton(title: playButtonTitle) {
+                            playResumeOrFirstEpisode(info)
+                        }
+
+                        iconRow
+
+                        if let overview = detail.overview, !overview.isEmpty {
+                            Text(overview)
+                                .font(.subheadline)
+                                .foregroundStyle(.primary.opacity(0.92))
+                                .lineSpacing(3)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if isLoadingDetail {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 8)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+                    .frame(width: geometry.size.width)
+
+                    // Sezione Valutazioni
+                    MediaRatingsSection(ratings: detail.ratings)
+                        .padding(.top, 18)
+                        .frame(width: geometry.size.width, alignment: .leading)
+
+                    // Sezione Cast
+                    MediaCastSection(cast: detail.cast)
+                        .padding(.top, 18)
+                        .frame(width: geometry.size.width, alignment: .leading)
+
+                    // Sezione Episodi e Stagioni
+                    episodesSection(info, containerWidth: geometry.size.width)
+                        .padding(.top, 20)
+                        .padding(.bottom, 40)
+                        .frame(width: geometry.size.width, alignment: .leading)
+                }
+                .frame(width: geometry.size.width)
+            }
+            .scrollIndicators(.hidden)
+            .ignoresSafeArea(edges: .top)
+            .background(Color(uiColor: .systemBackground))
+        }
+    }
+
+    // MARK: - Riga icone
 
     private var iconRow: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             MediaIconButton(
                 systemImage: isFavorite ? "heart.fill" : "heart",
-                tint: isFavorite ? .red : .primary,
+                tint: isFavorite ? .red : .white,
                 accessibilityLabel: isFavorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"
             ) {
                 contentManagement.toggleFavorite(id: favoriteID, title: seriesName, kind: XtreamStreamKind.series.rawValue)
@@ -203,7 +218,7 @@ struct SeriesEpisodesView: View {
 
             MediaIconButton(
                 systemImage: downloadProgress == 1 ? "checkmark.circle.fill" : "arrow.down.circle",
-                tint: downloadProgress == 1 ? .green : .primary,
+                tint: downloadProgress == 1 ? .green : .white,
                 progress: downloadProgress,
                 accessibilityLabel: "Scarica episodio"
             ) {
@@ -216,32 +231,36 @@ struct SeriesEpisodesView: View {
         }
     }
 
-    // MARK: - Sezione Episodi
+    // MARK: - Sezione episodi
 
-    private func episodesSection(_ info: XtreamSeriesInfo) -> some View {
+    private func episodesSection(_ info: XtreamSeriesInfo, containerWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("EPISODI")
-                .font(.caption2.weight(.bold))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.secondary)
+                .padding(.horizontal, 20)
 
+            // Selettore stagioni
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
                     ForEach(info.sortedSeasonNumbers, id: \.self) { season in
                         seasonChip(season)
                     }
                 }
+                .padding(.horizontal, 20)
             }
 
+            // Lista episodi
             if let selectedSeason {
                 VStack(spacing: 16) {
                     ForEach(info.episodes(forSeason: selectedSeason)) { episode in
                         episodeRow(episode, season: selectedSeason)
                     }
                 }
+                .padding(.horizontal, 20)
                 .padding(.top, 4)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func seasonChip(_ season: Int) -> some View {
@@ -251,11 +270,18 @@ struct SeriesEpisodesView: View {
             withAnimation(.snappy(duration: 0.16)) { selectedSeason = season }
         } label: {
             Text("Stagione \(season)")
-                .font(.subheadline.weight(.semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .background(isSelected ? Color.accentColor : Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .foregroundStyle(isSelected ? Color.white : Color.secondary)
+                .background(
+                    isSelected ? Color.white.opacity(0.18) : Color.white.opacity(0.06),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(isSelected ? Color.white.opacity(0.2) : Color.clear, lineWidth: 0.5)
+                }
         }
         .buttonStyle(.plain)
     }
@@ -265,30 +291,30 @@ struct SeriesEpisodesView: View {
             selectedSeason = season
             selectedEpisode = episode
         } label: {
-            VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 14) {
                 episodeThumbnail(episode)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 180)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .frame(width: 120, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("\(episode.code(seasonFallback: season))")
-                        .font(.caption.weight(.bold))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(episode.code(seasonFallback: season))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.secondary)
 
                     Text(episode.title)
-                        .font(.subheadline.weight(.bold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.primary)
-                        .lineLimit(1)
+                        .lineLimit(2)
 
                     if let plot = episode.plot, !plot.isEmpty {
                         Text(plot)
-                            .font(.caption)
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
-                            .padding(.top, 1)
+                            .lineSpacing(2)
                     }
                 }
+                Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
         }
@@ -312,16 +338,16 @@ struct SeriesEpisodesView: View {
     }
 
     private var episodeThumbnailPlaceholder: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color(uiColor: .secondarySystemBackground))
+        Rectangle()
+            .fill(Color.white.opacity(0.08))
             .overlay {
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.white.opacity(0.8))
+                Image(systemName: "play.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
             }
     }
 
-    // MARK: - Riproduzione / Ripresa
+    // MARK: - Riproduzione / ripresa
 
     private var resumeEpisode: (season: Int, episode: XtreamSeriesInfo.Episode)? {
         guard let info = seriesInfo else { return nil }
@@ -340,7 +366,6 @@ struct SeriesEpisodesView: View {
                 return (season, episode)
             }
         }
-
         return nil
     }
 
@@ -362,7 +387,6 @@ struct SeriesEpisodesView: View {
             selectedEpisode = resume.episode
             return
         }
-
         guard let season = info.sortedSeasonNumbers.first,
               let episode = info.episodes(forSeason: season).first else { return }
 
@@ -417,7 +441,7 @@ struct SeriesEpisodesView: View {
         )
     }
 
-    // MARK: - Caricamento Dati
+    // MARK: - Caricamento
 
     private func loadSeriesInfo() async {
         isLoading = true
