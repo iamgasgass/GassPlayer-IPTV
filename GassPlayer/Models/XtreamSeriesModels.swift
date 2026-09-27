@@ -120,6 +120,11 @@ struct XtreamSeriesInfo: Decodable {
         let plot: String?
         let stillImageURL: URL?
         let durationSecs: Int?
+        /// Data di uscita dell'episodio così come inviata dal provider
+        /// (in genere "yyyy-MM-dd"), mostrata sotto la trama nella scheda
+        /// dettaglio esattamente come nel video dimostrativo (es. "1
+        /// febbraio 2006"). `nil` se il provider non la fornisce.
+        let releaseDateRaw: String?
 
         var streamId: Int { Int(id) ?? 0 }
 
@@ -127,6 +132,30 @@ struct XtreamSeriesInfo: Decodable {
         func code(seasonFallback: Int) -> String {
             let seasonNumber = season ?? seasonFallback
             return String(format: "S%02dE%02d", seasonNumber, episodeNum)
+        }
+
+        /// Data di uscita formattata in italiano esteso ("1 febbraio
+        /// 2006"), come mostrato nel video dimostrativo sotto la trama di
+        /// ogni episodio. Se il formato non è quello atteso ("yyyy-MM-dd")
+        /// ma il campo è comunque presente, ricade sul testo grezzo
+        /// piuttosto che nasconderlo.
+        var formattedReleaseDate: String? {
+            guard let raw = releaseDateRaw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+                return nil
+            }
+
+            let parser = DateFormatter()
+            parser.locale = Locale(identifier: "en_US_POSIX")
+            parser.calendar = Calendar(identifier: .gregorian)
+            parser.timeZone = .autoupdatingCurrent
+            parser.dateFormat = "yyyy-MM-dd"
+
+            guard let date = parser.date(from: raw) else { return raw }
+
+            let display = DateFormatter()
+            display.locale = Locale(identifier: "it_IT")
+            display.dateFormat = "d MMMM yyyy"
+            return display.string(from: date)
         }
     }
 
@@ -200,6 +229,8 @@ extension XtreamSeriesInfo.Episode: Decodable {
         case plot
         case movieImage = "movie_image"
         case durationSecs = "duration_secs"
+        case releaseDate = "releasedate"
+        case airDate = "air_date"
     }
 
     /// FIX 2026-09-20: `title` e `containerExtension` usavano
@@ -240,10 +271,17 @@ extension XtreamSeriesInfo.Episode: Decodable {
             }
 
             durationSecs = infoContainer.decodeFlexibleInt(forKey: .durationSecs)
+
+            // Diversi pannelli Xtream chiamano il campo "releasedate" (tutto
+            // attaccato, il più comune) oppure "air_date": proviamo entrambi,
+            // il primo che risponde con un valore non vuoto vince.
+            releaseDateRaw = infoContainer.decodeFlexibleString(forKey: .releaseDate)?.nonEmpty
+                ?? infoContainer.decodeFlexibleString(forKey: .airDate)?.nonEmpty
         } else {
             plot = nil
             stillImageURL = nil
             durationSecs = nil
+            releaseDateRaw = nil
         }
     }
 }

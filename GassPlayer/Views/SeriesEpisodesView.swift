@@ -250,9 +250,9 @@ struct SeriesEpisodesView: View {
                 .padding(.horizontal, 20)
             }
 
-            // Lista episodi con card orizzontale
+            // Lista episodi con card a piena larghezza, come nel video
             if let selectedSeason {
-                VStack(spacing: 16) {
+                VStack(spacing: 28) {
                     ForEach(info.episodes(forSeason: selectedSeason)) { episode in
                         episodeRow(episode, season: selectedSeason)
                     }
@@ -286,39 +286,81 @@ struct SeriesEpisodesView: View {
         .buttonStyle(.plain)
     }
 
+    /// Card episodio a piena larghezza, identica al video dimostrativo:
+    /// miniatura 16:9 a tutta larghezza (con barra "riprendi da qui" quando
+    /// è l'episodio segnato come in corso), poi sotto in verticale codice,
+    /// titolo, trama COMPLETA (mai troncata) e data di uscita.
     private func episodeRow(_ episode: XtreamSeriesInfo.Episode, season: Int) -> some View {
         Button {
             selectedSeason = season
             selectedEpisode = episode
         } label: {
-            HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
                 episodeThumbnail(episode)
-                    .frame(width: 120, height: 72)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .aspectRatio(16.0 / 9.0, contentMode: .fill)
+                    .frame(maxWidth: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(alignment: .bottom) {
+                        if isResumeEpisode(episode) {
+                            resumeProgressBar
+                        }
+                    }
+                    .clipped()
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(episode.code(seasonFallback: season))
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.secondary)
 
                     Text(episode.title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.primary)
-                        .lineLimit(2)
-
-                    if let plot = episode.plot, !plot.isEmpty {
-                        Text(plot)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .lineSpacing(2)
-                    }
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer(minLength: 0)
+
+                if let plot = episode.plot, !plot.isEmpty {
+                    Text(plot)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(3)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let date = episode.formattedReleaseDate {
+                    Text(date)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.primary.opacity(0.85))
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// Barra bianca "riprendi da qui" sovrapposta in basso alla miniatura,
+    /// mostrata solo sull'episodio effettivamente registrato in "Continua a
+    /// guardare" (vedi `resumeEpisode`). Il player attuale non riporta la
+    /// posizione esatta di riproduzione all'esterno (nessun secondo/durata
+    /// disponibile fuori da `PlayerView`), quindi qui si mostra solo
+    /// l'indicatore "ripresa disponibile" del video, non una percentuale
+    /// esatta calcolata da un dato che l'app non possiede.
+    private var resumeProgressBar: some View {
+        GeometryReader { proxy in
+            Capsule()
+                .fill(Color.white)
+                .frame(width: proxy.size.width * 0.92, height: 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(height: 5)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
+    }
+
+    private func isResumeEpisode(_ episode: XtreamSeriesInfo.Episode) -> Bool {
+        resumeEpisode?.episode.id == episode.id
     }
 
     @ViewBuilder
@@ -342,7 +384,7 @@ struct SeriesEpisodesView: View {
             .fill(Color.white.opacity(0.08))
             .overlay {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 14))
+                    .font(.system(size: 20))
                     .foregroundStyle(.secondary)
             }
     }
