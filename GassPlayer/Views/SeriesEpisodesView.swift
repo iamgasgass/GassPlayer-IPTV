@@ -393,7 +393,7 @@ struct SeriesEpisodesView: View {
     }
 
     private func startDownloadOfNextEpisodeIfNeeded() {
-        guard downloadId == nil else { return nil }
+        guard downloadId == nil else { return }
 
         let target = resumeEpisode?.episode ?? seriesInfo.flatMap { info in
             info.sortedSeasonNumbers.first.flatMap { info.episodes(forSeason: $0).first }
