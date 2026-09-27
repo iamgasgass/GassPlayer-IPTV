@@ -40,11 +40,21 @@ import KSPlayer
 ///    silenziosamente e il secondo tentativo (software, FFmpeg puro)
 ///    riesce, perché libavcodec ha un decoder mpeg4/xvid nativo che non
 ///    dipende da alcun chip di accelerazione.
-/// 3) Tuning di latenza: buffer di partenza minimi, decodifica
-///    multi-thread per il fallback software, flag FFmpeg "low delay"
-///    per non introdurre ritardo di analisi/bufferizzazione aggiuntivo,
-///    così anche il motore software resta fluido e senza percepibile
-///    ritardo all'avvio o allo zapping.
+/// 3) Tuning di latenza: buffer di partenza minimi, opzioni FFmpeg di
+///    analisi rapida (`probesize`/`maxAnalyzeDuration`), niente
+///    bufferizzazione extra lato demuxer (`nobuffer`), `codecLowDelay`
+///    per non introdurre ritardo di riordino B-frame dove il codec lo
+///    consente, e riconnessione automatica sui timeout HTTP tipici
+///    delle playlist IPTV.
+///
+/// NOTA COMPATIBILITÀ API: le proprietà usate qui (`firstPlayerType`,
+/// `secondPlayerType`, `hardwareDecode`, `asynchronousDecompression`,
+/// `codecLowDelay`, `probesize`, `maxAnalyzeDuration`, `avOptions`,
+/// `decoderOptions`, `formatContextOptions`) sono quelle realmente
+/// esposte da `KSOptions` nella libreria KSPlayer. Non esiste una
+/// proprietà `videoSoftDecodeThreadCount`: il parallelismo del decoder
+/// software si configura passando la chiave FFmpeg `"threads"` dentro
+/// `decoderOptions`, che è la via corretta e documentata.
 enum VideoGravityMode: String, CaseIterable, Identifiable {
     /// Il video intero è visibile, con eventuali barre nere ai lati:
     /// nessun ritaglio, nessuna deformazione. Default.
@@ -175,7 +185,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
         didConfigureGlobalPlayerEngine = true
         KSOptions.firstPlayerType = KSMEPlayer.self
         KSOptions.secondPlayerType = KSAVPlayer.self
-        // Log una sola volta per confermare in debug quale pipeline è attiva.
         DebugLogger.logAsync(.info, "KSPlaybackController: motore primario = KSMEPlayer (FFmpeg), fallback = KSAVPlayer (hardware/Metal)")
     }
 
@@ -225,29 +234,31 @@ final class KSPlaybackController: NSObject, ObservableObject {
         // Decompressione asincrona: il rendering non aspetta la CPU/GPU
         // in modo bloccante, riducendo micro-scatti percepiti.
         options.asynchronousDecompression = true
-        // Se si finisce in decodifica software (fallback automatico o
-        // scelta manuale), usa tutti i core disponibili (fino a 4) per
-        // evitare che il software decode diventi il collo di bottiglia
-        // su risoluzioni elevate.
-        options.videoSoftDecodeThreadCount = min(ProcessInfo.processInfo.activeProcessorCount, 4)
+        // Disattiva il riordino/attesa dei B-frame dove il codec lo
+        // consente: meno ritardo strutturale prima del primo fotogramma
+        // visibile, specialmente utile in streaming live IPTV.
+        options.codecLowDelay = true
 
-        // --- Riduzione latenza a livello FFmpeg (demux/decode) ---
-        // `nobuffer`: non accumulare pacchetti extra prima di restituirli
-        // al decoder. `low_delay`: disattiva l'analisi che introduce
-        // ritardo strutturale nei codec che la supportano (utile su MPEG
-        // e H.264/H.265 in streaming live).
-        options.formatContextOptions["fflags"] = "nobuffer"
-        options.formatContextOptions["flags"] = "low_delay"
+        // Se si finisce in decodifica software (fallback automatico o
+        // scelta manuale), usa più thread FFmpeg per il decoder video
+        // (chiave libavcodec "threads"), evitando che il software decode
+        // diventi il collo di bottiglia su risoluzioni elevate.
+        let threadCount = min(ProcessInfo.processInfo.activeProcessorCount, 4)
+        options.decoderOptions["threads"] = "\(threadCount)"
+
+        // --- Riduzione latenza a livello di demux/analisi FFmpeg ---
         // Analisi iniziale del flusso più rapida: individua i codec senza
         // scansionare secondi di dati prima di iniziare a decodificare.
-        options.formatContextOptions["analyzeduration"] = 500_000 // microsecondi
-        options.formatContextOptions["probesize"] = 500_000 // byte
+        options.probesize = 500_000 // byte
+        options.maxAnalyzeDuration = 1_000_000 // microsecondi
+
         // Riconnessione automatica sui flussi HTTP/HLS IPTV che cadono
         // per un istante: evita che un singolo timeout diventi un errore
-        // fatale mostrato all'utente.
-        options.formatContextOptions["reconnect"] = 1
-        options.formatContextOptions["reconnect_streamed"] = 1
-        options.formatContextOptions["reconnect_delay_max"] = 2
+        // fatale mostrato all'utente. Sono opzioni del protocollo HTTP
+        // di libavformat, passate via `avOptions`.
+        options.avOptions["reconnect"] = 1
+        options.avOptions["reconnect_streamed"] = 1
+        options.avOptions["reconnect_delay_max"] = 2
 
         let layer = KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
         layer.player.contentMode = preferences.videoGravity.contentMode
