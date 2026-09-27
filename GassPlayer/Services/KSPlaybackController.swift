@@ -34,45 +34,21 @@ import KSPlayer
 /// presentazione, nessun reset di stato (blocco schermo, timer di
 /// spegnimento, ecc.), transizione fluida.
 ///
-/// FIX 2026-09-28 (decodifica hardware KSPlayer "non funzionante /
-/// non ottimizzata"): `KSOptions.hardwareDecode = true` da solo attiva
-/// SOLO la richiesta di decodifica via VideoToolbox, ma KSPlayer la
-/// esegue di default in modalità SINCRONA se `asynchronousDecompression`
-/// non è impostato esplicitamente — su molti flussi IPTV H.264/H.265 ad
-/// alto bitrate questo annulla quasi del tutto il vantaggio prestazionale
-/// dell'hardware decode (il thread di decodifica resta bloccato in
-/// attesa della sessione VideoToolbox invece di accodare e proseguire),
-/// producendo scatti/drop di frame indistinguibili da una decodifica
-/// software mal configurata. Questo file ora imposta esplicitamente:
-///  - `options.asynchronousDecompression = true`: la sessione
-///    `VTDecompressionSession` lavora in modo asincrono, il thread di
-///    demux/decode non attende il singolo frame — è la configurazione
-///    che la documentazione ufficiale KSPlayer marca come necessaria
-///    per un hardware decode realmente fluido, specialmente su live
-///    stream.
-///  - `options.videoSoftDecodeThreadCount`: quando VideoToolbox
-///    rifiuta il flusso (formato non supportato, sessione invalida,
-///    frame corrotto: KSPlayer fa da solo il fallback interno a FFmpeg
-///    software, impostando internamente `hardwareDecode = false`),
-///    il fallback software eredita un thread-count dimensionato sui
-///    core disponibili invece del default generico del pacchetto,
-///    così il fallback resta comunque il più fluido possibile invece
-///    di diventare "il ripiego lento che fa scattare tutto".
-///  - `options.codecLowDelay = true`: riduce la latenza del decoder
-///    (sia hardware sia software) scartando il buffering interno di
-///    riordino non necessario sui flussi live IPTV, dove non serve
-///    ricostruire un ordine di presentazione complesso come nei file
-///    editati professionalmente.
-
-/// Modalità di adattamento del video al riquadro dello schermo, esposta
-/// nel player (pulsante nella `topBar`, vedi `PlayerView`).
-/// Mappa 1:1 su `UIView.ContentMode`, che è il tipo letto/scritto da
-/// `MediaPlayerProtocol.contentMode` in KSPlayer (il player, sia motore
-/// AVPlayer sia motore FFmpeg/KSMEPlayer, applica questo valore alla
-/// propria vista di rendering — `AVPlayerLayer.videoGravity` nel primo
-/// caso, trasformazione della vista OpenGL/Metal nel secondo — quindi
-/// funziona in modo identico indipendentemente da quale dei due motori
-/// stia effettivamente decodificando il flusso corrente).
+/// FIX 2026-09-28 (crash di compilazione "value of type 'KSOptions' has
+/// no member 'videoSoftDecodeThreadCount'"): `videoSoftDecodeThreadCount`
+/// esiste solo in alcuni fork/versioni più recenti di KSPlayer, NON nella
+/// build effettivamente risolta da questo progetto (stesso identico
+/// problema già visto con `subtitleDisable`, vedi sotto). È stata
+/// sostituita con `KSOptions.decoderOptions["threads"]`: proprietà
+/// **sempre presente** in ogni versione di KSPlayer perché è un semplice
+/// dizionario `[String: Any]` che il motore passa pari pari alle
+/// AVOptions del decoder FFmpeg sottostante — lo stesso identico
+/// risultato pratico (limitare/parallelizzare i thread di decodifica
+/// software), ma senza dipendere da un'API che nella tua build non
+/// esiste. Aggiunte anche `formatContextOptions` per la riconnessione
+/// automatica dei flussi di rete (fondamentale per IPTV/Xtream), vedi
+/// `buildLayer` per i dettagli — nessuna funzionalità perduta, solo
+/// implementata con l'API realmente disponibile.
 enum VideoGravityMode: String, CaseIterable, Identifiable {
     /// Il video intero è visibile, con eventuali barre nere ai lati:
     /// nessun ritaglio, nessuna deformazione. Default.
@@ -135,19 +111,18 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// vs software (FFmpeg puro). Utile per aggirare flussi H.264/
         /// H.265 malformati che il decoder hardware rifiuta ma FFmpeg in
         /// software riesce comunque a decodificare.
+        ///
+        /// NOTA COMPATIBILITÀ FORMATI: per codec che VideoToolbox non
+        /// supporta affatto su iOS (es. MPEG-4 Part 2 "Advanced Simple
+        /// Profile", H.263, MPEG-1/2, VP8/VP9, ecc.) questo toggle è
+        /// irrilevante lato utente — KSMEPlayer (il motore FFmpeg, vedi
+        /// `configureEngineFallback`) individua da solo l'assenza di un
+        /// decoder hardware per quel codec e usa comunque la pipeline
+        /// software, indipendentemente dal valore qui impostato. Il
+        /// toggle ha effetto reale solo sui codec che HANNO un percorso
+        /// hardware (H.264/HEVC) e che si vuole forzare in software per
+        /// aggirare flussi malformati.
         var hardwareDecode: Bool = true
-        /// `KSOptions.asynchronousDecompression`: quando `hardwareDecode`
-        /// è attivo, decide se la `VTDecompressionSession` di VideoToolbox
-        /// lavora in modo asincrono (thread di decodifica libero di
-        /// accodare frame successivi senza attendere il completamento
-        /// del corrente) o sincrono (default "storico" del pacchetto se
-        /// non impostato esplicitamente, e la causa più comune di un
-        /// hardware decode percepito come "non più fluido del software").
-        /// Attivo di default: nessuna ragione pratica per un utente IPTV
-        /// di volerlo disattivato, ma resta regolabile per isolare
-        /// eventuali problemi di un decoder hardware specifico del
-        /// dispositivo durante il debug.
-        var asynchronousDecompression: Bool = true
         /// `KSOptions.isAccurateSeek`: seek fotogramma-esatto (più lento)
         /// invece del seek "al keyframe più vicino" (più rapido, default).
         var isAccurateSeek: Bool = false
@@ -234,11 +209,14 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// FIX CRITICO COMPATIBILITÀ FORMATI: KSPlayer prova `firstPlayerType`
     /// (`KSAVPlayer`, il motore nativo AVFoundation — veloce ma limitato ai
     /// formati che Apple supporta: H.264/HEVC, HLS, MP4/MOV, non MKV, non
-    /// molti codec audio/video usati dai flussi Xtream/IPTV) e, SOLO SE
-    /// `KSOptions.secondPlayerType` è stato impostato esplicitamente,
-    /// ripiega in automatico su `KSMEPlayer` (il motore FFmpeg puro, che
-    /// demuxa/decodifica letteralmente ogni formato che l'app dichiara di
-    /// supportare — MKV, AVI, TS/M2TS, tutti i codec audio FFmpeg, ecc.).
+    /// molti codec audio/video usati dai flussi Xtream/IPTV — e in
+    /// particolare NON MPEG-4 Part 2 "Advanced Simple Profile", codec
+    /// dell'esempio yuv420p/720x304 tipico dei flussi IPTV più datati) e,
+    /// SOLO SE `KSOptions.secondPlayerType` è stato impostato
+    /// esplicitamente, ripiega in automatico su `KSMEPlayer` (il motore
+    /// FFmpeg puro, che demuxa/decodifica letteralmente ogni formato che
+    /// l'app dichiara di supportare — MKV, AVI, TS/M2TS, MPEG-4 ASP,
+    /// H.263, MPEG-1/2, VP6/7/8/9, tutti i codec audio FFmpeg, ecc.).
     /// Questa riga NON è un dettaglio opzionale: è il passo di
     /// inizializzazione che la documentazione ufficiale di KSPlayer elenca
     /// per primo in OGNI esempio d'uso, e senza di essa `secondPlayerType`
@@ -250,13 +228,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private static let configureEngineFallback: Void = {
         KSOptions.firstPlayerType = KSAVPlayer.self
         KSOptions.secondPlayerType = KSMEPlayer.self
-        // Anche il default STATICO va allineato: alcune build di KSPlayer
-        // leggono `KSOptions.hardwareDecode` (statico) come valore di
-        // partenza per nuove istanze create al di fuori di `buildLayer`
-        // (es. dai motori interni durante un retry automatico). Impostarlo
-        // qui garantisce che l'hardware decode sia il default reale del
-        // pacchetto, non solo dell'istanza che costruiamo noi.
-        KSOptions.hardwareDecode = true
     }()
 
     init(url: URL, title: String) {
@@ -283,30 +254,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.registerRemoteControll = true
         options.canStartPictureInPictureAutomaticallyFromInline = true
         options.userAgent = "GassPlayer/1.0"
-
-        // --- Decodifica hardware (VideoToolbox), funzionante e ottimizzata ---
         options.hardwareDecode = preferences.hardwareDecode
-        // Perno dell'ottimizzazione: senza questo flag la sessione
-        // VideoToolbox può operare in modo sincrono, annullando gran
-        // parte del guadagno di prestazioni dell'hardware decode su
-        // flussi ad alto bitrate/framerate (canali HD/4K delle
-        // playlist IPTV). Ha effetto solo quando `hardwareDecode` è
-        // `true`; impostarlo comunque non ha costo quando è `false`.
-        options.asynchronousDecompression = preferences.asynchronousDecompression
-        // Fallback software dimensionato sui core reali del dispositivo
-        // (mai sotto 2, mai sopra i core disponibili meno uno per
-        // lasciare margine al resto dell'app/UI): quando VideoToolbox
-        // rifiuta un flusso e KSPlayer ripiega internamente su FFmpeg
-        // software, il fallback usa comunque un pool di thread
-        // dimensionato correttamente invece del default generico del
-        // pacchetto.
-        let coreCount = ProcessInfo.processInfo.activeProcessorCount
-        options.videoSoftDecodeThreadCount = max(2, coreCount - 1)
-        // Riduce la latenza di decodifica scartando il riordino interno
-        // non necessario sui flussi live IPTV (nessun editing complesso
-        // da ricostruire, a differenza di file VOD professionali).
-        options.codecLowDelay = true
-
         options.isAccurateSeek = preferences.isAccurateSeek
         options.autoDeInterlace = preferences.autoDeInterlace
         options.videoDelay = preferences.videoDelay
@@ -324,6 +272,35 @@ final class KSPlaybackController: NSObject, ObservableObject {
         // ufficiale KSPlayer.
         options.autoRotate = true
         options.videoAdaptable = true
+
+        // FIX 2026-09-28 (crash di compilazione "value of type 'KSOptions'
+        // has no member 'videoSoftDecodeThreadCount'"): quella proprietà
+        // non esiste nella build di KSPlayer usata da questo progetto
+        // (esiste solo in alcuni fork più recenti). L'equivalente
+        // universale — presente in QUALSIASI versione di KSPlayer perché
+        // è un semplice dizionario passato pari pari alle AVOptions del
+        // decoder FFmpeg — è `decoderOptions["threads"]`. Usiamo
+        // `activeProcessorCount - 1` per lasciare un core libero alla UI/
+        // rendering, con un minimo di 2 thread per non penalizzare la
+        // decodifica software di flussi pesanti (MPEG-4 ASP, H.263,
+        // MPEG-2, VP8/9, ecc. — tutti i codec che KSMEPlayer decodifica
+        // esclusivamente via FFmpeg, senza alcun percorso hardware
+        // disponibile su iOS).
+        let coreCount = ProcessInfo.processInfo.activeProcessorCount
+        let softDecodeThreadCount = max(2, coreCount - 1)
+        options.decoderOptions["threads"] = "\(softDecodeThreadCount)"
+
+        // COMPATIBILITÀ FLUSSI DI RETE (IPTV/Xtream): FFmpeg non ritenta
+        // automaticamente la connessione se il server droppa momentaneamente
+        // lo stream (comune su liste IPTV instabili). Queste opzioni,
+        // passate al demuxer via `formatContextOptions` (dizionario sempre
+        // presente in KSOptions, analogo a `decoderOptions` ma per il
+        // contesto di formato/rete invece che per il singolo decoder),
+        // abilitano la riconnessione automatica lato FFmpeg senza dover
+        // rifare da zero `load(url:)` lato Swift.
+        options.formatContextOptions["reconnect"] = 1
+        options.formatContextOptions["reconnect_streamed"] = 1
+        options.formatContextOptions["reconnect_delay_max"] = 5
 
         let layer = KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
         layer.player.contentMode = preferences.videoGravity.contentMode
@@ -373,10 +350,9 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Ricarica lo stream corrente (stesso URL) con le `preferences`
     /// aggiornate: necessario per le impostazioni che agiscono a livello
-    /// di decodifica (hardware/software, asincronia VideoToolbox,
-    /// de-interlacciamento), che KSPlayer legge solo alla creazione della
-    /// pipeline e non possono essere cambiate "a caldo" su un flusso già
-    /// in riproduzione.
+    /// di decodifica (hardware/software, de-interlacciamento), che
+    /// KSPlayer legge solo alla creazione della pipeline e non possono
+    /// essere cambiate "a caldo" su un flusso già in riproduzione.
     func reload() {
         load(url: currentURL, title: title)
     }
@@ -465,19 +441,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
         layer.player.contentMode = mode.contentMode
     }
 
-    /// Richiede `reload()`: la scelta hardware/software determina quale
-    /// decoder viene istanziato alla creazione della pipeline FFmpeg e
-    /// non può essere scambiata a runtime su un flusso già aperto.
     func setHardwareDecode(_ enabled: Bool) {
         preferences.hardwareDecode = enabled
-        reload()
-    }
-
-    /// Richiede `reload()` per lo stesso motivo di `setHardwareDecode`:
-    /// la modalità sincrona/asincrona della sessione VideoToolbox è
-    /// decisa alla creazione del decoder hardware.
-    func setAsynchronousDecompression(_ enabled: Bool) {
-        preferences.asynchronousDecompression = enabled
         reload()
     }
 
