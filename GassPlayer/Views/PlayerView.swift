@@ -941,12 +941,12 @@ struct QualityPickerView: View {
 /// la versione di `KSOptions`/FFmpeg installata in questo progetto. I
 /// campi della sezione "Rete"/"Opzioni FFmpeg avanzate" rappresentano
 /// SEMPRE override facoltativi ADDITIVI sopra: (1) i default calcolati
-/// automaticamente in base al protocollo dell'URL corrente
-/// (`KSPlaybackController.networkFormatContextOptions`) e (2) il retry
-/// automatico e silenzioso con User-Agent browser + Referer auto-derivato
-/// che il controller esegue da solo al primo fallimento di apertura,
-/// PRIMA di mostrare qualunque errore (vedi nota "ANALISI MANIACALE" nel
-/// file del controller).
+/// automaticamente in base al protocollo dell'URL corrente e (2) la
+/// sequenza di FINO A 2 retry automatici e silenziosi (User-Agent
+/// browser + Referer auto-derivato, poi anche decodifica software forzata
+/// e probing esteso) che il controller esegue da solo ad ogni fallimento
+/// di apertura, PRIMA di mostrare qualunque errore (vedi nota "ANALISI
+/// MANIACALE" nel file del controller).
 struct AdvancedSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
@@ -1205,7 +1205,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Rete")
                 } footer: {
-                    Text("Se un film VOD non si apre, il player ritenta già in automatico UNA volta con uno User-Agent da browser e un Referer dedotto dal dominio del flusso, prima di mostrare qualunque errore. Imposta qui uno User-Agent/Referer fisso solo se un provider specifico lo richiede in modo esplicito.")
+                    Text("Se un film VOD non si apre, il player ritenta già in automatico fino a 2 volte (User-Agent da browser + Referer dedotto dal dominio, poi anche decodifica software forzata e probing esteso) prima di mostrare qualunque errore. Imposta qui uno User-Agent/Referer fisso solo se un provider specifico lo richiede in modo esplicito.")
                 }
 
                 Section {
