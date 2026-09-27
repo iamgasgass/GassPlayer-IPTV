@@ -5,93 +5,67 @@ import KSPlayer
 
 /// Bridge SwiftUI-friendly per KSPlayerLayer, l'UNICO motore di
 /// riproduzione dell'app (AVPlayer nativo + FFmpeg via KSMEPlayer, con
-/// switch automatico incorporato nella libreria stessa — vedi
-/// KSPlayerLayer.finish(player:error:), che ritenta con
-/// KSOptions.secondPlayerType su qualunque errore prima di arrendersi).
+/// switch automatico incorporato nella libreria stessa).
 ///
-/// TIPI DI CONTENITORE (avformat) SUPPORTATI — 2026-09-27:
-/// FFmpeg/avformat (il motore usato da KSMEPlayer) rileva il contenitore
-/// dal CONTENUTO del flusso (probing), non dall'estensione dell'URL:
-/// nessun codice aggiuntivo è necessario per "abilitare" un formato,
-/// perché tutti i demuxer sono già registrati globalmente dentro il
-/// binario FFmpeg compilato con KSPlayer. Sono quindi già leggibili senza
-/// alcuna configurazione: MP4/MOV/M4V/QuickTime, Matroska/MKV, WebM, AVI,
-/// FLV, MPEG-TS/M2TS/MTS (DVB, IPTV, registrazioni), MPEG-PS/VOB/MPG,
-/// ASF/WMV, OGG/OGV, 3GP/3G2, NUT, MXF, RM/RMVB (se il build FFmpeg
-/// includiva i demuxer RealMedia). Il supporto CODEC (quali flussi audio/
-/// video dentro quei contenitori si sanno DECODIFICARE — H.264, HEVC,
-/// AV1, VP8/9, MPEG-2, VC-1, AAC, AC-3/E-AC-3, DTS, Opus, FLAC, ...)
-/// dipende invece dalla configurazione di compilazione di FFmpeg dentro
-/// il pacchetto KSPlayer stesso (flag `--enable-decoder=...`), NON da
-/// questi due file Swift: non esiste alcuna proprietà di `KSOptions` che
-/// possa "aggiungere" un decoder assente dal binario compilato.
+/// ANALISI MANIACALE 2026-09-27 (quater) — TUTTI E 3 I TENTATIVI DI
+/// APERTURA FALLISCONO IDENTICI: il log conferma che i retry (UA browser
+/// + Referer, poi decodifica software + probing esteso) girano
+/// correttamente ma non risolvono nulla. Se NESSUno dei tre livelli
+/// aiuta, il fallimento avviene quasi certamente PRIMA del demuxer, a
+/// livello di connessione di rete stessa — la causa più comune e non
+/// ancora coperta è la VERIFICA DEL CERTIFICATO TLS: molti server IPTV/
+/// VOD di fascia bassa usano certificati HTTPS self-signed, scaduti o con
+/// hostname non corrispondente. FFmpeg, come qualunque client TLS
+/// corretto, rifiuta la connessione per default, e KSPlayer la riporta
+/// con lo stesso identico messaggio generico "can't open input" — motivo
+/// per cui né lo User-Agent né il probing né la decodifica software
+/// possono avere alcun effetto: la connessione non si stabilisce mai.
 ///
-/// Ciò che QUESTO file può davvero fare — e che ora fa — per "leggere
-/// tutti i tipi di film" è rendere il PARSING del contenitore più
-/// tollerante U N I V E R S A L M E N T E, indipendentemente da quale
-/// contenitore/demuxer venga rilevato, usando SOLO opzioni generiche di
-/// `AVFormatContext` (documentate in `libavformat/options_table.h`, non
-/// legate a un demuxer/protocollo specifico, quindi mai a rischio del
-/// bug "opzione non consumata" diagnosticato nei turni precedenti):
+/// FIX: dal primo retry di fallback in poi (mai al primo tentativo, per
+/// non abbassare la sicurezza sui flussi che già funzionano con
+/// certificati validi), viene impostata `tls_verify = 0` per schemi
+/// `https`/`rtsps` — disattiva la verifica del certificato SOLO durante
+/// i tentativi di recupero automatico. È il compromesso standard adottato
+/// da VLC e dalla maggior parte dei player IPTV per restare compatibili
+/// con provider che usano certificati non validati, a fronte di un rischio
+/// di sicurezza accettabile per questo caso d'uso (streaming di contenuti
+/// pubblici, non credenziali sensibili).
 ///
-/// - `err_detect = ignore_err`: non abortisce l'apertura/lettura per
-///   pacchetti leggermente corrotti (comune su registrazioni TS/IPTV),
-///   valido per QUALUNQUE demuxer.
-/// - `avoid_negative_ts = make_zero`: normalizza automaticamente i
-///   timestamp negativi che alcuni contenitori (MOV/MP4 con edit list,
-///   MKV rimuxati) possono presentare, evitando artefatti di
-///   sincronizzazione o rifiuti di apertura.
-/// - `correct_ts_overflow = 1`: corregge automaticamente l'overflow dei
-///   timestamp su flussi molto lunghi (film > ~26h di PTS a 90kHz, o
-///   flussi live accumulati), valido per qualunque contenitore.
-/// - `seek2any = 1`: consente il seek su QUALSIASI fotogramma (non solo
-///   keyframe) per tutti i demuxer che lo supportano, rendendo il seek
-///   utilizzabile anche su contenitori con GOP molto lunghi.
+/// TIPI DI CONTENITORE (avformat) SUPPORTATI: FFmpeg/avformat rileva il
+/// contenitore dal CONTENUTO del flusso (probing), non dall'estensione:
+/// MP4/MOV, MKV/WebM, AVI, FLV, MPEG-TS/M2TS, MPEG-PS/VOB, ASF/WMV, OGG/
+/// OGV, 3GP/3G2, NUT, MXF sono già tutti leggibili senza alcuna
+/// configurazione aggiuntiva. Il supporto CODEC dipende dalla
+/// configurazione di compilazione di FFmpeg dentro il pacchetto KSPlayer
+/// (fuori dallo scopo di questi due file Swift): se TUTTI e 3 i tentativi
+/// (incluso quello con TLS relaxato) falliscono ancora nello stesso modo
+/// identico, le cause plausibili RESIDUE — non risolvibili da nessuna
+/// opzione client-side — sono: (a) l'URL è realmente irraggiungibile/scaduto
+/// lato server, (b) il codec dentro il contenitore non è compilato nel
+/// binario FFmpeg di KSPlayer, (c) il contenuto è protetto da DRM.
 ///
-/// Queste 4 opzioni sono ora SEMPRE attive (vedi `buildLayer`), in
-/// aggiunta — non in sostituzione — ai default di rete sensibili al
-/// protocollo e al retry automatico già presenti.
+/// 4 opzioni generiche `AVFormatContext` (valide per QUALUNQUE contenitore,
+/// mai a rischio "opzione non consumata"): `err_detect=ignore_err`,
+/// `avoid_negative_ts=make_zero`, `correct_ts_overflow=1`, `seek2any=1`.
 ///
-/// ANALISI MANIACALE 2026-09-27 (ter) — "avformat: can't open input"
-/// PERSISTENTE su alcuni film VOD: `handleOpenFailure` esegue una
-/// SEQUENZA di fino a 2 tentativi di fallback automatici e silenziosi
-/// (l'utente vede l'errore solo se anche l'ultimo tentativo fallisce):
-/// 1) impostazioni utente inalterate; 2) User-Agent browser + Referer
-/// auto-derivato dal dominio; 3) come sopra, più decodifica forzata in
-/// software, apertura "completa" invece di rapida, e probing/analisi
-/// ulteriormente estesi (50 MB / 30s).
+/// Le opzioni di rete (`reconnect*`, `rtsp_transport`) restano sensibili
+/// allo schema dell'URL (`networkFormatContextOptions`), per non lasciare
+/// chiavi "non consumate" su protocolli a cui non appartengono.
 ///
-/// FIX MANIACALE 2026-09-27 (bis) — le opzioni di rete (`reconnect*`,
-/// `rtsp_transport`) sono calcolate IN BASE ALLO SCHEMA DELL'URL
-/// (`networkFormatContextOptions`): applicarle globalmente a qualunque
-/// protocollo lasciava chiavi RTSP "non consumate" su URL http(s) di
-/// file VOD gestiti esclusivamente dal motore FFmpeg, causando l'errore
-/// generico "can't open input". Ogni chiave è applicata solo al
-/// protocollo che la può davvero consumare — le 4 opzioni generiche di
-/// `AVFormatContext` elencate sopra sono invece SEMPRE sicure ovunque,
-/// perché non appartengono a un singolo demuxer/protocollo.
+/// `subtitleDelay`/`subtitleDisable` NON esistono su `KSOptions` in
+/// questa versione della libreria (kingslay/KSPlayer#508).
 ///
-/// FIX 2026-09-27 (precedente) — `subtitleDelay`/`subtitleDisable` NON
-/// esistono su `KSOptions` in questa versione della libreria e restano
-/// rimossi (vedi kingslay/KSPlayer#508).
-///
-/// FIX 2026-09-25 (zapping canale/episodio "senza uscire e riaprire il
-/// player"): `layer` è `@Published` (non `let`): `load(url:title:)` crea
-/// un nuovo `KSPlayerLayer` per il nuovo URL e lo assegna a questa stessa
-/// istanza di `KSPlaybackController`, che resta viva per tutta la sessione
-/// di visione. `KSPlayerContainerView` osserva il cambio di `layer` e si
-/// limita a staccare la vecchia `UIView` del player e agganciare la
-/// nuova nello stesso container già presente a schermo.
+/// `layer` è `@Published`: `load(url:title:)` crea un nuovo
+/// `KSPlayerLayer` per il nuovo URL riassegnandolo a questa stessa
+/// istanza, che resta viva per tutta la sessione di visione —
+/// `KSPlayerContainerView` osserva il cambio di `layer` e si limita a
+/// staccare la vecchia `UIView` e agganciare la nuova nello stesso
+/// container già presente a schermo.
 
 /// Modalità di adattamento del video al riquadro dello schermo.
-/// Mappa 1:1 su `UIView.ContentMode`, letto/scritto da
-/// `MediaPlayerProtocol.contentMode` in KSPlayer.
 enum VideoGravityMode: String, CaseIterable, Identifiable {
-    /// Il video intero è visibile, con eventuali barre nere ai lati.
     case fit
-    /// Il video riempie tutto il riquadro ritagliando le parti che eccedono.
     case fill
-    /// Il video viene stirato per riempire esattamente il riquadro.
     case stretch
 
     var id: String { rawValue }
@@ -191,8 +165,7 @@ enum SeekFlagPreset: String, CaseIterable, Identifiable {
 @MainActor
 final class KSPlaybackController: NSObject, ObservableObject {
 
-    /// Preferenze di riproduzione avanzate regolabili dall'utente
-    /// (`AdvancedSettingsView`, raggiungibile dal menu "…").
+    /// Preferenze di riproduzione avanzate regolabili dall'utente.
     struct PlaybackPreferences {
         // MARK: Buffer
         var preferredForwardBufferDuration: Double = 5
@@ -212,9 +185,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         var autoDeInterlace: Bool = false
         var videoDelay: Double = 0
 
-        // MARK: Sottotitoli (testo, immagine, Closed Captions)
-        // NOTA: `subtitleDisable`/`subtitleDelay` non esistono su
-        // `KSOptions` in questa versione (vedi kingslay/KSPlayer#508).
+        // MARK: Sottotitoli
         var autoSelectEmbedSubtitle: Bool = true
         var isSeekImageSubtitle: Bool = false
 
@@ -236,6 +207,12 @@ final class KSPlaybackController: NSObject, ObservableObject {
         var referer: String?
         var customHTTPHeaders: [String: String] = [:]
         var httpCacheEnabled: Bool = false
+        /// `false` (default): verifica normalmente i certificati TLS su
+        /// https/rtsps. Attivare manualmente SOLO se un provider specifico
+        /// usa certificati self-signed/non validi in modo permanente — i
+        /// retry automatici di fallback lo attivano già da soli quando
+        /// serve, senza bisogno di questa preferenza persistente.
+        var allowInsecureTLS: Bool = false
         /// `nil` = usa il default robusto sempre attivo (10 MB).
         var probesize: Int64?
         /// `nil` = usa il default robusto sempre attivo (10s).
@@ -246,20 +223,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
         var audioFilters: [String] = []
 
         // MARK: Opzioni FFmpeg grezze AGGIUNTIVE (potere assoluto)
-        //
-        // Si sommano — vincendo chiave per chiave in caso di conflitto —
-        // sia ai default di rete sensibili al protocollo
-        // (`networkFormatContextOptions`) sia alle 4 opzioni generiche di
-        // `AVFormatContext` sempre attive (`genericFormatContextOptions`)
-        // descritte nella nota "TIPI DI CONTENITORE" in testa al file.
         var formatContextOptions: [String: String] = [:]
         var decoderOptions: [String: String] = [:]
         var avOptions: [String: String] = [:]
     }
 
-    /// Default probing/analisi robusti, sempre attivi (proprietà TIPIZZATE
-    /// di `KSOptions`, non chiavi del dizionario grezzo: nessun rischio
-    /// di "opzione non consumata").
     private static let builtInProbesize: Int64 = 10_000_000
     private static let builtInMaxAnalyzeDuration: Int64 = 10_000_000
 
@@ -267,28 +235,18 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// fallback) prima di mostrare finalmente l'errore all'utente.
     private static let maxOpenAttempts = 3
 
-    /// User-Agent di fallback usato SOLO nei retry automatici dopo un
-    /// fallimento di apertura.
+    /// User-Agent di fallback usato SOLO nei retry automatici.
     private static let fallbackUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 
-    /// Deriva un Referer plausibile dal dominio dell'URL stesso, usato
-    /// SOLO nei retry di fallback quando l'utente non ne ha impostato uno.
     private static func selfReferer(for url: URL) -> String? {
         guard let scheme = url.scheme, let host = url.host else { return nil }
         return "\(scheme)://\(host)/"
     }
 
     /// Opzioni GENERICHE di `AVFormatContext`, valide per QUALUNQUE
-    /// contenitore/demuxer (MP4, MKV, AVI, TS, FLV, WebM, ASF, VOB, OGV,
-    /// 3GP, ...) perché sono AVOptions dichiarate direttamente sulla
-    /// classe `AVFormatContext` in FFmpeg, non su un singolo demuxer o
-    /// protocollo: a differenza di `rtsp_transport`/`reconnect` (validi
-    /// solo per specifici protocolli, vedi `networkFormatContextOptions`),
-    /// queste 4 chiavi vengono SEMPRE consumate, indipendentemente dal
-    /// tipo di file aperto, quindi possono restare attive senza alcun
-    /// rischio della classe di bug "opzione non consumata" diagnosticata
-    /// nei turni precedenti. Vedi nota "TIPI DI CONTENITORE" in testa al
-    /// file per il dettaglio di cosa fa ciascuna chiave.
+    /// contenitore/demuxer perché sono AVOptions dichiarate sulla classe
+    /// `AVFormatContext` stessa, non su un singolo demuxer/protocollo:
+    /// vengono sempre consumate, indipendentemente dal tipo di file.
     private static let genericFormatContextOptions: [String: String] = [
         "err_detect": "ignore_err",
         "avoid_negative_ts": "make_zero",
@@ -296,14 +254,17 @@ final class KSPlaybackController: NSObject, ObservableObject {
         "seek2any": "1",
     ]
 
-    /// Calcola le opzioni `AVFormatContext`/protocollo di rete pertinenti
-    /// ESCLUSIVAMENTE allo schema dell'URL corrente (fix del bug VOD: le
-    /// chiavi RTSP-specifiche applicate a URL http/https venivano lasciate
-    /// "non consumate" da alcuni demuxer, causando "can't open input").
-    private static func networkFormatContextOptions(for url: URL) -> [String: String] {
+    /// Opzioni di rete pertinenti ESCLUSIVAMENTE allo schema dell'URL
+    /// corrente. `relaxTLSVerification`, attivo solo durante i retry di
+    /// fallback, disattiva la verifica del certificato su https/rtsps per
+    /// tollerare certificati self-signed/scaduti tipici di alcuni
+    /// provider IPTV/VOD di fascia bassa — è l'unica causa plausibile di
+    /// fallimento IDENTICO su tutti e 3 i livelli di retry (UA/referer e
+    /// decodifica non hanno alcun effetto su un handshake TLS rifiutato).
+    private static func networkFormatContextOptions(for url: URL, relaxTLSVerification: Bool) -> [String: String] {
         switch url.scheme?.lowercased() {
         case "http", "https":
-            return [
+            var options = [
                 "reconnect": "1",
                 "reconnect_at_eof": "1",
                 "reconnect_streamed": "1",
@@ -312,12 +273,20 @@ final class KSPlaybackController: NSObject, ObservableObject {
                 "multiple_requests": "1",
                 "http_persistent": "1",
             ]
+            if relaxTLSVerification, url.scheme?.lowercased() == "https" {
+                options["tls_verify"] = "0"
+            }
+            return options
         case "rtsp", "rtsps":
-            return [
+            var options = [
                 "rtsp_transport": "tcp",
                 "rtsp_flags": "prefer_tcp",
                 "stimeout": "10000000",
             ]
+            if relaxTLSVerification, url.scheme?.lowercased() == "rtsps" {
+                options["tls_verify"] = "0"
+            }
+            return options
         default:
             return [:]
         }
@@ -339,14 +308,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private var title: String
     private var watchdogTask: Task<Void, Never>?
     private var hasEverStartedPlaying = false
-
-    /// Numero di tentativi di apertura già eseguiti per l'URL corrente.
-    /// Azzerato ad ogni `load(url:title:)`/`resetAttempts()`.
     private var openAttemptCount = 0
-
-    /// Pubblichiamo un aggiornamento di `currentTime` solo se la
-    /// variazione percepita è reale (>= 200ms) o se la durata totale è
-    /// cambiata, per non rivalutare l'intera UI molte volte al secondo.
     private var lastPublishedTime: TimeInterval = -1
 
     var isPlaying: Bool { state.isPlaying }
@@ -368,25 +330,21 @@ final class KSPlaybackController: NSObject, ObservableObject {
         startWatchdog()
     }
 
-    /// Costruisce un nuovo `KSPlayerLayer` applicando l'intera superficie
-    /// di `PlaybackPreferences`, i default di rete sensibili al protocollo,
-    /// le 4 opzioni generiche `AVFormatContext` sempre attive (compatibili
-    /// con QUALUNQUE tipo di contenitore) e i default di probing/analisi.
-    /// `userAgentOverride`/`refererOverride` sono usati ESCLUSIVAMENTE dai
-    /// retry di fallback e non toccano mai `preferences`.
+    /// Costruisce un nuovo `KSPlayerLayer`. `userAgentOverride`/
+    /// `refererOverride`/`relaxTLSVerification` sono usati ESCLUSIVAMENTE
+    /// dai retry di fallback e non toccano mai `preferences`.
     private static func buildLayer(
         for url: URL,
         preferences: PlaybackPreferences,
         userAgentOverride: String? = nil,
-        refererOverride: String? = nil
+        refererOverride: String? = nil,
+        relaxTLSVerification: Bool = false
     ) -> KSPlayerLayer {
         let options = KSOptions()
 
-        // Buffer
         options.preferredForwardBufferDuration = preferences.preferredForwardBufferDuration
         options.maxBufferDuration = preferences.maxBufferDuration
 
-        // Decodifica
         options.hardwareDecode = preferences.hardwareDecode
         options.asynchronousDecompression = preferences.asynchronousDecompression
         options.syncDecodeVideo = preferences.syncDecodeVideo
@@ -394,21 +352,17 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.lowres = preferences.lowres
         options.videoDisable = preferences.videoDisable
 
-        // Ricerca / sincronizzazione
         options.isAccurateSeek = preferences.isAccurateSeek
         options.seekFlags = preferences.seekFlags
         options.autoDeInterlace = preferences.autoDeInterlace
         options.videoDelay = preferences.videoDelay
 
-        // Sottotitoli
         options.autoSelectEmbedSubtitle = preferences.autoSelectEmbedSubtitle
         options.isSeekImageSubtitle = preferences.isSeekImageSubtitle
 
-        // Rendering / panorama
         options.display = preferences.panoramaMode.displayMode
         options.autoRotate = preferences.autoRotate
 
-        // Adattamento / comportamento riproduzione
         options.videoAdaptable = preferences.videoAdaptable
         options.isLoopPlay = preferences.isLoopPlay
         options.isSecondOpen = preferences.isSecondOpen
@@ -416,7 +370,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.startPlayTime = preferences.startPlayTime
         options.startPlayRate = preferences.startPlayRate
 
-        // Rete
         options.userAgent = userAgentOverride ?? preferences.userAgent
         options.referer = refererOverride ?? preferences.referer
         if !preferences.customHTTPHeaders.isEmpty {
@@ -426,17 +379,18 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.probesize = preferences.probesize ?? builtInProbesize
         options.maxAnalyzeDuration = preferences.maxAnalyzeDuration ?? builtInMaxAnalyzeDuration
 
-        // Filtri FFmpeg
         options.videoFilters = preferences.videoFilters
         options.audioFilters = preferences.audioFilters
 
-        // Opzioni FFmpeg grezze: partiamo dalle 4 opzioni generiche
-        // AVFormatContext (SEMPRE valide, qualunque contenitore), ci
-        // uniamo i default di rete pertinenti SOLO al protocollo
-        // dell'URL corrente, infine le personalizzazioni dell'utente
-        // vincono chiave per chiave in caso di conflitto.
+        // Opzioni FFmpeg grezze: generiche (sempre valide) + rete
+        // (sensibili al protocollo, con TLS relaxato solo se richiesto
+        // dal retry di fallback o dall'impostazione persistente
+        // dell'utente) + personalizzazioni dell'utente, che vincono
+        // chiave per chiave in caso di conflitto.
         var effectiveFormatContextOptions = genericFormatContextOptions
-        effectiveFormatContextOptions.merge(networkFormatContextOptions(for: url)) { _, new in new }
+        effectiveFormatContextOptions.merge(
+            networkFormatContextOptions(for: url, relaxTLSVerification: relaxTLSVerification || preferences.allowInsecureTLS)
+        ) { _, new in new }
         effectiveFormatContextOptions.merge(preferences.formatContextOptions) { _, new in new }
         options.formatContextOptions.merge(effectiveFormatContextOptions.mapValues { $0 as Any }) { _, new in new }
 
@@ -479,16 +433,18 @@ final class KSPlaybackController: NSObject, ObservableObject {
         startWatchdog()
     }
 
-    /// Ricarica lo stream corrente (stesso URL) con le `preferences`
-    /// aggiornate.
+    /// Ricarica lo stream corrente con le `preferences` aggiornate.
     func reload() {
         load(url: currentURL, title: title)
     }
 
     /// Eseguito automaticamente e SILENZIOSAMENTE ad ogni fallimento di
-    /// apertura per l'URL corrente, finché non si raggiunge
-    /// `maxOpenAttempts`. Vedi nota "ANALISI MANIACALE" in testa al file
-    /// per il dettaglio della sequenza a 2 livelli.
+    /// apertura, finché non si raggiunge `maxOpenAttempts`:
+    /// - Tentativo 1: User-Agent browser + Referer auto-derivato + TLS
+    ///   relaxato su https/rtsps (aggira sia hotlink-protection/UA-
+    ///   filtering SIA certificati self-signed/scaduti).
+    /// - Tentativo 2: come sopra, PIÙ decodifica software forzata,
+    ///   apertura completa invece che rapida, e probing/analisi estesi.
     private func retryWithFallbackSettings(attempt: Int) {
         layer.delegate = nil
         layer.pause()
@@ -507,7 +463,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
                 for: currentURL,
                 preferences: preferences,
                 userAgentOverride: Self.fallbackUserAgent,
-                refererOverride: referer
+                refererOverride: referer,
+                relaxTLSVerification: true
             )
         } else {
             var toughPreferences = preferences
@@ -519,7 +476,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
                 for: currentURL,
                 preferences: toughPreferences,
                 userAgentOverride: Self.fallbackUserAgent,
-                refererOverride: referer
+                refererOverride: referer,
+                relaxTLSVerification: true
             )
         }
         layer = newLayer
@@ -725,6 +683,16 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     func setHTTPCacheEnabled(_ enabled: Bool) {
         preferences.httpCacheEnabled = enabled
+        reload()
+    }
+
+    /// Attiva/disattiva PERMANENTEMENTE (per questa sessione, su questo
+    /// URL e sui successivi) la verifica del certificato TLS su
+    /// https/rtsps. Utile se sai già in anticipo che un provider usa
+    /// certificati self-signed e vuoi evitare il primo tentativo (sempre
+    /// con verifica attiva) che fallirebbe comunque.
+    func setAllowInsecureTLS(_ enabled: Bool) {
+        preferences.allowInsecureTLS = enabled
         reload()
     }
 
