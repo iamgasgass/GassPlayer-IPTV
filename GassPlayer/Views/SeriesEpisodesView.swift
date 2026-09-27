@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Scheda dettaglio di una serie TV, con allineamento orizzontale coerente e identico al video ("I Cesaroni")
+/// Scheda dettaglio di una serie TV a scala 1:1 identica al video di riferimento
 struct SeriesEpisodesView: View {
     let credentials: XtreamCredentials
     let seriesId: Int
@@ -111,7 +111,7 @@ struct SeriesEpisodesView: View {
             Text("Caricamento serie...").font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(uiColor: .systemBackground))
+        .background(Color.black)
     }
 
     private func errorView(_ message: String) -> some View {
@@ -122,7 +122,7 @@ struct SeriesEpisodesView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(uiColor: .systemBackground))
+        .background(Color.black)
     }
 
     // MARK: - Contenuto principale
@@ -130,7 +130,7 @@ struct SeriesEpisodesView: View {
     private func detailContent(_ info: XtreamSeriesInfo) -> some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Header a pieno schermo
+                // Header compatto
                 MediaHeroHeader(
                     title: seriesName,
                     logoURL: detail.logoURL,
@@ -140,7 +140,7 @@ struct SeriesEpisodesView: View {
                 )
 
                 // Blocco centrale
-                VStack(spacing: 16) {
+                VStack(spacing: 12) {
                     // Riga voto / anno / generi
                     MediaMetaRow(
                         ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
@@ -159,44 +159,44 @@ struct SeriesEpisodesView: View {
                     // Trama
                     if let overview = detail.overview, !overview.isEmpty {
                         Text(overview)
-                            .font(.subheadline)
+                            .font(.system(size: 13))
                             .foregroundStyle(.primary.opacity(0.92))
-                            .lineSpacing(3)
+                            .lineSpacing(2.5)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                     } else if isLoadingDetail {
                         ProgressView()
                             .frame(maxWidth: .infinity)
-                            .padding(.top, 8)
+                            .padding(.top, 6)
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 14)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
 
-                // Sezione Valutazioni (con scroll edge-to-edge)
+                // Sezione Valutazioni
                 MediaRatingsSection(ratings: detail.ratings)
-                    .padding(.top, 18)
+                    .padding(.top, 14)
 
-                // Sezione Cast (con scroll edge-to-edge)
+                // Sezione Cast
                 MediaCastSection(cast: detail.cast)
-                    .padding(.top, 18)
+                    .padding(.top, 14)
 
                 // Sezione Episodi e Stagioni
                 episodesSection(info)
-                    .padding(.top, 20)
-                    .padding(.bottom, 40)
+                    .padding(.top, 16)
+                    .padding(.bottom, 36)
             }
         }
         .scrollIndicators(.hidden)
         .ignoresSafeArea(edges: .top)
-        .background(Color(uiColor: .systemBackground))
+        .background(Color.black)
     }
 
     // MARK: - Riga icone
 
     private var iconRow: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             MediaIconButton(
                 systemImage: isFavorite ? "heart.fill" : "heart",
                 tint: isFavorite ? .red : .white,
@@ -230,31 +230,31 @@ struct SeriesEpisodesView: View {
     // MARK: - Sezione episodi
 
     private func episodesSection(_ info: XtreamSeriesInfo) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("EPISODI")
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 16)
 
-            // Selettore stagioni (Pillole / Chip con padding orizzontale)
+            // Selettore stagioni (Pillole / Chip)
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     ForEach(info.sortedSeasonNumbers, id: \.self) { season in
                         seasonChip(season)
                     }
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 16)
             }
 
             // Lista episodi
             if let selectedSeason {
-                VStack(spacing: 16) {
+                VStack(spacing: 14) {
                     ForEach(info.episodes(forSeason: selectedSeason)) { episode in
                         episodeRow(episode, season: selectedSeason)
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 4)
+                .padding(.horizontal, 16)
+                .padding(.top, 2)
             }
         }
     }
@@ -266,16 +266,16 @@ struct SeriesEpisodesView: View {
             withAnimation(.snappy(duration: 0.16)) { selectedSeason = season }
         } label: {
             Text("Stagione \(season)")
-                .font(.system(size: 13, weight: .semibold))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
                 .foregroundStyle(isSelected ? Color.white : Color.secondary)
                 .background(
                     isSelected ? Color.white.opacity(0.18) : Color.white.opacity(0.06),
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                 )
                 .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .strokeBorder(isSelected ? Color.white.opacity(0.2) : Color.clear, lineWidth: 0.5)
                 }
         }
@@ -287,27 +287,27 @@ struct SeriesEpisodesView: View {
             selectedSeason = season
             selectedEpisode = episode
         } label: {
-            HStack(alignment: .top, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
                 episodeThumbnail(episode)
-                    .frame(width: 120, height: 72)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .frame(width: 104, height: 60)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(episode.code(seasonFallback: season))
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.secondary)
 
                     Text(episode.title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(2)
 
                     if let plot = episode.plot, !plot.isEmpty {
                         Text(plot)
-                            .font(.system(size: 11))
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
-                            .lineSpacing(2)
+                            .lineSpacing(1.5)
                     }
                 }
                 Spacer(minLength: 0)
@@ -338,7 +338,7 @@ struct SeriesEpisodesView: View {
             .fill(Color.white.opacity(0.08))
             .overlay {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 14))
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
     }

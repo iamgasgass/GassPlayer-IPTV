@@ -6,7 +6,7 @@ private struct MoviePlaybackTarget: Identifiable {
     let title: String
 }
 
-/// Scheda dettaglio di un VOD (Film) con allineamento edge-to-edge perfetto
+/// Scheda dettaglio Film a scala 1:1 identica al video di riferimento
 struct MovieDetailView: View {
     let credentials: XtreamCredentials
     let stream: XtreamStream
@@ -45,7 +45,7 @@ struct MovieDetailView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Header a tutto schermo
+                // Header compatto
                 MediaHeroHeader(
                     title: stream.name,
                     logoURL: detail.logoURL,
@@ -54,8 +54,8 @@ struct MovieDetailView: View {
                     onClose: { dismiss() }
                 )
 
-                // Blocco centrale con padding standard (20pt)
-                VStack(spacing: 16) {
+                // Blocco centrale
+                VStack(spacing: 12) {
                     // Riga voto / durata / generi
                     MediaMetaRow(
                         ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
@@ -74,34 +74,34 @@ struct MovieDetailView: View {
                     // Trama / Plot
                     if let overview = detail.overview, !overview.isEmpty {
                         Text(overview)
-                            .font(.subheadline)
+                            .font(.system(size: 13))
                             .foregroundStyle(.primary.opacity(0.92))
-                            .lineSpacing(3)
+                            .lineSpacing(2.5)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                     } else if isLoadingDetail {
                         ProgressView()
                             .frame(maxWidth: .infinity)
-                            .padding(.top, 8)
+                            .padding(.top, 6)
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 14)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
 
-                // Sezione Valutazioni (scorre a filo schermo)
+                // Sezione Valutazioni
                 MediaRatingsSection(ratings: detail.ratings)
-                    .padding(.top, 18)
+                    .padding(.top, 14)
 
-                // Sezione Cast (scorre a filo schermo)
+                // Sezione Cast
                 MediaCastSection(cast: detail.cast)
-                    .padding(.top, 18)
-                    .padding(.bottom, 40)
+                    .padding(.top, 14)
+                    .padding(.bottom, 36)
             }
         }
         .scrollIndicators(.hidden)
         .ignoresSafeArea(edges: .top)
-        .background(Color(uiColor: .systemBackground))
+        .background(Color.black)
         .task(id: stream.streamId) {
             await loadDetail()
         }
@@ -132,7 +132,7 @@ struct MovieDetailView: View {
     // MARK: - Riga icone
 
     private var iconRow: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             MediaIconButton(
                 systemImage: isFavorite ? "heart.fill" : "heart",
                 tint: isFavorite ? .red : .white,
