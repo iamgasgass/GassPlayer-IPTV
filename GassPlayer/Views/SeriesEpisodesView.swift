@@ -1,23 +1,12 @@
 import SwiftUI
 
-/// Scheda dettaglio di una serie, aperta al tap sulla locandina. Stesso
-/// nome/firma pubblica di sempre (`credentials`, `seriesId`, `seriesName`)
-/// così tutti i punti d'ingresso esistenti (griglia VOD/Serie, ricerca
-/// globale) continuano a funzionare senza modifiche: solo il contenuto è
-/// stato riscritto per riprodurre fedelmente il video dimostrativo "I
-/// Cesaroni" — hero con backdrop/logo, voto/anno/genere, pulsante
-/// "Riproduci Stagione X: Episodio Y", riga preferiti/muto/download/altre
-/// fonti, trama, valutazioni, cast e, sotto, i tab stagione con la lista
-/// episodi (miniatura, codice SxxExx, titolo, trama).
+/// Scheda dettaglio di una serie TV, con layout fedele al video dimostrativo ("I Cesaroni"):
+/// hero a pieno schermo con logo TMDB, riga rating/anno/genere, pulsante riproduzione con ripresa episodio,
+/// barra icone (preferiti, muto, download, altre fonti), trama, valutazioni, cast a scorrimento e lista episodi con schede stagione.
 struct SeriesEpisodesView: View {
     let credentials: XtreamCredentials
     let seriesId: Int
     let seriesName: String
-    /// Copertina già nota dal catalogo (locandina Xtream), usata come
-    /// sfondo hero finché il dettaglio (Xtream/TMDB) non è ancora arrivato
-    /// e come riserva se nessuna delle due fonti fornisce un backdrop.
-    /// Parametro opzionale con default `nil`: non richiede di toccare i
-    /// chiamanti esistenti che non lo passano.
     var fallbackCoverURLString: String? = nil
 
     private struct AlternateSeriesTarget: Identifiable {
@@ -84,11 +73,6 @@ struct SeriesEpisodesView: View {
                         { selectedEpisode = target }
                     }
                 )
-                // Nessun `.id(episode.id)`: il controller carica il nuovo
-                // episodio in-place nella stessa `PlayerView` invece di
-                // ricreare l'intera vista (e il player sottostante) ad
-                // ogni avanzamento — comportamento invariato rispetto a
-                // prima di questa riscrittura.
                 .task(id: episode.id) {
                     recordRecentlyWatched(episode: episode, url: url)
                 }
@@ -129,7 +113,7 @@ struct SeriesEpisodesView: View {
             Text("Caricamento serie...").font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationBarTitleDisplayMode(.inline)
+        .background(Color(uiColor: .systemBackground))
     }
 
     private func errorView(_ message: String) -> some View {
@@ -140,8 +124,7 @@ struct SeriesEpisodesView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle(seriesName)
-        .navigationBarTitleDisplayMode(.inline)
+        .background(Color(uiColor: .systemBackground))
     }
 
     // MARK: - Contenuto principale
@@ -149,6 +132,7 @@ struct SeriesEpisodesView: View {
     private func detailContent(_ info: XtreamSeriesInfo) -> some View {
         ScrollView {
             VStack(spacing: 0) {
+                // Header a pieno schermo
                 MediaHeroHeader(
                     title: seriesName,
                     logoURL: detail.logoURL,
@@ -157,24 +141,28 @@ struct SeriesEpisodesView: View {
                     onClose: { dismiss() }
                 )
 
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Riga voto / anno / generi
                     MediaMetaRow(
                         ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
                         secondaryText: detail.year,
                         genres: detail.genres
                     )
-                    .frame(maxWidth: .infinity)
 
+                    // Pulsante Riproduci Stagione X: Episodio Y
                     MediaPlayButton(title: playButtonTitle) {
                         playResumeOrFirstEpisode(info)
                     }
 
+                    // Riga icone
                     iconRow
 
+                    // Trama
                     if let overview = detail.overview, !overview.isEmpty {
                         Text(overview)
                             .font(.subheadline)
-                            .foregroundStyle(.primary.opacity(0.9))
+                            .foregroundStyle(.primary.opacity(0.92))
+                            .lineSpacing(3)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
@@ -184,19 +172,25 @@ struct SeriesEpisodesView: View {
                             .padding(.top, 8)
                     }
 
+                    // Sezione Valutazioni
                     MediaRatingsSection(ratings: detail.ratings)
+                        .padding(.top, 4)
 
+                    // Sezione Cast
                     MediaCastSection(cast: detail.cast)
+                        .padding(.top, 4)
 
+                    // Sezione Episodi e Stagioni
                     episodesSection(info)
+                        .padding(.top, 8)
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 16)
-                .padding(.bottom, 32)
+                .padding(.top, 14)
+                .padding(.bottom, 40)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(maxWidth: .infinity)
+        .scrollIndicators(.hidden)
         .ignoresSafeArea(edges: .top)
         .background(Color(uiColor: .systemBackground))
     }
@@ -207,7 +201,7 @@ struct SeriesEpisodesView: View {
         HStack(spacing: 12) {
             MediaIconButton(
                 systemImage: isFavorite ? "heart.fill" : "heart",
-                tint: isFavorite ? .red : .primary,
+                tint: isFavorite ? .red : .white,
                 accessibilityLabel: isFavorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"
             ) {
                 contentManagement.toggleFavorite(id: favoriteID, title: seriesName, kind: XtreamStreamKind.series.rawValue)
@@ -222,7 +216,7 @@ struct SeriesEpisodesView: View {
 
             MediaIconButton(
                 systemImage: downloadProgress == 1 ? "checkmark.circle.fill" : "arrow.down.circle",
-                tint: downloadProgress == 1 ? .green : .primary,
+                tint: downloadProgress == 1 ? .green : .white,
                 progress: downloadProgress,
                 accessibilityLabel: "Scarica episodio"
             ) {
@@ -238,25 +232,28 @@ struct SeriesEpisodesView: View {
     // MARK: - Sezione episodi
 
     private func episodesSection(_ info: XtreamSeriesInfo) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             Text("EPISODI")
-                .font(.caption.weight(.bold))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.secondary)
 
+            // Selettore stagioni (Pillole / Chip)
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
                     ForEach(info.sortedSeasonNumbers, id: \.self) { season in
                         seasonChip(season)
                     }
                 }
             }
 
+            // Lista episodi
             if let selectedSeason {
-                VStack(spacing: 14) {
+                VStack(spacing: 16) {
                     ForEach(info.episodes(forSeason: selectedSeason)) { episode in
                         episodeRow(episode, season: selectedSeason)
                     }
                 }
+                .padding(.top, 4)
             }
         }
     }
@@ -268,13 +265,20 @@ struct SeriesEpisodesView: View {
             withAnimation(.snappy(duration: 0.16)) { selectedSeason = season }
         } label: {
             Text("Stagione \(season)")
-                .font(.subheadline.weight(.semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .padding(.horizontal, 16)
-                .padding(.vertical, 9)
+                .padding(.vertical, 8)
+                .foregroundStyle(isSelected ? Color.white : Color.secondary)
+                .background(
+                    isSelected ? Color.white.opacity(0.18) : Color.white.opacity(0.06),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(isSelected ? Color.white.opacity(0.2) : Color.clear, lineWidth: 0.5)
+                }
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .background(isSelected ? Color.accentColor : Color.primary.opacity(0.08), in: Capsule())
     }
 
     private func episodeRow(_ episode: XtreamSeriesInfo.Episode, season: Int) -> some View {
@@ -282,26 +286,33 @@ struct SeriesEpisodesView: View {
             selectedSeason = season
             selectedEpisode = episode
         } label: {
-            HStack(alignment: .top, spacing: 12) {
-                episodeThumbnail(episode)
-                    .frame(width: 112, height: 64)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 8) {
+                // Anteprima miniatura grande o affiancata
+                HStack(alignment: .top, spacing: 14) {
+                    episodeThumbnail(episode)
+                        .frame(width: 120, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(episode.code(seasonFallback: season)) · \(episode.title)")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(2)
-
-                    if let plot = episode.plot, !plot.isEmpty {
-                        Text(plot)
-                            .font(.caption)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(episode.code(seasonFallback: season))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                }
 
-                Spacer(minLength: 0)
+                        Text(episode.title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+
+                        if let plot = episode.plot, !plot.isEmpty {
+                            Text(plot)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .lineSpacing(2)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
             }
             .contentShape(Rectangle())
         }
@@ -326,19 +337,16 @@ struct SeriesEpisodesView: View {
 
     private var episodeThumbnailPlaceholder: some View {
         Rectangle()
-            .fill(.ultraThinMaterial)
+            .fill(Color.white.opacity(0.08))
             .overlay {
-                Image(systemName: "play.rectangle.fill")
+                Image(systemName: "play.fill")
+                    .font(.system(size: 14))
                     .foregroundStyle(.secondary)
             }
     }
 
     // MARK: - Riproduzione / ripresa
 
-    /// Ultimo episodio di questa serie registrato in "Continua a
-    /// guardare", se presente: usato per etichettare e avviare il
-    /// pulsante di riproduzione principale su "Stagione X: Episodio Y"
-    /// come nel video, invece di ripartire sempre dal primo episodio.
     private var resumeEpisode: (season: Int, episode: XtreamSeriesInfo.Episode)? {
         guard let info = seriesInfo else { return nil }
 
@@ -356,7 +364,6 @@ struct SeriesEpisodesView: View {
                 return (season, episode)
             }
         }
-
         return nil
     }
 
@@ -364,13 +371,11 @@ struct SeriesEpisodesView: View {
         if let resume = resumeEpisode {
             return "Riproduci Stagione \(resume.season): Episodio \(resume.episode.episodeNum)"
         }
-
         if let info = seriesInfo,
            let season = info.sortedSeasonNumbers.first,
            let episode = info.episodes(forSeason: season).first {
             return "Riproduci Stagione \(season): Episodio \(episode.episodeNum)"
         }
-
         return "Riproduci"
     }
 
@@ -380,7 +385,6 @@ struct SeriesEpisodesView: View {
             selectedEpisode = resume.episode
             return
         }
-
         guard let season = info.sortedSeasonNumbers.first,
               let episode = info.episodes(forSeason: season).first else { return }
 
@@ -389,7 +393,7 @@ struct SeriesEpisodesView: View {
     }
 
     private func startDownloadOfNextEpisodeIfNeeded() {
-        guard downloadId == nil else { return }
+        guard downloadId == nil else { return nil }
 
         let target = resumeEpisode?.episode ?? seriesInfo.flatMap { info in
             info.sortedSeasonNumbers.first.flatMap { info.episodes(forSeason: $0).first }
@@ -408,10 +412,6 @@ struct SeriesEpisodesView: View {
         return service.episodeStreamURL(episodeId: episode.streamId, ext: ext)
     }
 
-    /// Episodio adiacente nella stagione attualmente selezionata, ordinato
-    /// per numero di episodio. `nil` ai bordi della stagione, così i
-    /// pulsanti precedente/successivo nel player si nascondono da soli
-    /// sul primo/ultimo episodio invece di restare inattivi.
     private func adjacentEpisode(to episode: XtreamSeriesInfo.Episode, offset: Int) -> XtreamSeriesInfo.Episode? {
         guard let season = selectedSeason, let info = seriesInfo else { return nil }
 
@@ -442,7 +442,8 @@ struct SeriesEpisodesView: View {
     // MARK: - Caricamento
 
     private func loadSeriesInfo() async {
-        isLoading = true; errorMessage = nil
+        isLoading = true
+        errorMessage = nil
         let repository = CachedXtreamRepository(credentials: credentials)
         do {
             let info = try await repository.seriesInfo(seriesId: seriesId)
@@ -452,7 +453,6 @@ struct SeriesEpisodesView: View {
                 errorMessage = "Nessun episodio trovato per questa serie."
             }
             isLoading = false
-
             await loadDetail(info)
         } catch let error as XtreamError {
             errorMessage = error.errorDescription

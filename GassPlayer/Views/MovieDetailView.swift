@@ -1,20 +1,12 @@
 import SwiftUI
 
-/// Riproduzione in corso dalla scheda dettaglio: incapsula url+titolo così
-/// da poterla usare come `item` di un `fullScreenCover`, sia per il film
-/// aperto direttamente sia per un risultato scelto da "Altre fonti".
 private struct MoviePlaybackTarget: Identifiable {
     let id = UUID()
     let url: URL
     let title: String
 }
 
-/// Scheda dettaglio di un VOD, aperta al tap sulla locandina nella
-/// griglia. Riproduce esattamente il layout del video dimostrativo
-/// "Blow": hero con backdrop e logo TMDB, voto/durata/genere, pulsante
-/// "Riproduci il film", riga preferiti/muto anteprima/download/altre
-/// fonti, trama, sezione "VALUTAZIONI" (TMDB/Critica/Trakt/IMDb/
-/// Metacritic, a seconda delle chiavi API configurate) e sezione "CAST".
+/// Scheda dettaglio di un VOD (Film) conforme al layout del video
 struct MovieDetailView: View {
     let credentials: XtreamCredentials
     let stream: XtreamStream
@@ -32,12 +24,6 @@ struct MovieDetailView: View {
     @State private var showAlternateSources = false
     @State private var downloadId: UUID?
 
-    /// Cosmetico/preparatorio: l'hero mostra solo un'immagine statica (né
-    /// Xtream né TMDB offrono qui un trailer riproducibile direttamente da
-    /// AVPlayer, solo eventuali chiavi YouTube), quindi questo pulsante non
-    /// ha ancora un audio reale da mutare. Resta comunque presente,
-    /// identico al video, come stato pronto per una futura anteprima video
-    /// con audio.
     @AppStorage("gassplayer.detail.trailerMuted")
     private var isTrailerMuted = true
 
@@ -59,6 +45,7 @@ struct MovieDetailView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
+                // Header a pieno schermo fino al bordo superiore
                 MediaHeroHeader(
                     title: stream.name,
                     logoURL: detail.logoURL,
@@ -67,24 +54,29 @@ struct MovieDetailView: View {
                     onClose: { dismiss() }
                 )
 
-                VStack(alignment: .leading, spacing: 20) {
+                // Contenuto informativo
+                VStack(alignment: .leading, spacing: 16) {
+                    // Riga voto / durata / generi
                     MediaMetaRow(
                         ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
                         secondaryText: detail.runtimeLabel ?? detail.year,
                         genres: detail.genres
                     )
-                    .frame(maxWidth: .infinity)
 
+                    // Pulsante Riproduci il film
                     MediaPlayButton(title: "Riproduci il film") {
                         play()
                     }
 
+                    // Riga icone (Preferiti, Muto, Download, Altre fonti)
                     iconRow
 
+                    // Trama / Plot
                     if let overview = detail.overview, !overview.isEmpty {
                         Text(overview)
                             .font(.subheadline)
-                            .foregroundStyle(.primary.opacity(0.9))
+                            .foregroundStyle(.primary.opacity(0.92))
+                            .lineSpacing(3)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
@@ -94,17 +86,21 @@ struct MovieDetailView: View {
                             .padding(.top, 8)
                     }
 
+                    // Sezione Valutazioni (TMDB, Critiche, Trakt, IMDb, Metacritic)
                     MediaRatingsSection(ratings: detail.ratings)
+                        .padding(.top, 4)
 
+                    // Sezione Cast con avatar circolari
                     MediaCastSection(cast: detail.cast)
+                        .padding(.top, 4)
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 16)
-                .padding(.bottom, 32)
+                .padding(.top, 14)
+                .padding(.bottom, 40)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(maxWidth: .infinity)
+        .scrollIndicators(.hidden)
         .ignoresSafeArea(edges: .top)
         .background(Color(uiColor: .systemBackground))
         .task(id: stream.streamId) {
@@ -140,7 +136,7 @@ struct MovieDetailView: View {
         HStack(spacing: 12) {
             MediaIconButton(
                 systemImage: isFavorite ? "heart.fill" : "heart",
-                tint: isFavorite ? .red : .primary,
+                tint: isFavorite ? .red : .white,
                 accessibilityLabel: isFavorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"
             ) {
                 contentManagement.toggleFavorite(id: favoriteID, title: stream.name, kind: XtreamStreamKind.movie.rawValue)
@@ -155,7 +151,7 @@ struct MovieDetailView: View {
 
             MediaIconButton(
                 systemImage: downloadProgress == 1 ? "checkmark.circle.fill" : "arrow.down.circle",
-                tint: downloadProgress == 1 ? .green : .primary,
+                tint: downloadProgress == 1 ? .green : .white,
                 progress: downloadProgress,
                 accessibilityLabel: "Scarica"
             ) {
