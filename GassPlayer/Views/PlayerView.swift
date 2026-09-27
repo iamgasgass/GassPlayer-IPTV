@@ -10,15 +10,19 @@ struct PlayerView: View {
     let url: URL
     let title: String
 
+    /// Precedente/successivo: `nil` = non disponibile in questo contesto
+    /// (bordo della lista, o chiamante che non la implementa).
     var onPrevious: (() -> Void)?
     var onNext: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var controller: KSPlaybackController
 
+    // Environment objects per cronologia canali e ricerca globale
     @EnvironmentObject private var recentlyWatched: RecentlyWatchedStore
     @EnvironmentObject private var sourceManager: SourceManager
 
+    // Picker e menu modali
     @State private var showTrackPicker = false
     @State private var showAdvancedSettings = false
     @State private var showQualityPicker = false
@@ -29,23 +33,28 @@ struct PlayerView: View {
     @State private var showChannelHistory = false
     @State private var showChannelSearch = false
 
+    // Selezioni correnti
     @State private var currentPlaybackRate: Double = 1.0
     @State private var selectedAudioTrackName: String?
     @State private var selectedSubtitleTrackName: String?
     @State private var selectedVideoTrackName: String?
 
+    // Timer di spegnimento automatico
     @State private var sleepTimerMinutes: Int?
     @State private var sleepTimerTask: Task<Void, Never>?
 
+    // Gesti brightness / volume
     @State private var brightnessOverlay: Double = 0
     @State private var volumeOverlay: Double = 0
     @State private var showBrightnessHUD = false
     @State private var showVolumeHUD = false
     @State private var hudHideTask: Task<Void, Never>?
 
+    // Toast generico per feedback visivo
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
 
+    // Controlli generali di riproduzione
     @State private var showControls = true
     @State private var hideControlsTask: Task<Void, Never>?
     @State private var isScrubbing = false
@@ -73,9 +82,15 @@ struct PlayerView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
+            // FIX CRITICO: URL e Titolo passati direttamente a KSPlayerContainerView.
+            // Quando SwiftUI aggiorna PlayerView per un nuovo canale/episodio,
+            // KSPlayerContainerView.updateUIView esegue IMMEDIATAMENTE e in modo sincrono
+            // il caricamento e l'aggancio del nuovo flusso, eliminando qualsiasi ritardo
+            // di zapping a 1 passo indietro o trasmissione del canale precedente.
             KSPlayerContainerView(url: url, title: title, controller: controller)
                 .ignoresSafeArea()
 
+            // Spinner di buffering centrale pulito durante il caricamento o cambio canale
             if controller.isBuffering {
                 ProgressView()
                     .progressViewStyle(CircularProgressViewStyle(tint: .white))
@@ -214,6 +229,7 @@ struct PlayerView: View {
 
     private func handleDoubleTap(at location: CGPoint) {
         guard !isLocked, controller.duration > 0 else { return }
+
         let isForward = location.x > containerWidth / 2
         controller.skip(by: isForward ? 10 : -10)
         showToast("\(isForward ? "+" : "-")10s")
@@ -351,6 +367,9 @@ struct PlayerView: View {
                 .tint(.white)
             }
 
+            // CORREZIONE MANIACALE HSTACK TRASPORTO / ZAPPING:
+            // Al tap di Precedente/Successivo, arresta istantaneamente il vecchio flusso (`controller.layer.pause()`)
+            // e invoca l'azione del genitore (`onPrevious` / `onNext`) per passare al nuovo canale/episodio.
             HStack(spacing: 22) {
                 if let onPrevious {
                     GlassIconButton(systemImage: "backward.end.fill", size: 30) {
@@ -597,16 +616,13 @@ struct PlayerTopBar: View, Equatable {
     var body: some View {
         HStack {
             GlassIconButton(systemImage: "xmark") { actions.dismiss() }
-
             Spacer(minLength: 8)
-
             Text(data.title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .shadow(radius: 4)
                 .layoutPriority(1)
-
             Spacer(minLength: 8)
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -636,55 +652,23 @@ struct PlayerTopBar: View, Equatable {
     private var optionsMenu: some View {
         Menu {
             Section("Impostazioni e controlli video") {
-                Button("Rapporto di aspetto", systemImage: "aspectratio") {
-                    actions.aspectPicker()
-                }
-                Button("Cronologia dei canali", systemImage: "clock") {
-                    actions.channelHistory()
-                }
-                Button("Cerca canale", systemImage: "magnifyingglass") {
-                    actions.channelSearch()
-                }
-                Button("Blocca schermo", systemImage: "lock") {
-                    actions.lock()
-                }
+                Button("Rapporto di aspetto", systemImage: "aspectratio") { actions.aspectPicker() }
+                Button("Cronologia dei canali", systemImage: "clock") { actions.channelHistory() }
+                Button("Cerca canale", systemImage: "magnifyingglass") { actions.channelSearch() }
+                Button("Blocca schermo", systemImage: "lock") { actions.lock() }
             }
             Section("Impostazioni lettore") {
-                Button(
-                    data.hardwareDecode ? "✓ Usa KSPlayer (Metal)" : "Usa KSPlayer (Metal)",
-                    systemImage: "cpu"
-                ) {
-                    actions.hardwareDecodeToggle()
-                }
-                Button("Velocità di riproduzione (\(data.currentPlaybackRate == 1.0 ? "1x" : data.currentPlaybackRate.formatted() + "x"))", systemImage: "speedometer") {
-                    actions.speedPicker()
-                }
-                Button("Qualità video\(data.selectedVideoTrackName.map { " (\($0))" } ?? "")", systemImage: "4k.tv") {
-                    actions.qualityPicker()
-                }
-                Button("Impostazioni avanzate", systemImage: "slider.horizontal.3") {
-                    actions.advancedSettings()
-                }
-                Button("Audio e sottotitoli", systemImage: "text.bubble") {
-                    actions.trackPicker()
-                }
-                Button(
-                    data.sleepTimerMinutes.map { "Timer di spegnimento (\($0) min)" } ?? "Timer di spegnimento",
-                    systemImage: data.sleepTimerMinutes != nil ? "moon.zzz.fill" : "moon.zzz"
-                ) {
-                    actions.sleepTimerPicker()
-                }
+                Button(data.hardwareDecode ? "Usa KSPlayer (Metal)" : "Usa KSPlayer (Metal)", systemImage: "cpu") { actions.hardwareDecodeToggle() }
+                Button("Velocità di riproduzione (\(data.currentPlaybackRate == 1.0 ? "1x" : "\(data.currentPlaybackRate.formatted())x"))", systemImage: "speedometer") { actions.speedPicker() }
+                Button("Qualità video\(data.selectedVideoTrackName.map { ": \($0)" } ?? "")", systemImage: "4k.tv") { actions.qualityPicker() }
+                Button("Impostazioni avanzate", systemImage: "slider.horizontal.3") { actions.advancedSettings() }
+                Button("Audio e sottotitoli", systemImage: "text.bubble") { actions.trackPicker() }
+                Button(data.sleepTimerMinutes.map { "Timer di spegnimento (\($0) min)" } ?? "Timer di spegnimento", systemImage: data.sleepTimerMinutes != nil ? "moon.zzz.fill" : "moon.zzz") { actions.sleepTimerPicker() }
             }
             Section("Trasmissione video e audio") {
-                Button("AirPlay audio", systemImage: "airplayaudio") {
-                    actions.airPlayTrigger()
-                }
-                Button("AirPlay video", systemImage: "airplayvideo") {
-                    actions.airPlayTrigger()
-                }
-                Button("Chromecast (richiede Google Cast SDK)", systemImage: "tv.badge.wifi") {
-                    actions.chromecastTap()
-                }
+                Button("AirPlay audio", systemImage: "airplayaudio") { actions.airPlayTrigger() }
+                Button("AirPlay video", systemImage: "airplayvideo") { actions.airPlayTrigger() }
+                Button("Chromecast (richiede Google Cast SDK)", systemImage: "tv.badge.wifi") { actions.chromecastTap() }
             }
         } label: {
             GlassIconGlyph(systemImage: "ellipsis", size: 34)
@@ -695,8 +679,17 @@ struct PlayerTopBar: View, Equatable {
     }
 }
 
-// MARK: - KSPlayer Container Representable
+// MARK: - KSPlayer Container (Representable)
 
+/// Render Container per KSPlayer con gestione in-place ultra-ottimizzata.
+/// Riceve direttamente URL e Titolo. Quando l'URL cambia (es. zapping in
+/// Live TV o Serie TV), `updateUIView` esegue in modo sincrono:
+/// 1) Lo spegnimento del vecchio layer per bloccare istantaneamente il
+///    flusso e l'audio precedenti.
+/// 2) Il caricamento (`controller.load`) e l'aggancio del nuovo layer nel
+///    container, senza sfarfallio o ritardi.
+/// 3) La deallocazione immediata di qualsiasi texture video residua del
+///    canale precedente.
 struct KSPlayerContainerView: UIViewRepresentable {
     let url: URL
     let title: String
@@ -706,18 +699,20 @@ struct KSPlayerContainerView: UIViewRepresentable {
         var currentURL: URL?
         weak var currentLayer: KSPlayerLayer?
         weak var attachedPlayerView: UIView?
-        var pendingPlayRetry: [DispatchWorkItem]?
+        var pendingPlayRetry: [DispatchWorkItem] = []
         var stateCancellable: AnyCancellable?
 
         func cancelPendingTasks() {
-            pendingPlayRetry?.forEach { $0.cancel() }
-            pendingPlayRetry = nil
+            pendingPlayRetry.forEach { $0.cancel() }
+            pendingPlayRetry = []
             stateCancellable?.cancel()
             stateCancellable = nil
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
@@ -730,17 +725,21 @@ struct KSPlayerContainerView: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {
         let coordinator = context.coordinator
 
+        // Se l'URL è cambiato rispetto a quello correntemente renderizzato
         if coordinator.currentURL != url {
             coordinator.currentURL = url
+            // 1. Arresta immediatamente il vecchio flusso
             controller.layer.pause()
+            // 2. Carica in tempo reale il nuovo URL e Titolo nel controller
             controller.load(url: url, title: title)
+            // 3. Riaggancia il layer del nuovo flusso nel container
             attach(controller.layer, in: uiView, coordinator: coordinator)
             return
         }
 
         let layer = controller.layer
         let currentView = layer.player.view
-
+        // Se il layer o la playerView interna è stata rigenerata dal controller
         if coordinator.currentLayer !== layer || coordinator.attachedPlayerView !== currentView {
             attach(layer, in: uiView, coordinator: coordinator)
         }
@@ -749,6 +748,7 @@ struct KSPlayerContainerView: UIViewRepresentable {
     private func attach(_ layer: KSPlayerLayer, in container: UIView, coordinator: Coordinator) {
         coordinator.cancelPendingTasks()
 
+        // Rimuove e pulisce all'istante la vista precedente per non lasciare nessun fotogramma congelato
         if let oldPlayerView = coordinator.attachedPlayerView {
             oldPlayerView.removeFromSuperview()
             coordinator.attachedPlayerView = nil
@@ -756,12 +756,12 @@ struct KSPlayerContainerView: UIViewRepresentable {
         container.subviews.forEach { $0.removeFromSuperview() }
 
         coordinator.currentLayer = layer
-
         guard let playerView = layer.player.view else { return }
         coordinator.attachedPlayerView = playerView
 
+        // La vista parte a trasparenza zero (sfondo nero puro) durante la
+        // connessione/decodifica del nuovo canale
         playerView.alpha = 0
-
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         UIView.performWithoutAnimation {
@@ -777,19 +777,19 @@ struct KSPlayerContainerView: UIViewRepresentable {
         }
         CATransaction.commit()
 
+        // Rivelazione immediata appena il nuovo canale inizia a trasmettere fotogrammi reali
         coordinator.stateCancellable = controller.objectWillChange
             .receive(on: DispatchQueue.main)
-            .sink { [weak controller, weak playerView] _ in
+            .sink { [weak controller, weak playerView] in
                 DispatchQueue.main.async {
                     guard let controller, let playerView else { return }
-                    if controller.isPlaying && !controller.isBuffering && playerView.alpha < 1 {
-                        UIView.animate(withDuration: 0.15) {
-                            playerView.alpha = 1.0
-                        }
+                    if controller.isPlaying, !controller.isBuffering, playerView.alpha != 1 {
+                        UIView.animate(withDuration: 0.15) { playerView.alpha = 1.0 }
                     }
                 }
             }
 
+        // Avvio immediato della riproduzione e retry dedicati
         layer.play()
         let retries = [0.05, 0.2, 0.5, 1.0].map { delay in
             let item = DispatchWorkItem { [weak layer, weak controller, weak playerView] in
@@ -847,7 +847,9 @@ struct ExternalPlayer: Identifiable {
 enum MPVolumeSlider {
     private static let sharedVolumeView = MPVolumeView(frame: .zero)
 
-    static func currentVolume() -> Float { AVAudioSession.sharedInstance().outputVolume }
+    static func currentVolume() -> Float {
+        AVAudioSession.sharedInstance().outputVolume
+    }
 
     static func setVolume(_ value: Float) {
         if let slider = sharedVolumeView.subviews.compactMap({ $0 as? UISlider }).first {
@@ -897,68 +899,32 @@ struct QualityPickerView: View {
                 }
             }
             .navigationTitle("Qualità video")
-            .toolbar { Button("Chiudi") { dismiss() } }
+            .toolbar {
+                Button("Chiudi") { dismiss() }
+            }
         }
     }
 }
 
-/// Pannello impostazioni avanzate. Il player applica SEMPRE: 4 opzioni
-/// generiche `AVFormatContext` valide per qualunque contenitore, i
-/// default di rete sensibili al protocollo dell'URL, e — in caso di
-/// fallimento — fino a 2 retry automatici e silenziosi (User-Agent
-/// browser + Referer + TLS relaxato, poi anche decodifica software e
-/// probing esteso). Vedi le note in testa a `KSPlaybackController.swift`.
 struct AdvancedSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
 
     @State private var preferredBuffer: Double
     @State private var maxBuffer: Double
-
     @State private var hardwareDecode: Bool
-    @State private var asynchronousDecompression: Bool
-    @State private var syncDecodeVideo: Bool
-    @State private var syncDecodeAudio: Bool
-    @State private var lowresIndex: Double
-    @State private var videoDisable: Bool
-    @State private var secondOpen: Bool
-
-    @State private var isAccurateSeek: Bool
-    @State private var seekFlagPreset: SeekFlagPreset
     @State private var autoDeInterlace: Bool
+    @State private var isAccurateSeek: Bool
     @State private var videoDelay: Double
-    @State private var seekedAutoPlay: Bool
-
+    // RIMOSSO: `subtitleDisable`. Dipendeva da `KSOptions.subtitleDisable`,
+    // membro non presente nella build di KSPlayer usata da questo progetto
+    // (causa dell'errore "value of type 'KSPlaybackController.PlaybackPreferences'
+    // has no member 'subtitleDisable'"). Il toggle "Sottotitoli disattivati"
+    // e il relativo `controller.setSubtitleDisable(...)` sono stati rimossi
+    // per intero: per non vedere sottotitoli basta deselezionare la traccia
+    // attiva dal picker "Audio e sottotitoli" (`TrackPickerView`).
     @State private var autoSelectEmbedSubtitle: Bool
-    @State private var seekImageSubtitle: Bool
-
-    @State private var panoramaMode: PanoramaMode
-    @State private var autoRotate: Bool
-
-    @State private var videoAdaptable: Bool
-    @State private var loopPlay: Bool
-
-    @State private var userAgent: String
-    @State private var referer: String
-    @State private var httpCacheEnabled: Bool
-    @State private var allowInsecureTLS: Bool
-    @State private var probesizeText: String
-    @State private var maxAnalyzeDurationText: String
-    @State private var newHeaderKey: String = ""
-    @State private var newHeaderValue: String = ""
-
-    @State private var newVideoFilter: String = ""
-    @State private var newAudioFilter: String = ""
-
-    @State private var newFormatOptionKey: String = ""
-    @State private var newFormatOptionValue: String = ""
-    @State private var newDecoderOptionKey: String = ""
-    @State private var newDecoderOptionValue: String = ""
-    @State private var newAVOptionKey: String = ""
-    @State private var newAVOptionValue: String = ""
-
-    private let probesizeDefaultPlaceholder = "10000000 (predefinito, già attivo)"
-    private let maxAnalyzeDurationDefaultPlaceholder = "10000000 (predefinito, già attivo)"
+    @State private var videoDisable: Bool
 
     init(controller: KSPlaybackController) {
         self.controller = controller
@@ -966,45 +932,27 @@ struct AdvancedSettingsView: View {
         _preferredBuffer = State(initialValue: prefs.preferredForwardBufferDuration)
         _maxBuffer = State(initialValue: prefs.maxBufferDuration)
         _hardwareDecode = State(initialValue: prefs.hardwareDecode)
-        _asynchronousDecompression = State(initialValue: prefs.asynchronousDecompression)
-        _syncDecodeVideo = State(initialValue: prefs.syncDecodeVideo)
-        _syncDecodeAudio = State(initialValue: prefs.syncDecodeAudio)
-        _lowresIndex = State(initialValue: Double(prefs.lowres))
-        _videoDisable = State(initialValue: prefs.videoDisable)
-        _secondOpen = State(initialValue: prefs.isSecondOpen)
-        _isAccurateSeek = State(initialValue: prefs.isAccurateSeek)
-        _seekFlagPreset = State(initialValue: SeekFlagPreset.allCases.first { $0.flagValue == prefs.seekFlags } ?? .fast)
         _autoDeInterlace = State(initialValue: prefs.autoDeInterlace)
+        _isAccurateSeek = State(initialValue: prefs.isAccurateSeek)
         _videoDelay = State(initialValue: prefs.videoDelay)
-        _seekedAutoPlay = State(initialValue: prefs.isSeekedAutoPlay)
         _autoSelectEmbedSubtitle = State(initialValue: prefs.autoSelectEmbedSubtitle)
-        _seekImageSubtitle = State(initialValue: prefs.isSeekImageSubtitle)
-        _panoramaMode = State(initialValue: prefs.panoramaMode)
-        _autoRotate = State(initialValue: prefs.autoRotate)
-        _videoAdaptable = State(initialValue: prefs.videoAdaptable)
-        _loopPlay = State(initialValue: prefs.isLoopPlay)
-        _userAgent = State(initialValue: prefs.userAgent ?? "")
-        _referer = State(initialValue: prefs.referer ?? "")
-        _httpCacheEnabled = State(initialValue: prefs.httpCacheEnabled)
-        _allowInsecureTLS = State(initialValue: prefs.allowInsecureTLS)
-        _probesizeText = State(initialValue: prefs.probesize.map(String.init) ?? "")
-        _maxAnalyzeDurationText = State(initialValue: prefs.maxAnalyzeDuration.map(String.init) ?? "")
+        _videoDisable = State(initialValue: prefs.videoDisable)
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Slider(value: $preferredBuffer, in: 1...30, step: 1) { Text("Buffer minimo") }
-                        .onChange(of: preferredBuffer) { newValue in
-                            controller.setPreferredForwardBufferDuration(newValue)
-                        }
+                    Slider(value: $preferredBuffer, in: 1...30, step: 1) {
+                        Text("Buffer minimo")
+                    }
+                    .onChange(of: preferredBuffer) { newValue in controller.setPreferredForwardBufferDuration(newValue) }
                     Text("Minimo: \(Int(preferredBuffer))s").foregroundStyle(.secondary)
 
-                    Slider(value: $maxBuffer, in: Double(max(Int(preferredBuffer), 5))...120, step: 5) { Text("Buffer massimo") }
-                        .onChange(of: maxBuffer) { newValue in
-                            controller.setMaxBufferDuration(newValue)
-                        }
+                    Slider(value: $maxBuffer, in: Double(max(Int(preferredBuffer), 5))...120, step: 5) {
+                        Text("Buffer massimo")
+                    }
+                    .onChange(of: maxBuffer) { newValue in controller.setMaxBufferDuration(newValue) }
                     Text("Massimo: \(Int(maxBuffer))s").foregroundStyle(.secondary)
                 } header: {
                     Text("Buffer")
@@ -1013,37 +961,22 @@ struct AdvancedSettingsView: View {
                 }
 
                 Section {
-                    Toggle("Decodifica hardware (VideoToolbox)", isOn: $hardwareDecode)
+                    Toggle("Decodifica hardware", isOn: $hardwareDecode)
                         .onChange(of: hardwareDecode) { newValue in controller.setHardwareDecode(newValue) }
-                    Toggle("Decompressione hardware asincrona", isOn: $asynchronousDecompression)
-                        .onChange(of: asynchronousDecompression) { newValue in controller.setAsynchronousDecompression(newValue) }
-                    Toggle("Decodifica video sincrona", isOn: $syncDecodeVideo)
-                        .onChange(of: syncDecodeVideo) { newValue in controller.setSyncDecodeVideo(newValue) }
-                    Toggle("Decodifica audio sincrona", isOn: $syncDecodeAudio)
-                        .onChange(of: syncDecodeAudio) { newValue in controller.setSyncDecodeAudio(newValue) }
-                    Picker("Risoluzione di decodifica FFmpeg", selection: $lowresIndex) {
-                        Text("Piena risoluzione").tag(0.0)
-                        Text("Metà risoluzione").tag(1.0)
-                        Text("Un quarto di risoluzione").tag(2.0)
-                    }
-                    .onChange(of: lowresIndex) { newValue in controller.setLowres(UInt8(newValue)) }
-                    Toggle("Modalità solo audio (disattiva il video)", isOn: $videoDisable)
-                        .onChange(of: videoDisable) { newValue in controller.setVideoDisabled(newValue) }
-                    Toggle("Apertura rapida (secondo open)", isOn: $secondOpen)
-                        .onChange(of: secondOpen) { newValue in controller.setSecondOpen(newValue) }
                     Toggle("De-interlacciamento automatico", isOn: $autoDeInterlace)
                         .onChange(of: autoDeInterlace) { newValue in controller.setAutoDeInterlace(newValue) }
                 } header: {
-                    Text("Decodifica FFmpeg")
+                    Text("Decodifica")
                 } footer: {
-                    Text("Se un film VOD non si apre più dopo aver attivato molte opzioni qui, prova prima \"Riprova\" in fondo al pannello.")
+                    Text("Disattiva la decodifica hardware se un canale si blocca o mostra artefatti (FFmpeg in software è più lento ma compatibile con flussi malformati). Il de-interlacciamento corregge l'effetto \"pettine\" tipico dei canali SD interlacciati. Entrambe ricaricano il flusso per applicarsi.")
                 }
 
                 Section {
-                    Slider(value: $videoDelay, in: -2...2, step: 0.05) { Text("Sincronizzazione video") }
-                        .onChange(of: videoDelay) { newValue in controller.setVideoDelay(newValue) }
-                    Text(delaySummary(videoDelay, label: "Video")).foregroundStyle(.secondary)
-
+                    Slider(value: $videoDelay, in: -2...2, step: 0.05) {
+                        Text("Sincronizzazione")
+                    }
+                    .onChange(of: videoDelay) { newValue in controller.setVideoDelay(newValue) }
+                    Text(videoDelaySummary).foregroundStyle(.secondary)
                     Button("Ripristina sincronizzazione") {
                         videoDelay = 0
                         controller.setVideoDelay(0)
@@ -1057,183 +990,27 @@ struct AdvancedSettingsView: View {
                 Section("Ricerca") {
                     Toggle("Ricerca accurata", isOn: $isAccurateSeek)
                         .onChange(of: isAccurateSeek) { newValue in controller.setAccurateSeek(newValue) }
-                    Picker("Modalità di ricerca FFmpeg", selection: $seekFlagPreset) {
-                        ForEach(SeekFlagPreset.allCases) { preset in
-                            Text(preset.label).tag(preset)
-                        }
-                    }
-                    .onChange(of: seekFlagPreset) { newValue in controller.setSeekFlags(newValue) }
-                    Toggle("Riprendi automaticamente dopo il seek", isOn: $seekedAutoPlay)
-                        .onChange(of: seekedAutoPlay) { newValue in controller.setSeekedAutoPlay(newValue) }
-                    Text("Il seek su qualsiasi fotogramma (non solo keyframe) è già abilitato di serie per tutti i contenitori (\"seek2any\").")
+                    Text("Posiziona la riproduzione esattamente al fotogramma richiesto invece che al keyframe più vicino (più precisa, leggermente più lenta).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 Section {
-                    Toggle("Seleziona automaticamente sottotitoli incorporati", isOn: $autoSelectEmbedSubtitle)
+                    Toggle("Selezione automatica sottotitoli", isOn: $autoSelectEmbedSubtitle)
                         .onChange(of: autoSelectEmbedSubtitle) { newValue in controller.setAutoSelectEmbedSubtitle(newValue) }
-                    Toggle("Mantieni sottotitoli immagine durante il seek", isOn: $seekImageSubtitle)
-                        .onChange(of: seekImageSubtitle) { newValue in controller.setSeekImageSubtitle(newValue) }
                 } header: {
                     Text("Sottotitoli")
                 } footer: {
-                    Text("Copre testo, immagine (PGS/DVB/DVD) e Closed Captions incorporati nel flusso.")
+                    Text("KSPlayer seleziona da solo la prima traccia sottotitoli incorporata nel flusso quando disponibile. Per non vederli, deselezionali dal picker \"Audio e sottotitoli\".")
                 }
 
                 Section {
-                    Picker("Modalità di rendering", selection: $panoramaMode) {
-                        ForEach(PanoramaMode.allCases) { mode in
-                            Label(mode.label, systemImage: mode.systemImage).tag(mode)
-                        }
-                    }
-                    .onChange(of: panoramaMode) { newValue in controller.setPanoramaMode(newValue) }
-                    Toggle("Rotazione automatica da metadati", isOn: $autoRotate)
-                        .onChange(of: autoRotate) { newValue in controller.setAutoRotate(newValue) }
+                    Toggle("Solo audio (disattiva video)", isOn: $videoDisable)
+                        .onChange(of: videoDisable) { newValue in controller.setVideoDisable(newValue) }
                 } header: {
-                    Text("Rendering e video panoramico 360°")
+                    Text("Video")
                 } footer: {
-                    Text("Le modalità VR/VR Box proiettano contenuti equirettangolari a 360° su una sfera Metal.")
-                }
-
-                Section {
-                    Toggle("Switch automatico qualità (bitrate adattivo)", isOn: $videoAdaptable)
-                        .onChange(of: videoAdaptable) { newValue in controller.setVideoAdaptable(newValue) }
-                    Toggle("Riproduzione in loop", isOn: $loopPlay)
-                        .onChange(of: loopPlay) { newValue in controller.setLoopPlay(newValue) }
-                } header: {
-                    Text("Comportamento di riproduzione")
-                }
-
-                Section {
-                    TextField("User-Agent", text: $userAgent)
-                        .textInputAutocapitalization(.never)
-                        .disableAutocorrection(true)
-                        .onSubmit { controller.setUserAgent(userAgent.isEmpty ? nil : userAgent) }
-                    TextField("Referer", text: $referer)
-                        .textInputAutocapitalization(.never)
-                        .disableAutocorrection(true)
-                        .onSubmit { controller.setReferer(referer.isEmpty ? nil : referer) }
-
-                    ForEach(Array(controller.preferences.customHTTPHeaders.keys.sorted()), id: \.self) { key in
-                        HStack {
-                            Text(key).font(.caption.weight(.semibold))
-                            Spacer()
-                            Text(controller.preferences.customHTTPHeaders[key] ?? "")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            Button(role: .destructive) {
-                                controller.removeCustomHeader(key: key)
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                            }
-                        }
-                    }
-                    HStack {
-                        TextField("Intestazione", text: $newHeaderKey)
-                        TextField("Valore", text: $newHeaderValue)
-                        Button {
-                            controller.setCustomHeader(key: newHeaderKey, value: newHeaderValue)
-                            newHeaderKey = ""; newHeaderValue = ""
-                        } label: {
-                            Image(systemName: "plus.circle.fill")
-                        }
-                        .disabled(newHeaderKey.isEmpty)
-                    }
-
-                    Toggle("Cache HTTP (FFmpeg)", isOn: $httpCacheEnabled)
-                        .onChange(of: httpCacheEnabled) { newValue in controller.setHTTPCacheEnabled(newValue) }
-
-                    Toggle("Ignora certificati TLS non validi", isOn: $allowInsecureTLS)
-                        .onChange(of: allowInsecureTLS) { newValue in controller.setAllowInsecureTLS(newValue) }
-                    Text("Attiva SOLO se sai che il provider usa certificati HTTPS self-signed o scaduti: evita che il primo tentativo fallisca sempre inutilmente prima del retry automatico che già lo aggira.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    TextField(probesizeDefaultPlaceholder, text: $probesizeText)
-                        .keyboardType(.numberPad)
-                        .onSubmit { controller.setProbesize(probesizeText.isEmpty ? nil : Int64(probesizeText)) }
-                    TextField(maxAnalyzeDurationDefaultPlaceholder, text: $maxAnalyzeDurationText)
-                        .keyboardType(.numberPad)
-                        .onSubmit { controller.setMaxAnalyzeDuration(maxAnalyzeDurationText.isEmpty ? nil : Int64(maxAnalyzeDurationText)) }
-                } header: {
-                    Text("Rete")
-                } footer: {
-                    Text("Se un film VOD non si apre, il player ritenta già in automatico fino a 2 volte: User-Agent da browser + Referer dedotto dal dominio + certificato TLS non verificato, poi anche decodifica software forzata e probing esteso. Se anche questi 3 tentativi falliscono in modo identico, il problema è quasi certamente lato server (link scaduto/irraggiungibile) o un codec assente dal build FFmpeg — non risolvibile da nessuna opzione client.")
-                }
-
-                Section {
-                    ForEach(Array(controller.preferences.videoFilters.enumerated()), id: \.offset) { index, filter in
-                        HStack {
-                            Text(filter).font(.system(.caption, design: .monospaced))
-                            Spacer()
-                            Button(role: .destructive) { controller.removeVideoFilter(at: index) } label: {
-                                Image(systemName: "minus.circle.fill")
-                            }
-                        }
-                    }
-                    HStack {
-                        TextField("es. hflip, eq=contrast=1.2", text: $newVideoFilter)
-                        Button {
-                            controller.addVideoFilter(newVideoFilter)
-                            newVideoFilter = ""
-                        } label: { Image(systemName: "plus.circle.fill") }
-                        .disabled(newVideoFilter.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-
-                    ForEach(Array(controller.preferences.audioFilters.enumerated()), id: \.offset) { index, filter in
-                        HStack {
-                            Text(filter).font(.system(.caption, design: .monospaced))
-                            Spacer()
-                            Button(role: .destructive) { controller.removeAudioFilter(at: index) } label: {
-                                Image(systemName: "minus.circle.fill")
-                            }
-                        }
-                    }
-                    HStack {
-                        TextField("es. volume=2.0", text: $newAudioFilter)
-                        Button {
-                            controller.addAudioFilter(newAudioFilter)
-                            newAudioFilter = ""
-                        } label: { Image(systemName: "plus.circle.fill") }
-                        .disabled(newAudioFilter.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                } header: {
-                    Text("Filtri FFmpeg (libavfilter)")
-                } footer: {
-                    Text("Catene di filtri applicate direttamente dal motore FFmpeg di KSPlayer, sintassi identica a quella della riga di comando ffmpeg.")
-                }
-
-                Section {
-                    ffmpegOptionEditor(
-                        title: "Opzioni formato AGGIUNTIVE (AVFormatContext)",
-                        options: controller.preferences.formatContextOptions,
-                        key: $newFormatOptionKey,
-                        value: $newFormatOptionValue,
-                        onAdd: { controller.setFormatContextOption(key: newFormatOptionKey, value: newFormatOptionValue) },
-                        onRemove: { controller.removeFormatContextOption(key: $0) }
-                    )
-                    ffmpegOptionEditor(
-                        title: "Opzioni decoder",
-                        options: controller.preferences.decoderOptions,
-                        key: $newDecoderOptionKey,
-                        value: $newDecoderOptionValue,
-                        onAdd: { controller.setDecoderOption(key: newDecoderOptionKey, value: newDecoderOptionValue) },
-                        onRemove: { controller.removeDecoderOption(key: $0) }
-                    )
-                    ffmpegOptionEditor(
-                        title: "Opzioni FFmpeg generiche (avOptions)",
-                        options: controller.preferences.avOptions,
-                        key: $newAVOptionKey,
-                        value: $newAVOptionValue,
-                        onAdd: { controller.setAVOption(key: newAVOptionKey, value: newAVOptionValue) },
-                        onRemove: { controller.removeAVOption(key: $0) }
-                    )
-                } header: {
-                    Text("Opzioni FFmpeg avanzate")
-                } footer: {
-                    Text("Sono SEMPRE già attivi, per qualunque contenitore: \"err_detect=ignore_err\", \"avoid_negative_ts=make_zero\", \"correct_ts_overflow\" e \"seek2any\". Per utenti esperti: valori errati possono impedire l'apertura del flusso.")
+                    Text("Utile sui canali radio delle playlist IPTV: risparmia CPU, GPU e batteria non decodificando un flusso video che non verrebbe comunque mostrato.")
                 }
 
                 Section("Riproduzione") {
@@ -1242,48 +1019,16 @@ struct AdvancedSettingsView: View {
                 }
             }
             .navigationTitle("Impostazioni avanzate")
-            .toolbar { Button("Chiudi") { dismiss() } }
-        }
-    }
-
-    @ViewBuilder
-    private func ffmpegOptionEditor(
-        title: String,
-        options: [String: String],
-        key: Binding<String>,
-        value: Binding<String>,
-        onAdd: @escaping () -> Void,
-        onRemove: @escaping (String) -> Void
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            ForEach(Array(options.keys.sorted()), id: \.self) { optionKey in
-                HStack {
-                    Text(optionKey).font(.system(.caption, design: .monospaced))
-                    Spacer()
-                    Text(options[optionKey] ?? "").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-                    Button(role: .destructive) { onRemove(optionKey) } label: {
-                        Image(systemName: "minus.circle.fill")
-                    }
-                }
-            }
-            HStack {
-                TextField("chiave", text: key)
-                TextField("valore", text: value)
-                Button {
-                    onAdd()
-                    key.wrappedValue = ""
-                    value.wrappedValue = ""
-                } label: { Image(systemName: "plus.circle.fill") }
-                .disabled(key.wrappedValue.isEmpty)
+            .toolbar {
+                Button("Chiudi") { dismiss() }
             }
         }
     }
 
-    private func delaySummary(_ value: Double, label: String) -> String {
-        if abs(value) < 0.01 { return "\(label): sincronizzato" }
-        let ms = Int((value * 1000).rounded())
-        return value > 0 ? "\(label) ritardato di \(ms)ms" : "\(label) anticipato di \(-ms)ms"
+    private var videoDelaySummary: String {
+        if abs(videoDelay) < 0.01 { return "Sincronizzato" }
+        let ms = Int((videoDelay * 1000).rounded())
+        return videoDelay > 0 ? "Video ritardato di \(ms)ms" : "Video anticipato di \(-ms)ms"
     }
 }
 
@@ -1336,7 +1081,9 @@ struct TrackPickerView: View {
                 }
             }
             .navigationTitle("Tracce")
-            .toolbar { Button("Chiudi") { dismiss() } }
+            .toolbar {
+                Button("Chiudi") { dismiss() }
+            }
         }
     }
 }
@@ -1350,10 +1097,7 @@ struct ChannelHistoryView: View {
         NavigationStack {
             Group {
                 if items.isEmpty {
-                    ContentUnavailableViewCompat(
-                        title: "Nessun canale recente",
-                        message: "I canali live che apri verranno elencati qui."
-                    )
+                    ContentUnavailableViewCompat(title: "Nessun canale recente", message: "I canali live che apri verranno elencati qui.")
                 } else {
                     List(items) { item in
                         Button {
@@ -1374,7 +1118,9 @@ struct ChannelHistoryView: View {
                 }
             }
             .navigationTitle("Cronologia dei canali")
-            .toolbar { Button("Chiudi") { dismiss() } }
+            .toolbar {
+                Button("Chiudi") { dismiss() }
+            }
         }
     }
 }
