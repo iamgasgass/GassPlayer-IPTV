@@ -1,8 +1,6 @@
 import SwiftUI
 
-/// Scheda dettaglio di una serie TV, con layout fedele al video dimostrativo ("I Cesaroni"):
-/// hero a pieno schermo con logo TMDB, riga rating/anno/genere, pulsante riproduzione con ripresa episodio,
-/// barra icone (preferiti, muto, download, altre fonti), trama, valutazioni, cast a scorrimento e lista episodi con schede stagione.
+/// Scheda dettaglio di una serie TV, con allineamento orizzontale coerente e identico al video ("I Cesaroni")
 struct SeriesEpisodesView: View {
     let credentials: XtreamCredentials
     let seriesId: Int
@@ -141,7 +139,8 @@ struct SeriesEpisodesView: View {
                     onClose: { dismiss() }
                 )
 
-                VStack(alignment: .leading, spacing: 16) {
+                // Blocco centrale
+                VStack(spacing: 16) {
                     // Riga voto / anno / generi
                     MediaMetaRow(
                         ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
@@ -171,23 +170,22 @@ struct SeriesEpisodesView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.top, 8)
                     }
-
-                    // Sezione Valutazioni
-                    MediaRatingsSection(ratings: detail.ratings)
-                        .padding(.top, 4)
-
-                    // Sezione Cast
-                    MediaCastSection(cast: detail.cast)
-                        .padding(.top, 4)
-
-                    // Sezione Episodi e Stagioni
-                    episodesSection(info)
-                        .padding(.top, 8)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 14)
-                .padding(.bottom, 40)
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+                // Sezione Valutazioni (con scroll edge-to-edge)
+                MediaRatingsSection(ratings: detail.ratings)
+                    .padding(.top, 18)
+
+                // Sezione Cast (con scroll edge-to-edge)
+                MediaCastSection(cast: detail.cast)
+                    .padding(.top, 18)
+
+                // Sezione Episodi e Stagioni
+                episodesSection(info)
+                    .padding(.top, 20)
+                    .padding(.bottom, 40)
             }
         }
         .scrollIndicators(.hidden)
@@ -236,14 +234,16 @@ struct SeriesEpisodesView: View {
             Text("EPISODI")
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.secondary)
+                .padding(.horizontal, 20)
 
-            // Selettore stagioni (Pillole / Chip)
+            // Selettore stagioni (Pillole / Chip con padding orizzontale)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(info.sortedSeasonNumbers, id: \.self) { season in
                         seasonChip(season)
                     }
                 }
+                .padding(.horizontal, 20)
             }
 
             // Lista episodi
@@ -253,6 +253,7 @@ struct SeriesEpisodesView: View {
                         episodeRow(episode, season: selectedSeason)
                     }
                 }
+                .padding(.horizontal, 20)
                 .padding(.top, 4)
             }
         }
@@ -286,33 +287,30 @@ struct SeriesEpisodesView: View {
             selectedSeason = season
             selectedEpisode = episode
         } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                // Anteprima miniatura grande o affiancata
-                HStack(alignment: .top, spacing: 14) {
-                    episodeThumbnail(episode)
-                        .frame(width: 120, height: 72)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            HStack(alignment: .top, spacing: 14) {
+                episodeThumbnail(episode)
+                    .frame(width: 120, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(episode.code(seasonFallback: season))
-                            .font(.system(size: 11, weight: .bold))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(episode.code(seasonFallback: season))
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.secondary)
+
+                    Text(episode.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+
+                    if let plot = episode.plot, !plot.isEmpty {
+                        Text(plot)
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
-
-                        Text(episode.title)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.primary)
                             .lineLimit(2)
-
-                        if let plot = episode.plot, !plot.isEmpty {
-                            Text(plot)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                                .lineSpacing(2)
-                        }
+                            .lineSpacing(2)
                     }
-                    Spacer(minLength: 0)
                 }
+                Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
         }

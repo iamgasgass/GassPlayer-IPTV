@@ -6,7 +6,7 @@ private struct MoviePlaybackTarget: Identifiable {
     let title: String
 }
 
-/// Scheda dettaglio di un VOD (Film) conforme al layout del video
+/// Scheda dettaglio di un VOD (Film) con allineamento edge-to-edge perfetto
 struct MovieDetailView: View {
     let credentials: XtreamCredentials
     let stream: XtreamStream
@@ -45,7 +45,7 @@ struct MovieDetailView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Header a pieno schermo fino al bordo superiore
+                // Header a tutto schermo
                 MediaHeroHeader(
                     title: stream.name,
                     logoURL: detail.logoURL,
@@ -54,8 +54,8 @@ struct MovieDetailView: View {
                     onClose: { dismiss() }
                 )
 
-                // Contenuto informativo
-                VStack(alignment: .leading, spacing: 16) {
+                // Blocco centrale con padding standard (20pt)
+                VStack(spacing: 16) {
                     // Riga voto / durata / generi
                     MediaMetaRow(
                         ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
@@ -68,7 +68,7 @@ struct MovieDetailView: View {
                         play()
                     }
 
-                    // Riga icone (Preferiti, Muto, Download, Altre fonti)
+                    // Riga icone
                     iconRow
 
                     // Trama / Plot
@@ -85,19 +85,18 @@ struct MovieDetailView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.top, 8)
                     }
-
-                    // Sezione Valutazioni (TMDB, Critiche, Trakt, IMDb, Metacritic)
-                    MediaRatingsSection(ratings: detail.ratings)
-                        .padding(.top, 4)
-
-                    // Sezione Cast con avatar circolari
-                    MediaCastSection(cast: detail.cast)
-                        .padding(.top, 4)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 14)
-                .padding(.bottom, 40)
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+                // Sezione Valutazioni (scorre a filo schermo)
+                MediaRatingsSection(ratings: detail.ratings)
+                    .padding(.top, 18)
+
+                // Sezione Cast (scorre a filo schermo)
+                MediaCastSection(cast: detail.cast)
+                    .padding(.top, 18)
+                    .padding(.bottom, 40)
             }
         }
         .scrollIndicators(.hidden)
