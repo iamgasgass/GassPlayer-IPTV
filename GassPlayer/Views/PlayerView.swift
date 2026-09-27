@@ -66,8 +66,8 @@ struct PlayerView: View {
 
     private var isAnyModalPresented: Bool {
         showTrackPicker || showAdvancedSettings || showQualityPicker
-            || showExternalPlayerMenu || showSpeedPicker || showSleepTimerPicker
-            || showAspectPicker || showChannelHistory || showChannelSearch
+        || showExternalPlayerMenu || showSpeedPicker || showSleepTimerPicker
+        || showAspectPicker || showChannelHistory || showChannelSearch
     }
 
     init(url: URL, title: String, onPrevious: (() -> Void)? = nil, onNext: (() -> Void)? = nil) {
@@ -440,8 +440,8 @@ struct PlayerView: View {
                 .padding(.bottom, 30)
                 Spacer()
             }
-            .safeAreaPadding()
         }
+        .safeAreaPadding()
         .transition(.opacity)
     }
 
@@ -515,8 +515,8 @@ struct PlayerView: View {
             Spacer()
             HStack { GlassIconButton(systemImage: "xmark") { dismiss() }; Spacer() }
                 .padding()
-                .safeAreaPadding()
         }
+        .safeAreaPadding()
     }
 
     // MARK: - Gesti Luminosità / Volume
@@ -616,16 +616,13 @@ struct PlayerTopBar: View, Equatable {
     var body: some View {
         HStack {
             GlassIconButton(systemImage: "xmark") { actions.dismiss() }
-
             Spacer(minLength: 8)
-
             Text(data.title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .shadow(radius: 4)
                 .layoutPriority(1)
-
             Spacer(minLength: 8)
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -655,57 +652,23 @@ struct PlayerTopBar: View, Equatable {
     private var optionsMenu: some View {
         Menu {
             Section("Impostazioni e controlli video") {
-                Button("Rapporto di aspetto", systemImage: "aspectratio") {
-                    actions.aspectPicker()
-                }
-                Button("Cronologia dei canali", systemImage: "clock") {
-                    actions.channelHistory()
-                }
-                Button("Cerca canale", systemImage: "magnifyingglass") {
-                    actions.channelSearch()
-                }
-                Button("Blocca schermo", systemImage: "lock") {
-                    actions.lock()
-                }
+                Button("Rapporto di aspetto", systemImage: "aspectratio") { actions.aspectPicker() }
+                Button("Cronologia dei canali", systemImage: "clock") { actions.channelHistory() }
+                Button("Cerca canale", systemImage: "magnifyingglass") { actions.channelSearch() }
+                Button("Blocca schermo", systemImage: "lock") { actions.lock() }
             }
-
             Section("Impostazioni lettore") {
-                Button(
-                    data.hardwareDecode ? "✓ Usa KSPlayer (Metal)" : "Usa KSPlayer (Metal)",
-                    systemImage: "cpu"
-                ) {
-                    actions.hardwareDecodeToggle()
-                }
-                Button("Velocità di riproduzione (\(data.currentPlaybackRate == 1.0 ? "1x" : data.currentPlaybackRate.formatted() + "x"))", systemImage: "speedometer") {
-                    actions.speedPicker()
-                }
-                Button("Qualità video\(data.selectedVideoTrackName.map { " (\($0))" } ?? "")", systemImage: "4k.tv") {
-                    actions.qualityPicker()
-                }
-                Button("Impostazioni avanzate", systemImage: "slider.horizontal.3") {
-                    actions.advancedSettings()
-                }
-                Button("Audio e sottotitoli", systemImage: "text.bubble") {
-                    actions.trackPicker()
-                }
-                Button(
-                    data.sleepTimerMinutes.map { "Timer di spegnimento (\($0) min)" } ?? "Timer di spegnimento",
-                    systemImage: data.sleepTimerMinutes != nil ? "moon.zzz.fill" : "moon.zzz"
-                ) {
-                    actions.sleepTimerPicker()
-                }
+                Button(data.hardwareDecode ? "Usa KSPlayer (Metal)" : "Usa KSPlayer (Metal)", systemImage: "cpu") { actions.hardwareDecodeToggle() }
+                Button("Velocità di riproduzione (\(data.currentPlaybackRate == 1.0 ? "1x" : "\(data.currentPlaybackRate.formatted())x"))", systemImage: "speedometer") { actions.speedPicker() }
+                Button("Qualità video\(data.selectedVideoTrackName.map { ": \($0)" } ?? "")", systemImage: "4k.tv") { actions.qualityPicker() }
+                Button("Impostazioni avanzate", systemImage: "slider.horizontal.3") { actions.advancedSettings() }
+                Button("Audio e sottotitoli", systemImage: "text.bubble") { actions.trackPicker() }
+                Button(data.sleepTimerMinutes.map { "Timer di spegnimento (\($0) min)" } ?? "Timer di spegnimento", systemImage: data.sleepTimerMinutes != nil ? "moon.zzz.fill" : "moon.zzz") { actions.sleepTimerPicker() }
             }
-
             Section("Trasmissione video e audio") {
-                Button("AirPlay audio", systemImage: "airplayaudio") {
-                    actions.airPlayTrigger()
-                }
-                Button("AirPlay video", systemImage: "airplayvideo") {
-                    actions.airPlayTrigger()
-                }
-                Button("Chromecast (richiede Google Cast SDK)", systemImage: "tv.badge.wifi") {
-                    actions.chromecastTap()
-                }
+                Button("AirPlay audio", systemImage: "airplayaudio") { actions.airPlayTrigger() }
+                Button("AirPlay video", systemImage: "airplayvideo") { actions.airPlayTrigger() }
+                Button("Chromecast (richiede Google Cast SDK)", systemImage: "tv.badge.wifi") { actions.chromecastTap() }
             }
         } label: {
             GlassIconGlyph(systemImage: "ellipsis", size: 34)
@@ -716,14 +679,17 @@ struct PlayerTopBar: View, Equatable {
     }
 }
 
-// MARK: - KSPlayer Container Representable
+// MARK: - KSPlayer Container (Representable)
 
 /// Render Container per KSPlayer con gestione in-place ultra-ottimizzata.
-/// Riceve direttamente URL e Titolo. Quando l'URL cambia (es. zapping in Live TV o Serie TV),
-/// `updateUIView` esegue in modo sincrono:
-/// 1) Lo spegnimento del vecchio layer per bloccare istantaneamente il flusso e l'audio precedenti.
-/// 2) Il caricamento (`controller.load`) e l'aggancio del nuovo layer nel container senza sfarfallio o ritardi.
-/// 3) La deallocazione immediata di qualsiasi texture video residua del canale precedente.
+/// Riceve direttamente URL e Titolo. Quando l'URL cambia (es. zapping in
+/// Live TV o Serie TV), `updateUIView` esegue in modo sincrono:
+/// 1) Lo spegnimento del vecchio layer per bloccare istantaneamente il
+///    flusso e l'audio precedenti.
+/// 2) Il caricamento (`controller.load`) e l'aggancio del nuovo layer nel
+///    container, senza sfarfallio o ritardi.
+/// 3) La deallocazione immediata di qualsiasi texture video residua del
+///    canale precedente.
 struct KSPlayerContainerView: UIViewRepresentable {
     let url: URL
     let title: String
@@ -733,18 +699,20 @@ struct KSPlayerContainerView: UIViewRepresentable {
         var currentURL: URL?
         weak var currentLayer: KSPlayerLayer?
         weak var attachedPlayerView: UIView?
-        var pendingPlayRetry: [DispatchWorkItem]?
+        var pendingPlayRetry: [DispatchWorkItem] = []
         var stateCancellable: AnyCancellable?
 
         func cancelPendingTasks() {
-            pendingPlayRetry?.forEach { $0.cancel() }
-            pendingPlayRetry = nil
+            pendingPlayRetry.forEach { $0.cancel() }
+            pendingPlayRetry = []
             stateCancellable?.cancel()
             stateCancellable = nil
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
@@ -771,7 +739,6 @@ struct KSPlayerContainerView: UIViewRepresentable {
 
         let layer = controller.layer
         let currentView = layer.player.view
-
         // Se il layer o la playerView interna è stata rigenerata dal controller
         if coordinator.currentLayer !== layer || coordinator.attachedPlayerView !== currentView {
             attach(layer, in: uiView, coordinator: coordinator)
@@ -789,13 +756,12 @@ struct KSPlayerContainerView: UIViewRepresentable {
         container.subviews.forEach { $0.removeFromSuperview() }
 
         coordinator.currentLayer = layer
-
         guard let playerView = layer.player.view else { return }
         coordinator.attachedPlayerView = playerView
 
-        // La vista parte a trasparenza zero (sfondo nero puro) durante la connessione/decodifica del nuovo canale
+        // La vista parte a trasparenza zero (sfondo nero puro) durante la
+        // connessione/decodifica del nuovo canale
         playerView.alpha = 0
-
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         UIView.performWithoutAnimation {
@@ -805,7 +771,7 @@ struct KSPlayerContainerView: UIViewRepresentable {
                 playerView.topAnchor.constraint(equalTo: container.topAnchor),
                 playerView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
                 playerView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                playerView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                playerView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
             ])
             container.layoutIfNeeded()
         }
@@ -814,13 +780,11 @@ struct KSPlayerContainerView: UIViewRepresentable {
         // Rivelazione immediata appena il nuovo canale inizia a trasmettere fotogrammi reali
         coordinator.stateCancellable = controller.objectWillChange
             .receive(on: DispatchQueue.main)
-            .sink { [weak controller, weak playerView] _ in
+            .sink { [weak controller, weak playerView] in
                 DispatchQueue.main.async {
                     guard let controller, let playerView else { return }
-                    if controller.isPlaying && !controller.isBuffering && playerView.alpha < 1 {
-                        UIView.animate(withDuration: 0.15) {
-                            playerView.alpha = 1.0
-                        }
+                    if controller.isPlaying, !controller.isBuffering, playerView.alpha != 1 {
+                        UIView.animate(withDuration: 0.15) { playerView.alpha = 1.0 }
                     }
                 }
             }
@@ -853,6 +817,7 @@ struct AirPlayButton: UIViewRepresentable {
         onCreate?(view)
         return view
     }
+
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
 
@@ -874,6 +839,7 @@ struct ExternalPlayer: Identifiable {
         if let outplayerURL = URL(string: "outplayer://\(encoded)") {
             candidates.append(ExternalPlayer(displayName: "Outplayer", url: outplayerURL))
         }
+
         return candidates.filter { UIApplication.shared.canOpenURL($0.url) }
     }
 }
@@ -881,7 +847,9 @@ struct ExternalPlayer: Identifiable {
 enum MPVolumeSlider {
     private static let sharedVolumeView = MPVolumeView(frame: .zero)
 
-    static func currentVolume() -> Float { AVAudioSession.sharedInstance().outputVolume }
+    static func currentVolume() -> Float {
+        AVAudioSession.sharedInstance().outputVolume
+    }
 
     static func setVolume(_ value: Float) {
         if let slider = sharedVolumeView.subviews.compactMap({ $0 as? UISlider }).first {
@@ -926,12 +894,14 @@ struct QualityPickerView: View {
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
-                            .padding()
                     }
+                    .padding()
                 }
             }
             .navigationTitle("Qualità video")
-            .toolbar { Button("Chiudi") { dismiss() } }
+            .toolbar {
+                Button("Chiudi") { dismiss() }
+            }
         }
     }
 }
@@ -946,7 +916,13 @@ struct AdvancedSettingsView: View {
     @State private var autoDeInterlace: Bool
     @State private var isAccurateSeek: Bool
     @State private var videoDelay: Double
-    @State private var subtitleDisable: Bool
+    // RIMOSSO: `subtitleDisable`. Dipendeva da `KSOptions.subtitleDisable`,
+    // membro non presente nella build di KSPlayer usata da questo progetto
+    // (causa dell'errore "value of type 'KSPlaybackController.PlaybackPreferences'
+    // has no member 'subtitleDisable'"). Il toggle "Sottotitoli disattivati"
+    // e il relativo `controller.setSubtitleDisable(...)` sono stati rimossi
+    // per intero: per non vedere sottotitoli basta deselezionare la traccia
+    // attiva dal picker "Audio e sottotitoli" (`TrackPickerView`).
     @State private var autoSelectEmbedSubtitle: Bool
     @State private var videoDisable: Bool
 
@@ -959,7 +935,6 @@ struct AdvancedSettingsView: View {
         _autoDeInterlace = State(initialValue: prefs.autoDeInterlace)
         _isAccurateSeek = State(initialValue: prefs.isAccurateSeek)
         _videoDelay = State(initialValue: prefs.videoDelay)
-        _subtitleDisable = State(initialValue: prefs.subtitleDisable)
         _autoSelectEmbedSubtitle = State(initialValue: prefs.autoSelectEmbedSubtitle)
         _videoDisable = State(initialValue: prefs.videoDisable)
     }
@@ -968,16 +943,16 @@ struct AdvancedSettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Slider(value: $preferredBuffer, in: 1...30, step: 1) { Text("Buffer minimo") }
-                        .onChange(of: preferredBuffer) { newValue in
-                            controller.setPreferredForwardBufferDuration(newValue)
-                        }
+                    Slider(value: $preferredBuffer, in: 1...30, step: 1) {
+                        Text("Buffer minimo")
+                    }
+                    .onChange(of: preferredBuffer) { newValue in controller.setPreferredForwardBufferDuration(newValue) }
                     Text("Minimo: \(Int(preferredBuffer))s").foregroundStyle(.secondary)
 
-                    Slider(value: $maxBuffer, in: Double(max(Int(preferredBuffer), 5))...120, step: 5) { Text("Buffer massimo") }
-                        .onChange(of: maxBuffer) { newValue in
-                            controller.setMaxBufferDuration(newValue)
-                        }
+                    Slider(value: $maxBuffer, in: Double(max(Int(preferredBuffer), 5))...120, step: 5) {
+                        Text("Buffer massimo")
+                    }
+                    .onChange(of: maxBuffer) { newValue in controller.setMaxBufferDuration(newValue) }
                     Text("Massimo: \(Int(maxBuffer))s").foregroundStyle(.secondary)
                 } header: {
                     Text("Buffer")
@@ -987,24 +962,20 @@ struct AdvancedSettingsView: View {
 
                 Section {
                     Toggle("Decodifica hardware", isOn: $hardwareDecode)
-                        .onChange(of: hardwareDecode) { newValue in
-                            controller.setHardwareDecode(newValue)
-                        }
+                        .onChange(of: hardwareDecode) { newValue in controller.setHardwareDecode(newValue) }
                     Toggle("De-interlacciamento automatico", isOn: $autoDeInterlace)
-                        .onChange(of: autoDeInterlace) { newValue in
-                            controller.setAutoDeInterlace(newValue)
-                        }
+                        .onChange(of: autoDeInterlace) { newValue in controller.setAutoDeInterlace(newValue) }
                 } header: {
                     Text("Decodifica")
                 } footer: {
-                    Text("Disattiva la decodifica hardware se un canale si blocca o mostra artefatti: FFmpeg in software è più lento ma compatibile con flussi malformati. Il de-interlacciamento corregge l'effetto \"pettine\" tipico dei canali SD interlacciati. Entrambe ricaricano il flusso per applicarsi.")
+                    Text("Disattiva la decodifica hardware se un canale si blocca o mostra artefatti (FFmpeg in software è più lento ma compatibile con flussi malformati). Il de-interlacciamento corregge l'effetto \"pettine\" tipico dei canali SD interlacciati. Entrambe ricaricano il flusso per applicarsi.")
                 }
 
                 Section {
-                    Slider(value: $videoDelay, in: -2...2, step: 0.05) { Text("Sincronizzazione") }
-                        .onChange(of: videoDelay) { newValue in
-                            controller.setVideoDelay(newValue)
-                        }
+                    Slider(value: $videoDelay, in: -2...2, step: 0.05) {
+                        Text("Sincronizzazione")
+                    }
+                    .onChange(of: videoDelay) { newValue in controller.setVideoDelay(newValue) }
                     Text(videoDelaySummary).foregroundStyle(.secondary)
                     Button("Ripristina sincronizzazione") {
                         videoDelay = 0
@@ -1018,35 +989,24 @@ struct AdvancedSettingsView: View {
 
                 Section("Ricerca") {
                     Toggle("Ricerca accurata", isOn: $isAccurateSeek)
-                        .onChange(of: isAccurateSeek) { newValue in
-                            controller.setAccurateSeek(newValue)
-                        }
-                    Text("Posiziona la riproduzione esattamente al fotogramma richiesto invece che al keyframe più vicino: più precisa, leggermente più lenta.")
+                        .onChange(of: isAccurateSeek) { newValue in controller.setAccurateSeek(newValue) }
+                    Text("Posiziona la riproduzione esattamente al fotogramma richiesto invece che al keyframe più vicino (più precisa, leggermente più lenta).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 Section {
                     Toggle("Selezione automatica sottotitoli", isOn: $autoSelectEmbedSubtitle)
-                        .onChange(of: autoSelectEmbedSubtitle) { newValue in
-                            controller.setAutoSelectEmbedSubtitle(newValue)
-                        }
-                        .disabled(subtitleDisable)
-                    Toggle("Sottotitoli disattivati", isOn: $subtitleDisable)
-                        .onChange(of: subtitleDisable) { newValue in
-                            controller.setSubtitleDisable(newValue)
-                        }
+                        .onChange(of: autoSelectEmbedSubtitle) { newValue in controller.setAutoSelectEmbedSubtitle(newValue) }
                 } header: {
                     Text("Sottotitoli")
                 } footer: {
-                    Text("KSPlayer seleziona da solo la prima traccia sottotitoli incorporata nel flusso quando disponibile. Disattivali del tutto se rallentano l'apertura di un canale o se non li usi mai.")
+                    Text("KSPlayer seleziona da solo la prima traccia sottotitoli incorporata nel flusso quando disponibile. Per non vederli, deselezionali dal picker \"Audio e sottotitoli\".")
                 }
 
                 Section {
                     Toggle("Solo audio (disattiva video)", isOn: $videoDisable)
-                        .onChange(of: videoDisable) { newValue in
-                            controller.setVideoDisable(newValue)
-                        }
+                        .onChange(of: videoDisable) { newValue in controller.setVideoDisable(newValue) }
                 } header: {
                     Text("Video")
                 } footer: {
@@ -1059,7 +1019,9 @@ struct AdvancedSettingsView: View {
                 }
             }
             .navigationTitle("Impostazioni avanzate")
-            .toolbar { Button("Chiudi") { dismiss() } }
+            .toolbar {
+                Button("Chiudi") { dismiss() }
+            }
         }
     }
 
@@ -1119,7 +1081,9 @@ struct TrackPickerView: View {
                 }
             }
             .navigationTitle("Tracce")
-            .toolbar { Button("Chiudi") { dismiss() } }
+            .toolbar {
+                Button("Chiudi") { dismiss() }
+            }
         }
     }
 }
@@ -1133,10 +1097,7 @@ struct ChannelHistoryView: View {
         NavigationStack {
             Group {
                 if items.isEmpty {
-                    ContentUnavailableViewCompat(
-                        title: "Nessun canale recente",
-                        message: "I canali live che apri verranno elencati qui."
-                    )
+                    ContentUnavailableViewCompat(title: "Nessun canale recente", message: "I canali live che apri verranno elencati qui.")
                 } else {
                     List(items) { item in
                         Button {
@@ -1157,7 +1118,9 @@ struct ChannelHistoryView: View {
                 }
             }
             .navigationTitle("Cronologia dei canali")
-            .toolbar { Button("Chiudi") { dismiss() } }
+            .toolbar {
+                Button("Chiudi") { dismiss() }
+            }
         }
     }
 }
