@@ -9,40 +9,39 @@ import KSPlayer
 /// KSPlayerLayer.finish(player:error:), che ritenta con
 /// KSOptions.secondPlayerType su qualunque errore prima di arrendersi).
 ///
-/// ANALISI MANIACALE 2026-09-27 — "avformat: can't open input" su ALCUNI
-/// FILM VOD: con le impostazioni minime originali, KSPlayer non invia né
-/// uno User-Agent "credibile" da browser né un `Referer`. Molti servizi
-/// VOD/CDN applicano hotlink-protection o filtri sullo user-agent che
-/// bloccano SOLO alcuni contenuti (server/CDN diversi da titolo a
-/// titolo), mentre i canali live spesso passano da provider che non
-/// applicano questi controlli — da cui il sintomo "alcuni film sì, altri
-/// no, i canali funzionano". Il messaggio mostrato da KSPlayer è generico
-/// perché ingloba qualunque causa di fallimento di `avformat_open_input`
-/// (403, redirect rifiutato, protocollo negato, timeout) sotto lo stesso
-/// errore testuale, quindi non è possibile distinguere la causa esatta
-/// dal solo messaggio.
+/// ANALISI MANIACALE 2026-09-27 (ter) — "avformat: can't open input"
+/// PERSISTENTE su alcuni film VOD: il messaggio è generico e ingloba
+/// diverse cause distinte di fallimento di `avformat_open_input`. Un
+/// singolo retry automatico può non bastare se la causa reale non è lo
+/// User-Agent/Referer ma, ad esempio, un negoziato di decodifica
+/// hardware che fallisce prima ancora di leggere il container, o un
+/// probing troppo breve su un file con indice/heder posizionato in modo
+/// atipico. `handleOpenFailure` ora esegue una SEQUENZA di fino a 2
+/// tentativi di fallback automatici e silenziosi (l'utente vede
+/// l'errore solo se anche l'ultimo tentativo fallisce):
 ///
-/// FIX: `handleOpenFailure` intercetta OGNI fallimento di apertura e, se
-/// non è già stato tentato per l'URL corrente, esegue in modo silenzioso
-/// UN SOLO retry automatico ricreando il layer con uno User-Agent da
-/// browser reale (`fallbackUserAgent`) e un `Referer` derivato
-/// automaticamente dal dominio del flusso (`selfReferer`), SENZA
-/// modificare le preferenze scelte dall'utente (sono override
-/// esclusivamente transitori passati a `buildLayer`). Solo se anche
-/// questo secondo tentativo fallisce l'errore viene mostrato all'utente.
-/// Questo risolve la classe di problemi più comune per "apertura
-/// rifiutata su contenuti specifici" senza introdurre alcun rischio sugli
-/// altri flussi (canali live, altri VOD che già funzionano), perché si
-/// attiva ESCLUSIVAMENTE dopo un fallimento reale.
+/// 1. Tentativo iniziale: impostazioni scelte dall'utente, inalterate.
+/// 2. Fallback #1: User-Agent da browser reale + Referer auto-derivato
+///    dal dominio del flusso (aggira hotlink-protection/UA-filtering).
+/// 3. Fallback #2: come sopra, PIÙ decodifica forzata in software
+///    (bypassa un eventuale fallimento di negoziazione VideoToolbox),
+///    apertura "completa" invece di rapida (`isSecondOpen = false`) e
+///    probing/analisi ulteriormente estesi (50 MB / 30s) per file con
+///    intestazioni o indici collocati in modo non standard.
 ///
-/// FIX MANIACALE 2026-09-27 (precedente) — le opzioni di rete
-/// (`reconnect*`, `rtsp_transport`) sono calcolate IN BASE ALLO SCHEMA
-/// DELL'URL (`networkFormatContextOptions`): applicarle globalmente a
-/// qualunque protocollo (bug del turno precedente) lasciava chiavi RTSP
-/// "non consumate" su URL http(s) di file VOD gestiti esclusivamente dal
-/// motore FFmpeg (MKV/AVI non supportati nativamente da AVPlayer),
-/// causando lo stesso errore generico "can't open input". Ora ogni
-/// chiave è applicata solo al protocollo che la può davvero consumare.
+/// Ogni tentativo ricrea il layer da zero con `buildLayer`, SENZA mai
+/// modificare le `preferences` scelte dall'utente: i fallback sono
+/// esclusivamente transitori e si applicano solo al tentativo di
+/// apertura corrente.
+///
+/// FIX MANIACALE 2026-09-27 (bis) — le opzioni di rete (`reconnect*`,
+/// `rtsp_transport`) sono calcolate IN BASE ALLO SCHEMA DELL'URL
+/// (`networkFormatContextOptions`): applicarle globalmente a qualunque
+/// protocollo lasciava chiavi RTSP "non consumate" su URL http(s) di
+/// file VOD gestiti esclusivamente dal motore FFmpeg (MKV/AVI non
+/// supportati nativamente da AVPlayer), causando lo stesso errore
+/// generico "can't open input". Ogni chiave è applicata solo al
+/// protocollo che la può davvero consumare.
 ///
 /// FIX 2026-09-27 (precedente) — `subtitleDelay`/`subtitleDisable` NON
 /// esistono su `KSOptions` in questa versione della libreria e restano
@@ -285,7 +284,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// `fallbackUserAgent` SENZA modificare questo valore.
         var userAgent: String? = "GassPlayer/1.0"
         /// `KSOptions.referer`: intestazione Referer HTTP. Se `nil` al
-        /// momento del RETRY di fallback, viene derivato automaticamente
+        /// momento di un RETRY di fallback, viene derivato automaticamente
         /// dal dominio dell'URL (vedi `selfReferer`); il primo tentativo
         /// invece non forza alcun Referer se l'utente non ne ha impostato
         /// uno esplicito, per non alterare il comportamento su flussi che
@@ -341,7 +340,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private static let builtInProbesize: Int64 = 10_000_000
     private static let builtInMaxAnalyzeDuration: Int64 = 10_000_000
 
-    /// User-Agent di fallback usato SOLO nel retry automatico dopo un
+    /// Numero massimo di tentativi di apertura totali (1 iniziale + 2 di
+    /// fallback) prima di mostrare finalmente l'errore all'utente.
+    private static let maxOpenAttempts = 3
+
+    /// User-Agent di fallback usato SOLO nei retry automatici dopo un
     /// fallimento di apertura: uno user-agent da browser desktop reale,
     /// per aggirare i filtri di alcuni server/CDN VOD che negano
     /// l'accesso a richieste con user-agent non riconosciuti (tipicamente
@@ -350,7 +353,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Deriva un Referer plausibile dal dominio dell'URL stesso (es.
     /// `https://cdn.esempio.com/film.mkv` → `https://cdn.esempio.com/`),
-    /// usato SOLO nel retry di fallback quando l'utente non ha impostato
+    /// usato SOLO nei retry di fallback quando l'utente non ha impostato
     /// un Referer esplicito: molte protezioni "hotlink" richiedono che il
     /// Referer coincida (anche solo per dominio) con l'host del file
     /// stesso, non con l'app che lo richiede.
@@ -361,12 +364,12 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Calcola le opzioni `AVFormatContext`/protocollo di rete pertinenti
     /// ESCLUSIVAMENTE allo schema dell'URL corrente. Applicare
-    /// `rtsp_transport`/`rtsp_flags` a QUALUNQUE URL (bug di un turno
-    /// precedente) lasciava quelle chiavi "non consumate" su protocolli
-    /// non RTSP (http/https di file VOD, file locali, RTMP, ...),
-    /// condizione che alcuni demuxer FFmpeg rifiutano con errore di
-    /// apertura invece di ignorare silenziosamente. Ogni chiave è quindi
-    /// applicata SOLO quando il protocollo la può realmente consumare.
+    /// `rtsp_transport`/`rtsp_flags` a QUALUNQUE URL lasciava quelle
+    /// chiavi "non consumate" su protocolli non RTSP (http/https di file
+    /// VOD, file locali, RTMP, ...), condizione che alcuni demuxer FFmpeg
+    /// rifiutano con errore di apertura invece di ignorare
+    /// silenziosamente. Ogni chiave è quindi applicata SOLO quando il
+    /// protocollo la può realmente consumare.
     private static func networkFormatContextOptions(for url: URL) -> [String: String] {
         switch url.scheme?.lowercased() {
         case "http", "https":
@@ -417,12 +420,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private var watchdogTask: Task<Void, Never>?
     private var hasEverStartedPlaying = false
 
-    /// `true` se per l'URL correntemente caricato è già stato eseguito il
-    /// retry automatico di fallback (User-Agent browser + self-referer):
-    /// evita loop infiniti di retry e garantisce che, dopo un secondo
-    /// fallimento, l'errore venga finalmente mostrato all'utente.
-    /// Azzerato ad ogni `load(url:title:)`/`resetAttempts()`.
-    private var didAttemptFallbackOpen = false
+    /// Numero di tentativi di apertura già eseguiti per l'URL corrente
+    /// (0 = nessun fallimento ancora avvenuto). Azzerato ad ogni
+    /// `load(url:title:)`/`resetAttempts()`. Guida la sequenza di
+    /// fallback automatici in `handleOpenFailure`/`retryWithFallbackSettings`.
+    private var openAttemptCount = 0
 
     /// OTTIMIZZAZIONE FLUIDITÀ: KSPlayer invoca il delegate di avanzamento
     /// molto più spesso di quanto la UI necessiti per apparire fluida.
@@ -453,7 +455,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// di `PlaybackPreferences` confermata presente in `KSOptions`, con i
     /// default di rete calcolati IN BASE AL PROTOCOLLO dell'URL corrente
     /// e i default di probing/analisi sempre attivi. `userAgentOverride`/
-    /// `refererOverride` sono usati ESCLUSIVAMENTE dal retry di fallback
+    /// `refererOverride` sono usati ESCLUSIVAMENTE dai retry di fallback
     /// (`retryWithFallbackSettings`) e non toccano mai `preferences`.
     /// Metodo `static` perché deve poter essere chiamato anche dall'`init`,
     /// prima che `super.init()` completi.
@@ -501,7 +503,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.startPlayRate = preferences.startPlayRate
 
         // Rete: userAgentOverride/refererOverride hanno sempre la
-        // precedenza (usati solo dal retry di fallback); altrimenti si
+        // precedenza (usati solo dai retry di fallback); altrimenti si
         // usano i valori scelti dall'utente in `preferences`.
         options.userAgent = userAgentOverride ?? preferences.userAgent
         options.referer = refererOverride ?? preferences.referer
@@ -551,7 +553,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// distrutta/ricreata. Il vecchio layer viene fermato e scollegato, un
     /// nuovo `KSPlayerLayer` viene creato riapplicando integralmente le
     /// `preferences` correnti, e tutto lo stato di avanzamento/errore
-    /// (incluso il flag di fallback) viene azzerato per il nuovo contenuto.
+    /// (incluso il contatore dei tentativi di fallback) viene azzerato
+    /// per il nuovo contenuto.
     func load(url: URL, title: String) {
         layer.delegate = nil
         layer.pause()
@@ -564,7 +567,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         lastPublishedTime = -1
         hasEverStartedPlaying = false
         bufferingProgress = 0
-        didAttemptFallbackOpen = false
+        openAttemptCount = 0
         state = .initialized
 
         let newLayer = Self.buildLayer(for: url, preferences: preferences)
@@ -587,12 +590,20 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     /// Eseguito automaticamente e SILENZIOSAMENTE (nessun errore mostrato
-    /// all'utente) al primo fallimento di apertura per l'URL corrente:
-    /// ricrea il layer con lo stesso URL ma User-Agent da browser e
-    /// Referer auto-derivato dal dominio del flusso, senza alterare le
-    /// `preferences` scelte dall'utente. Se anche questo tentativo
-    /// fallisce, `handleOpenFailure` mostra finalmente l'errore.
-    private func retryWithFallbackSettings() {
+    /// all'utente) ad ogni fallimento di apertura per l'URL corrente,
+    /// finché non si raggiunge `maxOpenAttempts`. Ricrea il layer con lo
+    /// stesso URL ma con impostazioni progressivamente più permissive,
+    /// SENZA mai alterare le `preferences` scelte dall'utente:
+    ///
+    /// - Tentativo 1 (primo fallback): User-Agent da browser reale e
+    ///   Referer auto-derivato dal dominio del flusso — aggira
+    ///   hotlink-protection/UA-filtering, la causa più comune.
+    /// - Tentativo 2 (secondo fallback): come sopra, PIÙ decodifica
+    ///   forzata in software, apertura "completa" invece che rapida, e
+    ///   probing/analisi ulteriormente estesi (50 MB / 30s) — copre
+    ///   fallimenti di negoziazione hardware o container con indici
+    ///   collocati in modo atipico.
+    private func retryWithFallbackSettings(attempt: Int) {
         layer.delegate = nil
         layer.pause()
 
@@ -604,12 +615,27 @@ final class KSPlaybackController: NSObject, ObservableObject {
         state = .initialized
 
         let referer = preferences.referer ?? Self.selfReferer(for: currentURL)
-        let newLayer = Self.buildLayer(
-            for: currentURL,
-            preferences: preferences,
-            userAgentOverride: Self.fallbackUserAgent,
-            refererOverride: referer
-        )
+        let newLayer: KSPlayerLayer
+        if attempt <= 1 {
+            newLayer = Self.buildLayer(
+                for: currentURL,
+                preferences: preferences,
+                userAgentOverride: Self.fallbackUserAgent,
+                refererOverride: referer
+            )
+        } else {
+            var toughPreferences = preferences
+            toughPreferences.hardwareDecode = false
+            toughPreferences.isSecondOpen = false
+            toughPreferences.probesize = max(preferences.probesize ?? Self.builtInProbesize, 50_000_000)
+            toughPreferences.maxAnalyzeDuration = max(preferences.maxAnalyzeDuration ?? Self.builtInMaxAnalyzeDuration, 30_000_000)
+            newLayer = Self.buildLayer(
+                for: currentURL,
+                preferences: toughPreferences,
+                userAgentOverride: Self.fallbackUserAgent,
+                refererOverride: referer
+            )
+        }
         layer = newLayer
         layer.delegate = self
         layer.play()
@@ -618,17 +644,17 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Punto unico di gestione di un fallimento di apertura/riproduzione,
     /// invocato sia da `player(layer:state:)` (stato `.error`) sia da
-    /// `player(layer:finish:)`. Se non è già stato tentato un retry di
-    /// fallback per questo URL, lo esegue silenziosamente; altrimenti
-    /// mostra finalmente l'errore all'utente.
+    /// `player(layer:finish:)`. Se non è stato ancora raggiunto
+    /// `maxOpenAttempts`, esegue silenziosamente il prossimo tentativo di
+    /// fallback; altrimenti mostra finalmente l'errore all'utente.
     private func handleOpenFailure(message: String) {
-        guard !didAttemptFallbackOpen else {
+        guard openAttemptCount < Self.maxOpenAttempts - 1 else {
             lastError = message
             return
         }
-        didAttemptFallbackOpen = true
-        DebugLogger.logAsync(.warning, "KSPlaybackController: apertura fallita (\(message)); ritento con User-Agent browser e Referer automatico prima di mostrare l'errore")
-        retryWithFallbackSettings()
+        openAttemptCount += 1
+        DebugLogger.logAsync(.warning, "KSPlaybackController: apertura fallita (\(message)); ritento (tentativo \(openAttemptCount + 1)/\(Self.maxOpenAttempts)) prima di mostrare l'errore")
+        retryWithFallbackSettings(attempt: openAttemptCount)
     }
 
     func togglePlayPause() {
@@ -658,7 +684,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
     func resetAttempts() {
         lastError = nil
         hasEverStartedPlaying = false
-        didAttemptFallbackOpen = false
+        openAttemptCount = 0
         layer.play()
         startWatchdog()
     }
