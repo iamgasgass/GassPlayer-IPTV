@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Metriche visive condivise conformi al design nativo compatto
+/// Metriche visive condivise conformi al design nativo compatto di iOS
 enum MediaDetailMetrics {
     static let heroHeight: CGFloat = 340
     static let heroFadeHeight: CGFloat = 130
