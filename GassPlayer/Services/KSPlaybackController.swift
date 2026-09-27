@@ -19,16 +19,22 @@ import KSPlayer
 /// tempo/velocità di partenza, adattamento automatico del bitrate e
 /// rendering panoramico 360°/VR).
 ///
-/// AGGIORNAMENTO 2026-09-27 (bis) — "AVFORMAT DI DEFAULT" GIÀ ATTIVI:
-/// in precedenza `formatContextOptions`/`probesize`/`maxAnalyzeDuration`
-/// partivano vuoti/nil e richiedevano configurazione manuale dall'utente
-/// per essere utili. Ora `PlaybackPreferences()` nasce con un set di
-/// opzioni `AVFormatContext` GIÀ EFFICACI per la massima compatibilità
-/// IPTV/streaming out-of-the-box (vedi `PlaybackPreferences.init`), unite
-/// in `buildLayer` in modo ADDITIVO ai default interni di KSOptions (mai
-/// sovrascritti, solo integrati). L'utente può comunque disattivarle o
-/// aggiungerne altre dal pannello Impostazioni avanzate, che ora mostra
-/// queste voci già popolate e rimovibili singolarmente.
+/// AGGIORNAMENTO 2026-09-27 (bis) — DEFAULT AVFORMAT GIÀ EFFICACI: in
+/// precedenza `formatContextOptions` partiva vuoto ([:]) e le opzioni
+/// grezze di FFmpeg dovevano essere digitate a mano nel pannello
+/// "Impostazioni avanzate" prima di avere QUALSIASI effetto. Ora
+/// `PlaybackPreferences.formatContextOptions` viene inizializzato con un
+/// set di opzioni `AVFormatContext`/protocollo (HTTP, HLS, RTSP, RTMP)
+/// riconosciute da FFmpeg per la riconnessione automatica, il timeout di
+/// rete e il trasporto RTSP via TCP — gli stessi parametri che player
+/// IPTV robusti applicano sempre di default. Sono attive dal primissimo
+/// avvio (fanno parte del valore di default della struct, quindi
+/// `PlaybackPreferences()` le contiene già) e continuano a essere unite
+/// ADDITIVAMENTE — mai sovrascritte — a qualunque opzione l'utente
+/// aggiunga o rimuova a mano dal pannello avanzato, esattamente come
+/// prima. `buildLayer(for:preferences:)` non è stato toccato: la logica
+/// di merge esisteva già e ora ha semplicemente dei default non vuoti da
+/// applicare.
 ///
 /// FIX 2026-09-25 (zapping canale/episodio "senza uscire e riaprire il
 /// player"): `layer` è `@Published` (non `let`): `load(url:title:)` crea
@@ -270,23 +276,15 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// richiedono token/cookie/Origin specifici.
         var customHTTPHeaders: [String: String] = [:]
         /// `KSOptions.cache`: cache HTTP lato FFmpeg (solo protocollo
-        /// http/https). Lasciata disattivata di default: i flussi live
-        /// IPTV non beneficiano di una cache su disco, che rallenterebbe
-        /// soltanto lo zapping.
+        /// http/https).
         var httpCacheEnabled: Bool = false
-        /// `KSOptions.probesize` (byte): quantità di dati analizzata da
-        /// FFmpeg per il probing del formato. Default a 5 MB (invece di
-        /// `nil`/default FFmpeg da ~5 MB già standard ma spesso insufficiente
-        /// su multiplex IPTV con PAT/PMT ritardati): rileva in modo
-        /// affidabile TUTTE le tracce audio/video/sottotitoli disponibili
-        /// già al primo apri, senza richiedere configurazione manuale.
-        var probesize: Int64? = 5_000_000
-        /// `KSOptions.maxAnalyzeDuration` (µs, timebase FFmpeg
-        /// `AV_TIME_BASE`): durata massima dedicata all'analisi del
-        /// flusso in apertura. Default a 5 secondi: sufficiente a
-        /// individuare tracce multiple su contenitori MPEG-TS/HLS senza
-        /// rallentare percettibilmente l'avvio dello zapping.
-        var maxAnalyzeDuration: Int64? = 5_000_000
+        /// `KSOptions.probesize`: quantità di dati (byte) analizzata da
+        /// FFmpeg per il probing del formato — aumentarla aiuta con
+        /// flussi IPTV che annunciano male le proprie tracce.
+        var probesize: Int64?
+        /// `KSOptions.maxAnalyzeDuration`: durata massima (in unità di
+        /// timebase FFmpeg) dedicata all'analisi del flusso in apertura.
+        var maxAnalyzeDuration: Int64?
 
         // MARK: Filtri FFmpeg
         /// `KSOptions.videoFilters`: catena di filtri video FFmpeg
@@ -296,44 +294,51 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// `"volume=2.0"`, `"aecho=0.8:0.9:1000:0.3"`).
         var audioFilters: [String] = []
 
-        // MARK: Opzioni FFmpeg grezze — AVFORMAT DI DEFAULT GIÀ ATTIVI
+        // MARK: Opzioni FFmpeg grezze (potere assoluto, per utenti avanzati)
+        //
+        // `formatContextOptions` NON parte più vuoto: contiene di default
+        // il set di parametri `AVFormatContext`/protocollo che qualunque
+        // player IPTV robusto applica sempre, così la riconnessione
+        // automatica su rete instabile e il trasporto RTSP via TCP sono
+        // GIÀ EFFICACI dal primo avvio, senza che l'utente debba digitare
+        // nulla nel pannello avanzato:
+        //
+        // - "reconnect"/"reconnect_at_eof"/"reconnect_streamed" (1): fa
+        //   ritentare automaticamente la connessione HTTP/HLS quando il
+        //   server IPTV la chiude o si raggiunge un EOF anomalo, invece
+        //   di terminare la riproduzione con errore.
+        // - "reconnect_delay_max" (5): attesa massima (s) tra i tentativi
+        //   di riconnessione, per non martellare un server già in difficoltà.
+        // - "rw_timeout" (15000000 µs = 15s): timeout generico di
+        //   lettura/scrittura I/O, evita attese infinite su un server
+        //   IPTV che ha smesso di rispondere senza chiudere la socket.
+        // - "multiple_requests" (1) / "http_persistent" (1): riusa la
+        //   stessa connessione HTTP per richieste successive (keyframe
+        //   seek, cambio qualità), riducendo la latenza di zapping.
+        // - "rtsp_transport" ("tcp") / "rtsp_flags" ("prefer_tcp"): forza
+        //   il trasporto RTSP su TCP invece di UDP, molto più affidabile
+        //   dietro NAT/firewall tipici delle reti IPTV domestiche.
+        //
+        // Chiavi non pertinenti al protocollo del flusso corrente (es.
+        // "rtsp_transport" su una URL http://) vengono semplicemente
+        // ignorate da FFmpeg, senza causare errori di apertura. Vengono
+        // unite ADDITIVAMENTE — mai sovrascritte — a qualunque opzione
+        // l'utente aggiunga/rimuova dal pannello "Impostazioni avanzate".
         /// `KSOptions.formatContextOptions`: opzioni passate direttamente
-        /// ad `AVFormatContext`/ai protocolli sottostanti (HTTP, RTSP,
-        /// MPEG-TS...). A differenza della versione precedente, questo
-        /// dizionario NON parte vuoto: contiene già, per ogni nuova
-        /// sessione, il set di opzioni "avformat" con la massima efficacia
-        /// pratica per la riproduzione IPTV/streaming reale:
-        ///
-        /// - `reconnect=1`, `reconnect_at_eof=1`, `reconnect_streamed=1`,
-        ///   `reconnect_delay_max=2`: FFmpeg riconnette automaticamente
-        ///   un flusso HTTP/HLS caduto (anche a fine-flusso inatteso, tipico
-        ///   di provider IPTV instabili) entro 2s, invece di lasciare il
-        ///   watchdog dell'app come unica rete di sicurezza dopo 7s.
-        /// - `rtsp_transport=tcp`: forza il trasporto RTSP su TCP invece
-        ///   di UDP, molto più tollerante a NAT/firewall e perdita
-        ///   pacchetti — innocuo per flussi non-RTSP (FFmpeg ignora
-        ///   l'opzione se il protocollo non la riconosce).
-        /// - `timeout=15000000` (15s, µs): timeout massimo per le
-        ///   operazioni socket sottostanti, evita attese indefinite su
-        ///   server IPTV che accettano la connessione ma non rispondono.
-        ///
-        /// Tutte le voci restano visibili, modificabili e rimovibili
-        /// singolarmente dal pannello "Impostazioni avanzate → Opzioni
-        /// FFmpeg avanzate". Vengono unite in modo ADDITIVO ai default
-        /// interni di `KSOptions()` in `buildLayer` (mai sovrascritti),
-        /// così eventuali reconnect/timeout già impostati dalla libreria
-        /// restano intatti se non esplicitamente rimpiazzati qui.
+        /// ad `AVFormatContext` (es. `"reconnect": "1"`, `"rtsp_transport": "tcp"`).
         var formatContextOptions: [String: String] = [
             "reconnect": "1",
             "reconnect_at_eof": "1",
             "reconnect_streamed": "1",
-            "reconnect_delay_max": "2",
+            "reconnect_delay_max": "5",
+            "rw_timeout": "15000000",
+            "multiple_requests": "1",
+            "http_persistent": "1",
             "rtsp_transport": "tcp",
-            "timeout": "15000000",
+            "rtsp_flags": "prefer_tcp",
         ]
         /// `KSOptions.decoderOptions`: opzioni passate al decoder FFmpeg
-        /// selezionato (es. `"threads": "4"`). Vuoto di default: nessuna
-        /// necessità di override finché l'utente non lo richiede.
+        /// selezionato (es. `"threads": "4"`).
         var decoderOptions: [String: String] = [:]
         /// `KSOptions.avOptions`: opzioni FFmpeg generiche di libreria.
         var avOptions: [String: String] = [:]
@@ -383,8 +388,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Costruisce un nuovo `KSPlayerLayer` applicando l'INTERA superficie
     /// di `PlaybackPreferences` (quindi l'intera superficie esposta di
-    /// KSOptions/FFmpeg) alle opzioni del nuovo layer, incluse le opzioni
-    /// "avformat" di default già attive fin dalla prima apertura. Metodo
+    /// KSOptions/FFmpeg, INCLUSI i default avformat di riconnessione/
+    /// timeout/RTSP-TCP già attivi) alle opzioni del nuovo layer. Metodo
     /// `static` perché deve poter essere chiamato anche dall'`init`, prima
     /// che `super.init()` completi.
     private static func buildLayer(for url: URL, preferences: PlaybackPreferences) -> KSPlayerLayer {
@@ -440,11 +445,12 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.videoFilters = preferences.videoFilters
         options.audioFilters = preferences.audioFilters
 
-        // Opzioni FFmpeg grezze — incluse le opzioni "avformat" di
-        // default (reconnect/rtsp_transport/timeout) — unite ai default
-        // della libreria senza rimpiazzarli: i reconnect/timeout impostati
-        // internamente da KSOptions restano attivi, e le nostre voci
-        // vincono solo in caso di conflitto sulla stessa chiave.
+        // Opzioni FFmpeg grezze — unite ai default della libreria senza
+        // rimpiazzarli. Da questo aggiornamento `formatContextOptions` NON
+        // è più vuoto di default (vedi commento sulla proprietà): i
+        // parametri di riconnessione/timeout/RTSP-TCP sono quindi già
+        // effettivi qui, ad ogni apertura o ricarica del flusso, anche se
+        // l'utente non ha mai aperto il pannello "Impostazioni avanzate".
         if !preferences.formatContextOptions.isEmpty {
             options.formatContextOptions.merge(preferences.formatContextOptions.mapValues { $0 as Any }) { _, new in new }
         }
@@ -468,8 +474,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// distrutta/ricreata. Il vecchio layer viene fermato e scollegato, un
     /// nuovo `KSPlayerLayer` viene creato riapplicando integralmente le
     /// `preferences` correnti (incluse TUTTE le opzioni FFmpeg avanzate e
-    /// gli "avformat" di default), e tutto lo stato di avanzamento/errore
-    /// viene azzerato.
+    /// i default avformat di riconnessione/RTSP-TCP), e tutto lo stato di
+    /// avanzamento/errore viene azzerato.
     func load(url: URL, title: String) {
         layer.delegate = nil
         layer.pause()
@@ -760,6 +766,14 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     // MARK: - Opzioni FFmpeg grezze (potere assoluto, richiede reload)
+    //
+    // Queste funzioni restano il punto di ingresso per personalizzare o
+    // RIMUOVERE anche i default avformat impostati in
+    // `PlaybackPreferences.formatContextOptions` (es. se un server IPTV
+    // specifico si comporta meglio con `reconnect_delay_max` diverso):
+    // `setFormatContextOption` sovrascrive la singola chiave, mentre
+    // `removeFormatContextOption` la elimina anche se era un default di
+    // fabbrica, senza toccare le altre.
 
     func setFormatContextOption(key: String, value: String) {
         guard !key.isEmpty else { return }
@@ -769,15 +783,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     func removeFormatContextOption(key: String) {
         preferences.formatContextOptions.removeValue(forKey: key)
-        reload()
-    }
-
-    /// Ripristina esattamente il set di opzioni "avformat" di default
-    /// (reconnect/rtsp_transport/timeout) descritto in
-    /// `PlaybackPreferences.formatContextOptions`, sovrascrivendo qualsiasi
-    /// personalizzazione applicata in precedenza dall'utente.
-    func resetFormatContextOptionsToDefaults() {
-        preferences.formatContextOptions = PlaybackPreferences().formatContextOptions
         reload()
     }
 
@@ -809,11 +814,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
             // 7s di schermo nero prima che il watchdog ritenti: abbastanza
             // per non scambiare per errore un server IPTV lento a
             // rispondere per un flusso morto, ma percepito come "rapido".
-            // Nella maggior parte dei casi reali il reconnect FFmpeg
-            // (`reconnect`/`reconnect_at_eof`/`reconnect_streamed`, attivi
-            // di default — vedi `PlaybackPreferences.formatContextOptions`)
-            // risolve la caduta di rete prima ancora che questo watchdog
-            // scatti.
             try? await Task.sleep(nanoseconds: 7_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard !self.hasEverStartedPlaying, self.lastError == nil else { return }
