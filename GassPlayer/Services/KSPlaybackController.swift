@@ -5,56 +5,43 @@ import KSPlayer
 
 /// Bridge SwiftUI-friendly per KSPlayerLayer.
 ///
-/// FIX 2026-09-28 (compatibilità "TUTTI I FORMATI" + errore
+/// FIX 2026-09-28a (compatibilità "TUTTI I FORMATI" + errore
 /// `mpeg4 (Advanced Simple Profile) yuv420p 720x304`):
+/// FFmpeg (`KSMEPlayer`) diventa il motore PRIMARIO globale, con
+/// fallback automatico hardware -> software su qualsiasi errore prima
+/// di arrendersi (vedi `configureGlobalPlayerEngineIfNeeded()` e
+/// `player(layer:finish:)`).
 ///
-/// Il problema riportato NON è un bug di rete o di buffering: è un
-/// problema di *scelta del motore di decodifica*. `KSAVPlayer` (basato
-/// su `AVFoundation`/`VideoToolbox`, il motore nativo Apple "Metal") non
-/// supporta affatto il profilo MPEG-4 ASP (Xvid-style) — Apple supporta
-/// solo H.264/H.265/(alcuni) MPEG-4 Simple Profile via hardware. Con le
-/// impostazioni precedenti, `KSAVPlayer` veniva provato per primo
-/// (default di libreria), falliva su questo codec, e il fallback verso
-/// `KSMEPlayer` (FFmpeg) non compensava perché la decodifica *hardware*
-/// (`VideoToolbox`) veniva comunque tentata anche dentro FFmpeg
-/// (`hardwareDecode = true`), fallendo di nuovo per lo stesso motivo:
-/// VideoToolbox non ha un decoder hardware per MPEG-4 ASP su nessun
-/// dispositivo Apple. Il flusso non ha mai raggiunto il decoder
-/// **software** FFmpeg (libavcodec), che invece supporta letteralmente
-/// qualsiasi codec/contenitore esistente (mpeg4, h263, vc1, wmv, vp6,
-/// flv1, rv40, ecc.).
+/// FIX 2026-09-28b ("risorsa non disponibile" identico su hardware E
+/// software): il log mostrava lo STESSO errore, ISTANTANEO, su entrambi
+/// i tentativi — segno che il problema non era il decoder ma la nostra
+/// stessa configurazione FFmpeg, che impediva l'apertura del flusso
+/// ancora prima di arrivare al decoder. Due cause individuate e
+/// corrette:
 ///
-/// Soluzione implementata:
-/// 1) `KSMEPlayer` (motore FFmpeg) diventa il player PRIMARIO globale
-///    (`KSOptions.firstPlayerType`). `KSAVPlayer` (motore nativo,
-///    accelerazione hardware "Metal"/VideoToolbox) diventa il
-///    FALLBACK secondario (`KSOptions.secondPlayerType`), usato solo se
-///    FFmpeg stesso non riesce ad aprire il contenitore (praticamente
-///    mai, dato che FFmpeg decodifica tutto).
-/// 2) Fallback automatico hardware -> software SENZA intervento
-///    dell'utente: se la pipeline va in errore con `hardwareDecode`
-///    attivo, il controller disattiva la decodifica hardware e ricarica
-///    UNA volta in automatico prima di mostrare qualsiasi errore. Questo
-///    risolve esattamente il caso "Codec: mpeg4 (Advanced Simple
-///    Profile), yuv420p, 720x304": il primo tentativo (hardware) fallisce
-///    silenziosamente e il secondo tentativo (software, FFmpeg puro)
-///    riesce, perché libavcodec ha un decoder mpeg4/xvid nativo che non
-///    dipende da alcun chip di accelerazione.
-/// 3) Tuning di latenza: buffer di partenza minimi, opzioni FFmpeg di
-///    analisi rapida (`probesize`/`maxAnalyzeDuration`), niente
-///    bufferizzazione extra lato demuxer (`nobuffer`), `codecLowDelay`
-///    per non introdurre ritardo di riordino B-frame dove il codec lo
-///    consente, e riconnessione automatica sui timeout HTTP tipici
-///    delle playlist IPTV.
+/// 1) `avOptions` in KSPlayer sono le opzioni di **AVFoundation/
+///    AVURLAsset**, usate SOLO dal motore nativo `KSAVPlayer`: non
+///    hanno alcun effetto (e possono confondere l'engine) sul motore
+///    FFmpeg `KSMEPlayer`, che è il nostro primario. Le opzioni FFmpeg
+///    reali (avformat/protocollo: `reconnect`, `timeout`, ecc.) vanno
+///    invece in `formatContextOptions`, che è la vera controparte
+///    dell'`AVDictionary` passata a `avformat_open_input`. Le chiavi di
+///    riconnessione sono state spostate lì.
+/// 2) `probesize`/`maxAnalyzeDuration` erano stati ridotti in modo
+///    troppo aggressivo (500KB / 1s) per "guadagnare" qualche
+///    millisecondo di latenza. Molti file AVI/MP4 di IPTV/VOD (incluso
+///    verosimilmente questo film) hanno metadata di stream non
+///    immediatamente all'inizio del file: con un probe troppo piccolo,
+///    FFmpeg può fallire silenziosamente l'apertura del contenitore
+///    PRIMA ancora di sapere quali codec sono coinvolti — da cui
+///    l'errore generico e identico su entrambi i motori. Questi limiti
+///    sono stati rimossi (si lascia FFmpeg usare i suoi default
+///    robusti): la compatibilità totale ha priorità sui millisecondi.
 ///
-/// NOTA COMPATIBILITÀ API: le proprietà usate qui (`firstPlayerType`,
-/// `secondPlayerType`, `hardwareDecode`, `asynchronousDecompression`,
-/// `codecLowDelay`, `probesize`, `maxAnalyzeDuration`, `avOptions`,
-/// `decoderOptions`, `formatContextOptions`) sono quelle realmente
-/// esposte da `KSOptions` nella libreria KSPlayer. Non esiste una
-/// proprietà `videoSoftDecodeThreadCount`: il parallelismo del decoder
-/// software si configura passando la chiave FFmpeg `"threads"` dentro
-/// `decoderOptions`, che è la via corretta e documentata.
+/// Inoltre l'errore ora viene SEMPRE mostrato con il testo reale
+/// riportato dal motore (non più un messaggio generico "formato non
+/// supportato" quando il problema è di rete/risorsa): questo evita di
+/// confondere un URL non raggiungibile con un problema di codec.
 enum VideoGravityMode: String, CaseIterable, Identifiable {
     /// Il video intero è visibile, con eventuali barre nere ai lati:
     /// nessun ritaglio, nessuna deformazione. Default.
@@ -109,7 +96,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// stato di verità riapplicato ad ogni nuovo `KSPlayerLayer`, sia al
     /// primo avvio sia ad ogni cambio canale/episodio.
     struct PlaybackPreferences {
-        var preferredForwardBufferDuration: Double = 2
+        var preferredForwardBufferDuration: Double = 3
         var maxBufferDuration: Double = 30
         /// `KSOptions.hardwareDecode`: decodifica hardware
         /// (VideoToolbox, "Metal") vs software (FFmpeg puro,
@@ -157,9 +144,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// ancora attivo, tentiamo UNA sola volta il ricaricamento in
     /// decodifica 100% software (FFmpeg/libavcodec) prima di arrenderci
     /// e mostrare l'errore all'utente. Questo flag evita loop infiniti:
-    /// se anche il tentativo software fallisce, il formato/contenitore è
-    /// realmente non apribile (file corrotto, URL morto) e l'errore
-    /// viene mostrato normalmente.
+    /// se anche il tentativo software fallisce, mostriamo l'errore reale
+    /// (che può essere di rete/risorsa, non necessariamente di codec).
     private var didAttemptSoftwareFallback = false
 
     /// Configurazione GLOBALE del motore di riproduzione: applicata una
@@ -211,15 +197,12 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// Costruisce un nuovo `KSPlayerLayer` con le opzioni derivate dalle
     /// `PlaybackPreferences` correnti, ottimizzato per: (1) compatibilità
     /// massima di formato/codec via FFmpeg, (2) latenza minima
-    /// all'avvio e allo zapping.
+    /// all'avvio e allo zapping, SENZA sacrificare la capacità di
+    /// FFmpeg di analizzare correttamente il contenitore.
     private static func buildLayer(for url: URL, preferences: PlaybackPreferences) -> KSPlayerLayer {
         let options = KSOptions()
 
-        // --- Buffering: minimo indispensabile, non un secondo di più ---
-        // Un buffer di partenza ridotto significa che il primo fotogramma
-        // arriva prima. `maxBufferDuration` resta più ampio per assorbire
-        // reti IPTV instabili senza reintrodurre latenza percepita
-        // all'avvio (si riempie in background dopo che si è già in play).
+        // --- Buffering ---
         options.preferredForwardBufferDuration = preferences.preferredForwardBufferDuration
         options.maxBufferDuration = preferences.maxBufferDuration
         options.registerRemoteControll = true
@@ -234,10 +217,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
         // Decompressione asincrona: il rendering non aspetta la CPU/GPU
         // in modo bloccante, riducendo micro-scatti percepiti.
         options.asynchronousDecompression = true
-        // Disattiva il riordino/attesa dei B-frame dove il codec lo
-        // consente: meno ritardo strutturale prima del primo fotogramma
-        // visibile, specialmente utile in streaming live IPTV.
-        options.codecLowDelay = true
 
         // Se si finisce in decodifica software (fallback automatico o
         // scelta manuale), usa più thread FFmpeg per il decoder video
@@ -246,19 +225,39 @@ final class KSPlaybackController: NSObject, ObservableObject {
         let threadCount = min(ProcessInfo.processInfo.activeProcessorCount, 4)
         options.decoderOptions["threads"] = "\(threadCount)"
 
-        // --- Riduzione latenza a livello di demux/analisi FFmpeg ---
-        // Analisi iniziale del flusso più rapida: individua i codec senza
-        // scansionare secondi di dati prima di iniziare a decodificare.
-        options.probesize = 500_000 // byte
-        options.maxAnalyzeDuration = 1_000_000 // microsecondi
+        // NON tocchiamo `probesize`/`maxAnalyzeDuration`: forzarli a
+        // valori piccoli per "guadagnare latenza" ha causato in
+        // precedenza il fallimento di apertura di contenitori AVI/MP4
+        // con metadata non lineare (l'errore "risorsa non disponibile"
+        // riprodotto identico su hardware E software). Si lasciano i
+        // default della libreria, che sanno già bilanciare velocità e
+        // correttezza dell'analisi del contenitore.
 
-        // Riconnessione automatica sui flussi HTTP/HLS IPTV che cadono
-        // per un istante: evita che un singolo timeout diventi un errore
-        // fatale mostrato all'utente. Sono opzioni del protocollo HTTP
-        // di libavformat, passate via `avOptions`.
-        options.avOptions["reconnect"] = 1
-        options.avOptions["reconnect_streamed"] = 1
-        options.avOptions["reconnect_delay_max"] = 2
+        // --- Opzioni FFmpeg reali (avformat/protocollo), NON opzioni
+        // AVFoundation: vanno in `formatContextOptions`, la vera
+        // controparte dell'AVDictionary passata a
+        // `avformat_open_input`. `avOptions` in KSPlayer è invece
+        // riservato alle opzioni di AVURLAsset usate solo dal motore
+        // nativo KSAVPlayer: metterci opzioni FFmpeg lì non ha alcun
+        // effetto sul motore primario e va evitato.
+        if url.scheme == "http" || url.scheme == "https" {
+            // Riconnessione automatica sui flussi HTTP/HLS IPTV che
+            // cadono per un istante: evita che un singolo timeout
+            // diventi un errore fatale mostrato all'utente.
+            options.formatContextOptions["reconnect"] = 1
+            options.formatContextOptions["reconnect_streamed"] = 1
+            options.formatContextOptions["reconnect_delay_max"] = 2
+            // Timeout di connessione/lettura (microsecondi): evita che
+            // un server IPTV lento a rispondere blocchi indefinitamente
+            // l'apertura del flusso senza mai restituire un errore.
+            options.formatContextOptions["timeout"] = 15_000_000
+            options.formatContextOptions["rw_timeout"] = 15_000_000
+        }
+        // Molte playlist HLS di IPTV referenziano sotto-manifest/segmenti
+        // su protocolli diversi (http/https/crypto per gli stream
+        // cifrati AES-128): senza whitelist esplicita FFmpeg può
+        // rifiutare l'apertura con "Protocol not found" su alcuni CDN.
+        options.formatContextOptions["protocol_whitelist"] = "file,http,https,tcp,tls,crypto,hls,applehttp"
 
         let layer = KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
         layer.player.contentMode = preferences.videoGravity.contentMode
@@ -416,19 +415,26 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
         self.duration = totalTime
     }
 
-    /// FIX PRINCIPALE per l'errore "Codec: mpeg4 (Advanced Simple
-    /// Profile), yuv420p, 720x304" e qualunque altro codec che
-    /// VideoToolbox non sa decodificare in hardware: se il flusso va in
-    /// errore mentre `hardwareDecode` è attivo, NON mostriamo subito
-    /// l'errore all'utente. Disattiviamo la decodifica hardware (forzando
-    /// FFmpeg a decodificare in software, via libavcodec, che supporta
-    /// il codec) e ricarichiamo lo stesso URL UNA sola volta. Solo se
-    /// anche il tentativo software fallisce, l'errore viene propagato
-    /// davvero: a quel punto il problema non è più il codec ma il file/
-    /// URL stesso.
+    /// Gestione unificata degli errori di riproduzione.
+    ///
+    /// Se il flusso va in errore mentre `hardwareDecode` è attivo,
+    /// tentiamo automaticamente UNA volta la decodifica 100% software
+    /// (FFmpeg/libavcodec), che copre i codec che VideoToolbox non
+    /// decodifica in hardware (es. MPEG-4 Advanced Simple Profile).
+    ///
+    /// FIX 2026-09-28: mostriamo sempre il messaggio di errore REALE
+    /// riportato dal motore (`error.localizedDescription`), non più un
+    /// testo generico che ipotizzava sempre "formato non supportato".
+    /// Un errore come "risorsa non disponibile" indica quasi sempre un
+    /// problema di rete/URL (server irraggiungibile, link scaduto,
+    /// playlist non più valida) e va comunicato come tale: continuare a
+    /// suggerire "il formato potrebbe non essere supportato" in quel
+    /// caso è fuorviante e fa perdere tempo a diagnosticare la causa
+    /// vera.
     func player(layer: KSPlayerLayer, finish error: Error?) {
         guard let error else { return }
-        DebugLogger.logAsync(.error, "KSPlaybackController: riproduzione terminata con errore: \(error.localizedDescription)")
+        let description = error.localizedDescription
+        DebugLogger.logAsync(.error, "KSPlaybackController: riproduzione terminata con errore: \(description)")
 
         if preferences.hardwareDecode, !didAttemptSoftwareFallback {
             didAttemptSoftwareFallback = true
@@ -438,7 +444,7 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
             return
         }
 
-        lastError = "Impossibile riprodurre il flusso. Il server potrebbe non essere raggiungibile o il formato non è supportato nemmeno in decodifica software."
+        lastError = description
     }
 
     func player(layer: KSPlayerLayer, bufferedCount: Int, consumeTime: TimeInterval) {
