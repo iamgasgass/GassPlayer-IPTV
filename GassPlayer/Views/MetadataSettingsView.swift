@@ -58,7 +58,7 @@ struct MetadataSettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 8) {
                 Image(systemName: omdbAPIKey.isEmpty ? "circle.dashed" : "checkmark.circle.fill")
-                    .foregroundStyle(omdbAPIKey.isEmpty ? .secondary : .green)
+                    .foregroundStyle(omdbAPIKey.isEmpty ? Color.secondary : Color.green)
                 Text("OMDb (facoltativa)")
                     .font(.headline)
             }
