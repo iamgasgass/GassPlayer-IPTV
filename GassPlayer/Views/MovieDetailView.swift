@@ -6,7 +6,6 @@ private struct MoviePlaybackTarget: Identifiable {
     let title: String
 }
 
-/// Scheda dettaglio Film VOD con proporzioni calibrate ed allineamento orizzontale privo di zoom
 struct MovieDetailView: View {
     let credentials: XtreamCredentials
     let stream: XtreamStream
@@ -45,7 +44,6 @@ struct MovieDetailView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Header Backdrop
                 MediaHeroHeader(
                     title: stream.name,
                     logoURL: detail.logoURL,
@@ -54,53 +52,41 @@ struct MovieDetailView: View {
                     onClose: { dismiss() }
                 )
 
-                // Blocco centrale
-                VStack(spacing: 12) {
-                    // Riga voto / durata / generi
+                VStack(alignment: .leading, spacing: 16) {
                     MediaMetaRow(
                         ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
                         secondaryText: detail.runtimeLabel ?? detail.year,
                         genres: detail.genres
                     )
 
-                    // Pulsante Riproduci il film
                     MediaPlayButton(title: "Riproduci il film") {
                         play()
                     }
 
-                    // Riga icone: Preferiti, Muto, Download + Altre fonti
                     iconRow
 
-                    // Trama
                     if let overview = detail.overview, !overview.isEmpty {
                         Text(overview)
-                            .font(.system(size: 13))
-                            .foregroundStyle(.primary.opacity(0.88))
-                            .lineSpacing(2.5)
+                            .font(.subheadline)
+                            .foregroundStyle(.primary.opacity(0.9))
                             .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, 2)
                     } else if isLoadingDetail {
                         ProgressView()
                             .frame(maxWidth: .infinity)
-                            .padding(.top, 6)
+                            .padding(.top, 8)
                     }
+
+                    MediaRatingsSection(ratings: detail.ratings)
+
+                    MediaCastSection(cast: detail.cast)
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 10)
-
-                // Sezione Valutazioni
-                MediaRatingsSection(ratings: detail.ratings)
-                    .padding(.top, 14)
-
-                // Sezione Cast
-                MediaCastSection(cast: detail.cast)
-                    .padding(.top, 14)
-                    .padding(.bottom, 36)
+                .padding(.top, 12)
+                .padding(.bottom, 32)
             }
         }
-        .scrollIndicators(.hidden)
+        .frame(maxWidth: .infinity)
         .ignoresSafeArea(edges: .top)
         .background(Color(uiColor: .systemBackground))
         .task(id: stream.streamId) {
@@ -130,13 +116,12 @@ struct MovieDetailView: View {
         }
     }
 
-    // MARK: - Riga icone (Tutti i 4 elementi racchiusi in un unico HStack compatto)
-
+    // MARK: - Riga icone
     private var iconRow: some View {
         HStack(spacing: 8) {
             MediaIconButton(
                 systemImage: isFavorite ? "heart.fill" : "heart",
-                tint: isFavorite ? .red : .white,
+                tint: isFavorite ? .red : .primary,
                 accessibilityLabel: isFavorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"
             ) {
                 contentManagement.toggleFavorite(id: favoriteID, title: stream.name, kind: XtreamStreamKind.movie.rawValue)
@@ -151,7 +136,7 @@ struct MovieDetailView: View {
 
             MediaIconButton(
                 systemImage: downloadProgress == 1 ? "checkmark.circle.fill" : "arrow.down.circle",
-                tint: downloadProgress == 1 ? .green : .white,
+                tint: downloadProgress == 1 ? .green : .primary,
                 progress: downloadProgress,
                 accessibilityLabel: "Scarica"
             ) {
@@ -162,11 +147,9 @@ struct MovieDetailView: View {
                 showAlternateSources = true
             }
         }
-        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Azioni
-
     private func play() {
         guard let url = api.streamURL(for: stream, kind: .movie) else { return }
         playbackTarget = MoviePlaybackTarget(url: url, title: stream.name)
@@ -185,10 +168,8 @@ struct MovieDetailView: View {
     }
 
     // MARK: - Caricamento dettaglio
-
     private func loadDetail() async {
         isLoadingDetail = true
-
         let fetchedVODInfo = try? await CachedXtreamRepository(credentials: credentials).vodInfo(vodId: stream.streamId)
         vodInfo = fetchedVODInfo
 
