@@ -66,8 +66,8 @@ struct PlayerView: View {
 
     private var isAnyModalPresented: Bool {
         showTrackPicker || showAdvancedSettings || showQualityPicker
-            || showExternalPlayerMenu || showSpeedPicker || showSleepTimerPicker
-            || showAspectPicker || showChannelHistory || showChannelSearch
+        || showExternalPlayerMenu || showSpeedPicker || showSleepTimerPicker
+        || showAspectPicker || showChannelHistory || showChannelSearch
     }
 
     init(url: URL, title: String, onPrevious: (() -> Void)? = nil, onNext: (() -> Void)? = nil) {
@@ -323,7 +323,7 @@ struct PlayerView: View {
                         haptic()
                         let wasEnabled = controller.preferences.hardwareDecode
                         controller.setHardwareDecode(!wasEnabled)
-                        showToast(wasEnabled ? "Decodifica software (FFmpeg)" : "Decodifica hardware (Metal)", duration: 1_200_000_000)
+                        showToast(wasEnabled ? "Decodifica software (FFmpeg)" : "Decodifica hardware assistita (VideoToolbox)", duration: 1_200_000_000)
                     },
                     speedPicker: { presentAfterMenuDismiss { showSpeedPicker = true } },
                     qualityPicker: { presentAfterMenuDismiss { showQualityPicker = true } },
@@ -440,8 +440,8 @@ struct PlayerView: View {
                 .padding(.bottom, 30)
                 Spacer()
             }
-            .safeAreaPadding()
         }
+        .safeAreaPadding()
         .transition(.opacity)
     }
 
@@ -668,10 +668,9 @@ struct PlayerTopBar: View, Equatable {
                     actions.lock()
                 }
             }
-
             Section("Impostazioni lettore") {
                 Button(
-                    data.hardwareDecode ? "✓ Usa KSPlayer (Metal)" : "Usa KSPlayer (Metal)",
+                    data.hardwareDecode ? "✓ Decodifica hardware (VideoToolbox)" : "Decodifica hardware (VideoToolbox)",
                     systemImage: "cpu"
                 ) {
                     actions.hardwareDecodeToggle()
@@ -695,7 +694,6 @@ struct PlayerTopBar: View, Equatable {
                     actions.sleepTimerPicker()
                 }
             }
-
             Section("Trasmissione video e audio") {
                 Button("AirPlay audio", systemImage: "airplayaudio") {
                     actions.airPlayTrigger()
@@ -853,6 +851,7 @@ struct AirPlayButton: UIViewRepresentable {
         onCreate?(view)
         return view
     }
+
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
 
@@ -874,6 +873,7 @@ struct ExternalPlayer: Identifiable {
         if let outplayerURL = URL(string: "outplayer://\(encoded)") {
             candidates.append(ExternalPlayer(displayName: "Outplayer", url: outplayerURL))
         }
+
         return candidates.filter { UIApplication.shared.canOpenURL($0.url) }
     }
 }
@@ -976,11 +976,11 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Buffer")
                 } footer: {
-                    Text("Un buffer più ampio riduce le interruzioni su reti instabili, a costo di un avvio più lento del flusso.")
+                    Text("Un buffer più ampio riduce le interruzioni su reti instabili, a costo di un avvio più lento del flusso. I valori di default sono già ottimizzati per la latenza minima.")
                 }
 
                 Section {
-                    Toggle("Decodifica hardware", isOn: $hardwareDecode)
+                    Toggle("Decodifica hardware (VideoToolbox)", isOn: $hardwareDecode)
                         .onChange(of: hardwareDecode) { newValue in
                             controller.setHardwareDecode(newValue)
                         }
@@ -991,7 +991,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Decodifica")
                 } footer: {
-                    Text("Disattiva la decodifica hardware se un canale si blocca o mostra artefatti: FFmpeg in software è più lento ma compatibile con flussi malformati. Il de-interlacciamento corregge l'effetto \"pettine\" tipico dei canali SD interlacciati. Entrambe ricaricano il flusso per applicarsi.")
+                    Text("Il motore primario è sempre FFmpeg (KSMEPlayer), compatibile con qualunque formato/codec (inclusi MPEG-4 ASP, H.263, VC-1, WMV). Questo interruttore sceglie solo se FFmpeg delega la decodifica video a VideoToolbox quando il codec lo consente (H.264/H.265): se un flusso si blocca o mostra artefatti, disattivalo per forzare la decodifica 100% software. In caso di errore, il player tenta già da solo questo fallback automaticamente prima di mostrarti qualsiasi messaggio.")
                 }
 
                 Section {
@@ -1063,6 +1063,7 @@ struct TrackPickerView: View {
                         }
                     }
                 }
+
                 Section("Sottotitoli") {
                     ForEach(controller.subtitleTracks, id: \.trackID) { track in
                         Button {
