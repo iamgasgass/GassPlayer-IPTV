@@ -936,12 +936,19 @@ struct QualityPickerView: View {
     }
 }
 
-/// Pannello impostazioni avanzate: espone l'INTERA superficie di
-/// `KSPlaybackController.PlaybackPreferences`, quindi l'intera superficie
-/// pubblica di `KSOptions`/FFmpeg utilizzata da KSPlayer per aprire,
-/// decodificare, sincronizzare e renderizzare qualunque formato
-/// (contenitore, codec, sottotitolo, protocollo di rete) che la libreria
-/// sia in grado di gestire.
+/// Pannello impostazioni avanzate: espone la superficie di
+/// `KSPlaybackController.PlaybackPreferences` effettivamente disponibile
+/// in questa build di KSPlayer/KSOptions per aprire, decodificare,
+/// sincronizzare e renderizzare qualunque formato (contenitore, codec,
+/// sottotitolo, protocollo di rete) che la libreria sia in grado di
+/// gestire tramite FFmpeg/avformat.
+///
+/// FIX 2026-09-27: rimossi i controlli "Disattiva sottotitoli" e
+/// "Sincronizzazione sottotitoli", basati su `subtitleDisable`/
+/// `subtitleDelay` — proprietà NON presenti su `KSOptions` in questa
+/// build (causavano l'errore di compilazione "has no member"). La
+/// sincronizzazione audio/video resta gestita da `videoDelay`; la
+/// selezione dei sottotitoli resta gestita da `TrackPickerView`.
 struct AdvancedSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
@@ -964,11 +971,9 @@ struct AdvancedSettingsView: View {
     @State private var seekFlagPreset: SeekFlagPreset
     @State private var autoDeInterlace: Bool
     @State private var videoDelay: Double
-    @State private var subtitleDelay: Double
     @State private var seekedAutoPlay: Bool
 
     // Sottotitoli
-    @State private var subtitleDisable: Bool
     @State private var autoSelectEmbedSubtitle: Bool
     @State private var seekImageSubtitle: Bool
 
@@ -1017,9 +1022,7 @@ struct AdvancedSettingsView: View {
         _seekFlagPreset = State(initialValue: SeekFlagPreset.allCases.first { $0.flagValue == prefs.seekFlags } ?? .fast)
         _autoDeInterlace = State(initialValue: prefs.autoDeInterlace)
         _videoDelay = State(initialValue: prefs.videoDelay)
-        _subtitleDelay = State(initialValue: prefs.subtitleDelay)
         _seekedAutoPlay = State(initialValue: prefs.isSeekedAutoPlay)
-        _subtitleDisable = State(initialValue: prefs.subtitleDisable)
         _autoSelectEmbedSubtitle = State(initialValue: prefs.autoSelectEmbedSubtitle)
         _seekImageSubtitle = State(initialValue: prefs.isSeekImageSubtitle)
         _panoramaMode = State(initialValue: prefs.panoramaMode)
@@ -1086,20 +1089,14 @@ struct AdvancedSettingsView: View {
                         .onChange(of: videoDelay) { newValue in controller.setVideoDelay(newValue) }
                     Text(delaySummary(videoDelay, label: "Video")).foregroundStyle(.secondary)
 
-                    Slider(value: $subtitleDelay, in: -5...5, step: 0.1) { Text("Sincronizzazione sottotitoli") }
-                        .onChange(of: subtitleDelay) { newValue in controller.setSubtitleDelay(newValue) }
-                    Text(delaySummary(subtitleDelay, label: "Sottotitoli")).foregroundStyle(.secondary)
-
                     Button("Ripristina sincronizzazione") {
                         videoDelay = 0
-                        subtitleDelay = 0
                         controller.setVideoDelay(0)
-                        controller.setSubtitleDelay(0)
                     }
                 } header: {
-                    Text("Sincronizzazione audio/video/sottotitoli")
+                    Text("Sincronizzazione audio/video")
                 } footer: {
-                    Text("Se il video (o i sottotitoli) anticipa l'audio, sposta verso destra; se lo insegue, sposta verso sinistra.")
+                    Text("Se il video anticipa l'audio, sposta verso destra; se lo insegue, sposta verso sinistra.")
                 }
 
                 Section("Ricerca") {
@@ -1121,8 +1118,6 @@ struct AdvancedSettingsView: View {
                 }
 
                 Section {
-                    Toggle("Disattiva sottotitoli", isOn: $subtitleDisable)
-                        .onChange(of: subtitleDisable) { newValue in controller.setSubtitleDisabled(newValue) }
                     Toggle("Seleziona automaticamente sottotitoli incorporati", isOn: $autoSelectEmbedSubtitle)
                         .onChange(of: autoSelectEmbedSubtitle) { newValue in controller.setAutoSelectEmbedSubtitle(newValue) }
                     Toggle("Mantieni sottotitoli immagine durante il seek", isOn: $seekImageSubtitle)
@@ -1130,7 +1125,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Sottotitoli")
                 } footer: {
-                    Text("Copre testo, immagine (PGS/DVB/DVD) e Closed Captions incorporati nel flusso.")
+                    Text("Copre testo, immagine (PGS/DVB/DVD) e Closed Captions incorporati nel flusso. La selezione/deselezione della traccia attiva si effettua da \"Audio e sottotitoli\" nel menu principale.")
                 }
 
                 Section {
@@ -1253,7 +1248,7 @@ struct AdvancedSettingsView: View {
 
                 Section {
                     ffmpegOptionEditor(
-                        title: "Opzioni formato (AVFormatContext)",
+                        title: "Opzioni formato (AVFormatContext / avformat)",
                         options: controller.preferences.formatContextOptions,
                         key: $newFormatOptionKey,
                         value: $newFormatOptionValue,
@@ -1279,7 +1274,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Opzioni FFmpeg avanzate")
                 } footer: {
-                    Text("Chiave/valore passati direttamente alle strutture FFmpeg sottostanti (es. \"rtsp_transport\"=\"tcp\", \"reconnect\"=\"1\"). Per utenti esperti: valori errati possono impedire l'apertura del flusso.")
+                    Text("Chiave/valore passati direttamente alle strutture avformat/FFmpeg sottostanti (es. \"rtsp_transport\"=\"tcp\", \"reconnect\"=\"1\", \"reconnect_streamed\"=\"1\") per estendere la compatibilità a protocolli e contenitori meno comuni senza modificare altro codice. Per utenti esperti: valori errati possono impedire l'apertura del flusso.")
                 }
 
                 Section("Riproduzione") {
