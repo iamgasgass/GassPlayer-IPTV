@@ -9,44 +9,40 @@ import KSPlayer
 /// KSPlayerLayer.finish(player:error:), che ritenta con
 /// KSOptions.secondPlayerType su qualunque errore prima di arrendersi).
 ///
-/// AGGIORNAMENTO 2026-09-27 — ESPOSIZIONE COMPLETA DELLE CAPACITÀ DI
-/// KSPlayer/FFmpeg: `PlaybackPreferences` copre l'intera superficie
-/// pubblica e documentata di `KSOptions` confermata presente in questa
-/// versione della libreria (buffer, decodifica hardware/software,
-/// sincronizzazione video, ricerca accurata/flags, de‑interlacciamento,
-/// sottotitoli incorporati/immagine, filtri FFmpeg audio/video, opzioni
-/// grezze del format-context/decoder/avOptions, intestazioni HTTP
-/// personalizzate, cache HTTP, probing di rete, riproduzione in loop,
-/// tempo/velocità di partenza, adattamento automatico del bitrate e
-/// rendering panoramico 360°/VR).
+/// ANALISI MANIACALE 2026-09-27 — "avformat: can't open input" su ALCUNI
+/// FILM VOD: con le impostazioni minime originali, KSPlayer non invia né
+/// uno User-Agent "credibile" da browser né un `Referer`. Molti servizi
+/// VOD/CDN applicano hotlink-protection o filtri sullo user-agent che
+/// bloccano SOLO alcuni contenuti (server/CDN diversi da titolo a
+/// titolo), mentre i canali live spesso passano da provider che non
+/// applicano questi controlli — da cui il sintomo "alcuni film sì, altri
+/// no, i canali funzionano". Il messaggio mostrato da KSPlayer è generico
+/// perché ingloba qualunque causa di fallimento di `avformat_open_input`
+/// (403, redirect rifiutato, protocollo negato, timeout) sotto lo stesso
+/// errore testuale, quindi non è possibile distinguere la causa esatta
+/// dal solo messaggio.
 ///
-/// FIX MANIACALE 2026-09-27 (bis) — "avformat: can't open input" su
-/// ALCUNI FILM VOD: causato dai default introdotti nel turno precedente,
-/// che impostavano `rtsp_transport`/`rtsp_flags` come opzioni GLOBALI in
-/// `formatContextOptions`, applicate a ogni URL indipendentemente dal
-/// protocollo. FFmpeg non consuma queste chiavi se il protocollo non è
-/// RTSP: restano nel dizionario di opzioni passato ad
-/// `avformat_open_input`, e diversi demuxer (in particolare quelli usati
-/// per contenuti VOD MKV/AVI con codec non supportati nativamente da
-/// AVPlayer — che quindi passano OBBLIGATORIAMENTE dal motore FFmpeg di
-/// KSMEPlayer, mai da AVPlayer) rifiutano l'apertura in presenza di
-/// opzioni non pertinenti al protocollo corrente. I flussi HLS/MP4 gestiti
-/// da AVPlayer non erano toccati dal bug, il che spiegava perché il
-/// problema si manifestava solo su "alcuni film VOD" e non sui canali
-/// live. FIX: `networkFormatContextOptions(for:)` calcola ora le opzioni
-/// di rete IN BASE ALLO SCHEMA DELL'URL (`url.scheme`), applicando
-/// `rtsp_transport`/`rtsp_flags`/`stimeout` SOLO su URL `rtsp(s)://` e
-/// `reconnect*`/`multiple_requests`/`http_persistent`/`rw_timeout` SOLO su
-/// URL `http(s)://`. Nessuna opzione di protocollo estranea viene più
-/// iniettata nell'apertura di file locali, RTMP, MMS o UDP/RTP.
+/// FIX: `handleOpenFailure` intercetta OGNI fallimento di apertura e, se
+/// non è già stato tentato per l'URL corrente, esegue in modo silenzioso
+/// UN SOLO retry automatico ricreando il layer con uno User-Agent da
+/// browser reale (`fallbackUserAgent`) e un `Referer` derivato
+/// automaticamente dal dominio del flusso (`selfReferer`), SENZA
+/// modificare le preferenze scelte dall'utente (sono override
+/// esclusivamente transitori passati a `buildLayer`). Solo se anche
+/// questo secondo tentativo fallisce l'errore viene mostrato all'utente.
+/// Questo risolve la classe di problemi più comune per "apertura
+/// rifiutata su contenuti specifici" senza introdurre alcun rischio sugli
+/// altri flussi (canali live, altri VOD che già funzionano), perché si
+/// attiva ESCLUSIVAMENTE dopo un fallimento reale.
 ///
-/// FIX MANIACALE 2026-09-27 (ter) — Probing/analisi generosi RIPRISTINATI
-/// in modo sicuro: `builtInProbesize`/`builtInMaxAnalyzeDuration` sono
-/// proprietà TIPIZZATE di `KSOptions` (non chiavi del dizionario grezzo
-/// `formatContextOptions`), quindi non soffrono del problema delle
-/// "opzioni non consumate" descritto sopra — possono restare sempre
-/// attive di default senza rischio, e aiutano concretamente con file MKV/
-/// VOD che annunciano le proprie tracce in ritardo o in modo non standard.
+/// FIX MANIACALE 2026-09-27 (precedente) — le opzioni di rete
+/// (`reconnect*`, `rtsp_transport`) sono calcolate IN BASE ALLO SCHEMA
+/// DELL'URL (`networkFormatContextOptions`): applicarle globalmente a
+/// qualunque protocollo (bug del turno precedente) lasciava chiavi RTSP
+/// "non consumate" su URL http(s) di file VOD gestiti esclusivamente dal
+/// motore FFmpeg (MKV/AVI non supportati nativamente da AVPlayer),
+/// causando lo stesso errore generico "can't open input". Ora ogni
+/// chiave è applicata solo al protocollo che la può davvero consumare.
 ///
 /// FIX 2026-09-27 (precedente) — `subtitleDelay`/`subtitleDisable` NON
 /// esistono su `KSOptions` in questa versione della libreria e restano
@@ -283,9 +279,17 @@ final class KSPlaybackController: NSObject, ObservableObject {
         var startPlayRate: Float = 1.0
 
         // MARK: Rete
-        /// `KSOptions.userAgent`: intestazione User-Agent HTTP.
+        /// `KSOptions.userAgent`: intestazione User-Agent HTTP usata al
+        /// PRIMO tentativo di apertura. Se il primo tentativo fallisce,
+        /// `handleOpenFailure` ritenta automaticamente con
+        /// `fallbackUserAgent` SENZA modificare questo valore.
         var userAgent: String? = "GassPlayer/1.0"
-        /// `KSOptions.referer`: intestazione Referer HTTP.
+        /// `KSOptions.referer`: intestazione Referer HTTP. Se `nil` al
+        /// momento del RETRY di fallback, viene derivato automaticamente
+        /// dal dominio dell'URL (vedi `selfReferer`); il primo tentativo
+        /// invece non forza alcun Referer se l'utente non ne ha impostato
+        /// uno esplicito, per non alterare il comportamento su flussi che
+        /// già funzionano.
         var referer: String?
         /// Intestazioni HTTP personalizzate aggiuntive, applicate tramite
         /// `KSOptions.appendHeader(_:)` — utile per playlist IPTV che
@@ -314,11 +318,10 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
         // MARK: Opzioni FFmpeg grezze AGGIUNTIVE (potere assoluto)
         //
-        // A differenza della versione precedente, questo dizionario parte
-        // VUOTO: i default di rete non sono più iniettati qui in modo
-        // globale (era la causa del bug "avformat: can't open input" sui
-        // VOD), ma calcolati DINAMICAMENTE in base al protocollo dell'URL
-        // da `KSPlaybackController.networkFormatContextOptions(for:)` e
+        // Parte VUOTO: i default di rete non sono iniettati qui in modo
+        // globale (causava il bug "avformat: can't open input" sui VOD),
+        // ma calcolati DINAMICAMENTE in base al protocollo dell'URL da
+        // `KSPlaybackController.networkFormatContextOptions(for:)` e
         // uniti a queste eventuali chiavi scelte dall'utente, che hanno
         // sempre la precedenza in caso di conflitto sulla stessa chiave.
         /// `KSOptions.formatContextOptions`: opzioni AGGIUNTIVE passate
@@ -333,26 +336,37 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Default probing/analisi robusti, sempre attivi (proprietà TIPIZZATE
     /// di `KSOptions`, non chiavi del dizionario grezzo: non soffrono del
-    /// problema delle "opzioni non consumate" che ha causato il bug sui
-    /// VOD, quindi possono restare sempre attivi senza alcun rischio).
+    /// problema delle "opzioni non consumate", quindi possono restare
+    /// sempre attivi senza alcun rischio).
     private static let builtInProbesize: Int64 = 10_000_000
     private static let builtInMaxAnalyzeDuration: Int64 = 10_000_000
 
+    /// User-Agent di fallback usato SOLO nel retry automatico dopo un
+    /// fallimento di apertura: uno user-agent da browser desktop reale,
+    /// per aggirare i filtri di alcuni server/CDN VOD che negano
+    /// l'accesso a richieste con user-agent non riconosciuti (tipicamente
+    /// il default FFmpeg "Lavf/..." o user-agent applicativi generici).
+    private static let fallbackUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+
+    /// Deriva un Referer plausibile dal dominio dell'URL stesso (es.
+    /// `https://cdn.esempio.com/film.mkv` → `https://cdn.esempio.com/`),
+    /// usato SOLO nel retry di fallback quando l'utente non ha impostato
+    /// un Referer esplicito: molte protezioni "hotlink" richiedono che il
+    /// Referer coincida (anche solo per dominio) con l'host del file
+    /// stesso, non con l'app che lo richiede.
+    private static func selfReferer(for url: URL) -> String? {
+        guard let scheme = url.scheme, let host = url.host else { return nil }
+        return "\(scheme)://\(host)/"
+    }
+
     /// Calcola le opzioni `AVFormatContext`/protocollo di rete pertinenti
-    /// ESCLUSIVAMENTE allo schema dell'URL corrente. Questo è il fix
-    /// centrale del bug "avformat: can't open input" sui VOD: prima,
-    /// `rtsp_transport`/`rtsp_flags` venivano applicate a QUALUNQUE URL,
-    /// venendo lasciate "non consumate" nel dizionario da protocolli non
-    /// RTSP (http/https di file VOD, file locali, RTMP, ...) — condizione
-    /// che alcuni demuxer FFmpeg (in particolare quelli usati per
-    /// contenuti MKV/AVI aperti esclusivamente dal motore FFmpeg perché
-    /// AVPlayer non li supporta nativamente) rifiutano con errore di
-    /// apertura invece di ignorare silenziosamente. Ora ogni chiave è
-    /// applicata SOLO quando il protocollo la può effettivamente
-    /// consumare: http(s) riceve le opzioni di riconnessione/keep-alive,
-    /// rtsp(s) riceve le opzioni di trasporto TCP, tutti gli altri schemi
-    /// (rtmp*, mms*, udp, rtp, file, ...) non ricevono alcuna chiave
-    /// estranea e si affidano ai default nativi di FFmpeg.
+    /// ESCLUSIVAMENTE allo schema dell'URL corrente. Applicare
+    /// `rtsp_transport`/`rtsp_flags` a QUALUNQUE URL (bug di un turno
+    /// precedente) lasciava quelle chiavi "non consumate" su protocolli
+    /// non RTSP (http/https di file VOD, file locali, RTMP, ...),
+    /// condizione che alcuni demuxer FFmpeg rifiutano con errore di
+    /// apertura invece di ignorare silenziosamente. Ogni chiave è quindi
+    /// applicata SOLO quando il protocollo la può realmente consumare.
     private static func networkFormatContextOptions(for url: URL) -> [String: String] {
         switch url.scheme?.lowercased() {
         case "http", "https":
@@ -403,6 +417,13 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private var watchdogTask: Task<Void, Never>?
     private var hasEverStartedPlaying = false
 
+    /// `true` se per l'URL correntemente caricato è già stato eseguito il
+    /// retry automatico di fallback (User-Agent browser + self-referer):
+    /// evita loop infiniti di retry e garantisce che, dopo un secondo
+    /// fallimento, l'errore venga finalmente mostrato all'utente.
+    /// Azzerato ad ogni `load(url:title:)`/`resetAttempts()`.
+    private var didAttemptFallbackOpen = false
+
     /// OTTIMIZZAZIONE FLUIDITÀ: KSPlayer invoca il delegate di avanzamento
     /// molto più spesso di quanto la UI necessiti per apparire fluida.
     /// Pubblichiamo un aggiornamento solo se la variazione percepita è
@@ -431,10 +452,17 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// Costruisce un nuovo `KSPlayerLayer` applicando l'intera superficie
     /// di `PlaybackPreferences` confermata presente in `KSOptions`, con i
     /// default di rete calcolati IN BASE AL PROTOCOLLO dell'URL corrente
-    /// (`networkFormatContextOptions`) e i default di probing/analisi
-    /// sempre attivi. Metodo `static` perché deve poter essere chiamato
-    /// anche dall'`init`, prima che `super.init()` completi.
-    private static func buildLayer(for url: URL, preferences: PlaybackPreferences) -> KSPlayerLayer {
+    /// e i default di probing/analisi sempre attivi. `userAgentOverride`/
+    /// `refererOverride` sono usati ESCLUSIVAMENTE dal retry di fallback
+    /// (`retryWithFallbackSettings`) e non toccano mai `preferences`.
+    /// Metodo `static` perché deve poter essere chiamato anche dall'`init`,
+    /// prima che `super.init()` completi.
+    private static func buildLayer(
+        for url: URL,
+        preferences: PlaybackPreferences,
+        userAgentOverride: String? = nil,
+        refererOverride: String? = nil
+    ) -> KSPlayerLayer {
         let options = KSOptions()
 
         // Buffer
@@ -472,13 +500,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.startPlayTime = preferences.startPlayTime
         options.startPlayRate = preferences.startPlayRate
 
-        // Rete: User-Agent/Referer/intestazioni sono proprietà tipizzate
-        // o passate via appendHeader, quindi sempre sicure su qualunque
-        // protocollo. Le opzioni sensibili al protocollo (reconnect,
-        // rtsp_transport, ...) sono invece calcolate SOLO per lo schema
-        // dell'URL corrente — vedi `networkFormatContextOptions`.
-        options.userAgent = preferences.userAgent
-        options.referer = preferences.referer
+        // Rete: userAgentOverride/refererOverride hanno sempre la
+        // precedenza (usati solo dal retry di fallback); altrimenti si
+        // usano i valori scelti dall'utente in `preferences`.
+        options.userAgent = userAgentOverride ?? preferences.userAgent
+        options.referer = refererOverride ?? preferences.referer
         if !preferences.customHTTPHeaders.isEmpty {
             options.appendHeader(preferences.customHTTPHeaders)
         }
@@ -524,10 +550,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// Carica un nuovo URL SENZA che `PlayerView` venga mai
     /// distrutta/ricreata. Il vecchio layer viene fermato e scollegato, un
     /// nuovo `KSPlayerLayer` viene creato riapplicando integralmente le
-    /// `preferences` correnti (incluse le opzioni FFmpeg avanzate e i
-    /// default di rete corretti per il NUOVO protocollo, ricalcolati ad
-    /// ogni chiamata), e tutto lo stato di avanzamento/errore viene
-    /// azzerato.
+    /// `preferences` correnti, e tutto lo stato di avanzamento/errore
+    /// (incluso il flag di fallback) viene azzerato per il nuovo contenuto.
     func load(url: URL, title: String) {
         layer.delegate = nil
         layer.pause()
@@ -540,6 +564,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         lastPublishedTime = -1
         hasEverStartedPlaying = false
         bufferingProgress = 0
+        didAttemptFallbackOpen = false
         state = .initialized
 
         let newLayer = Self.buildLayer(for: url, preferences: preferences)
@@ -559,6 +584,51 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// della pipeline e non possono essere cambiate "a caldo".
     func reload() {
         load(url: currentURL, title: title)
+    }
+
+    /// Eseguito automaticamente e SILENZIOSAMENTE (nessun errore mostrato
+    /// all'utente) al primo fallimento di apertura per l'URL corrente:
+    /// ricrea il layer con lo stesso URL ma User-Agent da browser e
+    /// Referer auto-derivato dal dominio del flusso, senza alterare le
+    /// `preferences` scelte dall'utente. Se anche questo tentativo
+    /// fallisce, `handleOpenFailure` mostra finalmente l'errore.
+    private func retryWithFallbackSettings() {
+        layer.delegate = nil
+        layer.pause()
+
+        currentTime = 0
+        duration = 0
+        lastPublishedTime = -1
+        hasEverStartedPlaying = false
+        bufferingProgress = 0
+        state = .initialized
+
+        let referer = preferences.referer ?? Self.selfReferer(for: currentURL)
+        let newLayer = Self.buildLayer(
+            for: currentURL,
+            preferences: preferences,
+            userAgentOverride: Self.fallbackUserAgent,
+            refererOverride: referer
+        )
+        layer = newLayer
+        layer.delegate = self
+        layer.play()
+        startWatchdog()
+    }
+
+    /// Punto unico di gestione di un fallimento di apertura/riproduzione,
+    /// invocato sia da `player(layer:state:)` (stato `.error`) sia da
+    /// `player(layer:finish:)`. Se non è già stato tentato un retry di
+    /// fallback per questo URL, lo esegue silenziosamente; altrimenti
+    /// mostra finalmente l'errore all'utente.
+    private func handleOpenFailure(message: String) {
+        guard !didAttemptFallbackOpen else {
+            lastError = message
+            return
+        }
+        didAttemptFallbackOpen = true
+        DebugLogger.logAsync(.warning, "KSPlaybackController: apertura fallita (\(message)); ritento con User-Agent browser e Referer automatico prima di mostrare l'errore")
+        retryWithFallbackSettings()
     }
 
     func togglePlayPause() {
@@ -588,6 +658,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
     func resetAttempts() {
         lastError = nil
         hasEverStartedPlaying = false
+        didAttemptFallbackOpen = false
         layer.play()
         startWatchdog()
     }
@@ -812,13 +883,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     // MARK: - Opzioni FFmpeg grezze (potere assoluto, richiede reload)
-    //
-    // Queste funzioni restano il punto di ingresso per aggiungere
-    // manualmente opzioni AGGIUNTIVE a quelle calcolate automaticamente
-    // in base al protocollo (`networkFormatContextOptions`): utile per
-    // casi limite specifici (es. un singolo server IPTV che richiede un
-    // "user_agent" diverso a livello di formatContext, o "analyzeduration"
-    // personalizzato per un file particolare).
 
     func setFormatContextOption(key: String, value: String) {
         guard !key.isEmpty else { return }
@@ -883,8 +947,8 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
         case .readyToPlay:
             MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] = title.isEmpty ? "GassPlayer" : title
         case .error:
-            lastError = "Impossibile riprodurre il flusso. Il server potrebbe non essere raggiungibile o il formato non e' supportato."
             watchdogTask?.cancel()
+            handleOpenFailure(message: "Impossibile riprodurre il flusso. Il server potrebbe non essere raggiungibile o il formato non e' supportato.")
         default:
             break
         }
@@ -901,7 +965,7 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
     func player(layer: KSPlayerLayer, finish error: Error?) {
         if let error {
             DebugLogger.logAsync(.error, "KSPlaybackController: riproduzione terminata con errore: \(error.localizedDescription)")
-            lastError = error.localizedDescription
+            handleOpenFailure(message: error.localizedDescription)
         }
     }
 
