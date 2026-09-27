@@ -33,6 +33,7 @@ import KSPlayer
 /// stesso container già presente a schermo — nessuna nuova
 /// presentazione, nessun reset di stato (blocco schermo, timer di
 /// spegnimento, ecc.), transizione fluida.
+
 /// Modalità di adattamento del video al riquadro dello schermo, esposta
 /// nel player (pulsante nella `topBar`, vedi `PlayerView`).
 /// Mappa 1:1 su `UIView.ContentMode`, che è il tipo letto/scritto da
@@ -90,6 +91,7 @@ enum VideoGravityMode: String, CaseIterable, Identifiable {
 
 @MainActor
 final class KSPlaybackController: NSObject, ObservableObject {
+
     /// Preferenze di riproduzione avanzate regolabili dall'utente
     /// (`AdvancedSettingsView`, raggiungibile dal menu "…"). Sono lo
     /// stato di verità riapplicato ad ogni nuovo `KSPlayerLayer`, sia al
@@ -121,11 +123,20 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// comunque riportata qui perché deve sopravvivere allo zapping
         /// canale/episodio (`load(url:title:)` ricrea il layer da zero).
         var videoGravity: VideoGravityMode = .fit
-        /// `KSOptions.subtitleDisable`: disattiva completamente la pipeline
-        /// sottotitoli (incorporati ed esterni). Utile su flussi con
-        /// sottotitoli malformati che rallentano l'apertura, o per chi
-        /// semplicemente non li vuole mai vedere.
-        var subtitleDisable: Bool = false
+        // FIX 2026-09-27 (crash di compilazione "value of type 'KSOptions'
+        // has no member 'subtitleDisable'"): la build del KSPlayer
+        // effettivamente compilata con il progetto NON espone
+        // `KSOptions.subtitleDisable` (proprietà assente/rinominata in
+        // questa versione del pacchetto). La feature "disattiva
+        // sottotitoli a livello di decodifica" è stata quindi rimossa
+        // per intero — proprietà nelle preferenze, assegnazione a
+        // `options` in `buildLayer` e setter pubblico — invece di
+        // lasciare in giro codice morto che punta a un'API inesistente.
+        // Chi vuole nascondere i sottotitoli può comunque farlo dal
+        // menu "Audio e sottotitoli" deselezionando la traccia attiva
+        // (`select(track:)` più sotto): nessuna funzionalità visibile
+        // all'utente viene persa, solo la scorciatoia a livello
+        // FFmpeg che richiedeva un rebuild della pipeline.
         /// `KSOptions.autoSelectEmbedSubtitle`: seleziona automaticamente la
         /// prima traccia sottotitoli incorporata nel flusso quando presente
         /// (default `true` in KSPlayer). Se disattivato, nessun sottotitolo
@@ -148,6 +159,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
     @Published var isPipActive = false {
         didSet { layer.isPipActive = isPipActive }
     }
+
     @Published private(set) var layer: KSPlayerLayer
     @Published private(set) var preferences = PlaybackPreferences()
 
@@ -190,19 +202,16 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// per primo in OGNI esempio d'uso, e senza di essa `secondPlayerType`
     /// resta `nil` — nessun fallback, nessun secondo tentativo, un flusso
     /// che AVPlayer rifiuta fallisce e basta, indipendentemente da quanto
-    /// FFmpeg/KSMEPlayer sarebbe stato in grado di decodificarlo. Prima di
-    /// questa modifica l'app non lo impostava da nessuna parte: i commenti
-    /// altrove in questo file che descrivono uno "switch automatico
-    /// incorporato nella libreria" presupponevano (erroneamente) che questo
-    /// fosse già configurato. `static let` eseguito una sola volta, prima
-    /// che qualunque `KSPlayerLayer` venga creato.
+    /// FFmpeg/KSMEPlayer sarebbe stato in grado di decodificarlo.
+    /// `static let` eseguito una sola volta, prima che qualunque
+    /// `KSPlayerLayer` venga creato.
     private static let configureEngineFallback: Void = {
         KSOptions.firstPlayerType = KSAVPlayer.self
         KSOptions.secondPlayerType = KSMEPlayer.self
     }()
 
     init(url: URL, title: String) {
-        Self.configureEngineFallback
+        _ = Self.configureEngineFallback
         self.currentURL = url
         self.title = title
         self.layer = Self.buildLayer(for: url, preferences: PlaybackPreferences())
@@ -229,7 +238,10 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.isAccurateSeek = preferences.isAccurateSeek
         options.autoDeInterlace = preferences.autoDeInterlace
         options.videoDelay = preferences.videoDelay
-        options.subtitleDisable = preferences.subtitleDisable
+        // RIMOSSO: `options.subtitleDisable = preferences.subtitleDisable`.
+        // `KSOptions` (versione compilata con questo progetto) non ha il
+        // membro `subtitleDisable`: era la causa dell'errore di build
+        // "value of type 'KSOptions' has no member 'subtitleDisable'".
         options.autoSelectEmbedSubtitle = preferences.autoSelectEmbedSubtitle
         options.videoDisable = preferences.videoDisable
         // Correttezza sempre attiva (non richiede un'impostazione utente):
@@ -288,10 +300,9 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Ricarica lo stream corrente (stesso URL) con le `preferences`
     /// aggiornate: necessario per le impostazioni che agiscono a livello
-    /// di decodifica (hardware/software, de-interlacciamento, sottotitoli
-    /// disattivati), che KSPlayer legge solo alla creazione della
-    /// pipeline e non possono essere cambiate "a caldo" su un flusso già
-    /// in riproduzione.
+    /// di decodifica (hardware/software, de-interlacciamento), che
+    /// KSPlayer legge solo alla creazione della pipeline e non possono
+    /// essere cambiate "a caldo" su un flusso già in riproduzione.
     func reload() {
         load(url: currentURL, title: title)
     }
@@ -390,10 +401,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
         reload()
     }
 
-    func setSubtitleDisable(_ enabled: Bool) {
-        preferences.subtitleDisable = enabled
-        reload()
-    }
+    // RIMOSSO: `setSubtitleDisable(_:)`. Dipendeva esclusivamente da
+    // `KSOptions.subtitleDisable`, membro non presente nella build di
+    // KSPlayer usata da questo progetto. Se il tuo `AdvancedSettingsView`
+    // ha un toggle collegato a questo metodo o a `preferences.subtitleDisable`,
+    // va rimosso anche lì (condividi il file e te lo aggiorno).
 
     func setAutoSelectEmbedSubtitle(_ enabled: Bool) {
         preferences.autoSelectEmbedSubtitle = enabled
