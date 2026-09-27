@@ -11,49 +11,46 @@ import KSPlayer
 ///
 /// AGGIORNAMENTO 2026-09-27 — ESPOSIZIONE COMPLETA DELLE CAPACITÀ DI
 /// KSPlayer/FFmpeg: `PlaybackPreferences` copre l'intera superficie
-/// pubblica e documentata di `KSOptions` (buffer, decodifica hardware/
-/// software, sincronizzazione A/V, ricerca accurata/flags, de‑interlacciamento,
+/// pubblica e documentata di `KSOptions` confermata presente in questa
+/// versione della libreria (buffer, decodifica hardware/software,
+/// sincronizzazione video, ricerca accurata/flags, de‑interlacciamento,
 /// sottotitoli incorporati/immagine, filtri FFmpeg audio/video, opzioni
 /// grezze del format-context/decoder/avOptions, intestazioni HTTP
 /// personalizzate, cache HTTP, probing di rete, riproduzione in loop,
 /// tempo/velocità di partenza, adattamento automatico del bitrate e
-/// rendering panoramico 360°/VR) CONFERMATA presente in questa versione
-/// della libreria (vedi nota "FIX BUILD" più sotto).
+/// rendering panoramico 360°/VR).
 ///
-/// AGGIORNAMENTO 2026-09-27 (bis) — DEFAULT "AVFORMAT" GIÀ EFFICACI DI
-/// SERIE (compatibilità con TUTTI i formati/protocolli mancanti): oltre
-/// alla riconnessione automatica e al trasporto RTSP via TCP già attivi,
-/// `PlaybackPreferences` ora include SEMPRE, senza alcuna configurazione
-/// manuale:
-/// - whitelist dei protocolli avformat estesa a HLS/DASH, RTSP, tutte le
-///   varianti RTMP (rtmp/rtmpt/rtmps/rtmpe/rtmpte/rtmpts), MMS/MMSH/MMST,
-///   UDP/RTP multicast, file locali e concat/subfile per playlist m3u
-///   composte ("protocol_whitelist", "allowed_extensions");
-/// - correzione automatica di timestamp mancanti e scarto dei pacchetti
-///   corrotti ("fflags": "+genpts+discardcorrupt"), essenziale sui
-///   multiplex IPTV non standard;
-/// - threading automatico del decoder FFmpeg su tutti i core disponibili
-///   ("threads": "auto" in `decoderOptions`), per qualunque codec
-///   software (H.264/H.265/MPEG-2/VP9/AV1/...);
-/// - probing e analisi estesi (10 MB / 10s, `builtInProbesize`/
-///   `builtInMaxAnalyzeDuration`) applicati automaticamente quando
-///   l'utente non ha impostato un override esplicito, per rilevare
-///   correttamente tutte le tracce anche su flussi che le annunciano
-///   in ritardo o in modo non standard.
-/// Queste chiavi/valori sono i default DI FABBRICA delle rispettive
-/// proprietà — l'utente può comunque sovrascriverle o rimuoverle dal
-/// pannello "Impostazioni avanzate" (`setFormatContextOption`,
-/// `removeFormatContextOption`, `setProbesize(nil)`, ecc.).
+/// FIX MANIACALE 2026-09-27 (bis) — "avformat: can't open input" su
+/// ALCUNI FILM VOD: causato dai default introdotti nel turno precedente,
+/// che impostavano `rtsp_transport`/`rtsp_flags` come opzioni GLOBALI in
+/// `formatContextOptions`, applicate a ogni URL indipendentemente dal
+/// protocollo. FFmpeg non consuma queste chiavi se il protocollo non è
+/// RTSP: restano nel dizionario di opzioni passato ad
+/// `avformat_open_input`, e diversi demuxer (in particolare quelli usati
+/// per contenuti VOD MKV/AVI con codec non supportati nativamente da
+/// AVPlayer — che quindi passano OBBLIGATORIAMENTE dal motore FFmpeg di
+/// KSMEPlayer, mai da AVPlayer) rifiutano l'apertura in presenza di
+/// opzioni non pertinenti al protocollo corrente. I flussi HLS/MP4 gestiti
+/// da AVPlayer non erano toccati dal bug, il che spiegava perché il
+/// problema si manifestava solo su "alcuni film VOD" e non sui canali
+/// live. FIX: `networkFormatContextOptions(for:)` calcola ora le opzioni
+/// di rete IN BASE ALLO SCHEMA DELL'URL (`url.scheme`), applicando
+/// `rtsp_transport`/`rtsp_flags`/`stimeout` SOLO su URL `rtsp(s)://` e
+/// `reconnect*`/`multiple_requests`/`http_persistent`/`rw_timeout` SOLO su
+/// URL `http(s)://`. Nessuna opzione di protocollo estranea viene più
+/// iniettata nell'apertura di file locali, RTMP, MMS o UDP/RTP.
 ///
-/// AGGIORNAMENTO 2026-09-27 (ter) — FIX BUILD: `subtitleDelay` e
-/// `subtitleDisable` NON esistono più su `KSOptions` in questa versione
-/// della libreria (la gestione del ritardo/disattivazione sottotitoli è
-/// stata spostata dal team di KSPlayer in un modello interno separato non
-/// esposto pubblicamente in modo stabile — vedi kingslay/KSPlayer#508) e
-/// restano quindi assenti sia da `PlaybackPreferences` sia da
-/// `buildLayer`. Tutte le altre proprietà `KSOptions` usate in questo
-/// file (incluse `probesize`/`maxAnalyzeDuration`, che NON hanno generato
-/// errori di build) sono confermate valide per questa libreria.
+/// FIX MANIACALE 2026-09-27 (ter) — Probing/analisi generosi RIPRISTINATI
+/// in modo sicuro: `builtInProbesize`/`builtInMaxAnalyzeDuration` sono
+/// proprietà TIPIZZATE di `KSOptions` (non chiavi del dizionario grezzo
+/// `formatContextOptions`), quindi non soffrono del problema delle
+/// "opzioni non consumate" descritto sopra — possono restare sempre
+/// attive di default senza rischio, e aiutano concretamente con file MKV/
+/// VOD che annunciano le proprie tracce in ritardo o in modo non standard.
+///
+/// FIX 2026-09-27 (precedente) — `subtitleDelay`/`subtitleDisable` NON
+/// esistono su `KSOptions` in questa versione della libreria e restano
+/// rimossi (vedi kingslay/KSPlayer#508).
 ///
 /// FIX 2026-09-25 (zapping canale/episodio "senza uscire e riaprire il
 /// player"): `layer` è `@Published` (non `let`): `load(url:title:)` crea
@@ -244,11 +241,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
         // MARK: Sottotitoli (testo, immagine, Closed Captions)
         //
         // NOTA: `subtitleDisable` e `subtitleDelay` sono stati rimossi da
-        // `KSOptions` in questa versione di KSPlayer (spostati in un
-        // modello di sottotitoli interno non esposto pubblicamente) e
-        // NON sono più presenti qui: il tentativo di scriverli su
-        // `KSOptions` causava l'errore di build "has no member
-        // 'subtitleDelay'/'subtitleDisable'".
+        // `KSOptions` in questa versione di KSPlayer e NON sono più
+        // presenti qui (vedi kingslay/KSPlayer#508).
         /// `KSOptions.autoSelectEmbedSubtitle`: selezione automatica della
         /// prima traccia sottotitoli incorporata nel flusso.
         var autoSelectEmbedSubtitle: Bool = true
@@ -300,15 +294,14 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// `KSOptions.cache`: cache HTTP lato FFmpeg (solo protocollo
         /// http/https).
         var httpCacheEnabled: Bool = false
-        /// `KSOptions.probesize` (byte): override del probing FFmpeg.
-        /// `nil` = usa il default robusto già attivo di serie
-        /// (`builtInProbesize`, 10 MB) pensato per rilevare correttamente
-        /// tutte le tracce anche su multiplex IPTV mal formati/con
-        /// formati "mancanti" annunciati in ritardo.
+        /// `KSOptions.probesize` (byte): override esplicito del probing
+        /// FFmpeg. `nil` = usa il default robusto sempre attivo
+        /// (`builtInProbesize`, 10 MB), pensato per rilevare correttamente
+        /// tutte le tracce anche su file VOD/MKV con indici non standard.
         var probesize: Int64?
-        /// `KSOptions.maxAnalyzeDuration` (µs): override della durata di
-        /// analisi FFmpeg. `nil` = usa il default robusto già attivo di
-        /// serie (`builtInMaxAnalyzeDuration`, 10 s).
+        /// `KSOptions.maxAnalyzeDuration` (µs): override esplicito della
+        /// durata di analisi. `nil` = usa il default robusto sempre
+        /// attivo (`builtInMaxAnalyzeDuration`, 10s).
         var maxAnalyzeDuration: Int64?
 
         // MARK: Filtri FFmpeg
@@ -319,88 +312,79 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// `"volume=2.0"`, `"aecho=0.8:0.9:1000:0.3"`).
         var audioFilters: [String] = []
 
-        // MARK: Opzioni FFmpeg grezze — default "avformat" già attivi
+        // MARK: Opzioni FFmpeg grezze AGGIUNTIVE (potere assoluto)
         //
-        // Popolate di fabbrica con l'intero set di parametri
-        // `AVFormatContext`/protocollo/decoder che rende KSPlayer
-        // compatibile "di serie", senza alcuna configurazione manuale,
-        // con letteralmente ogni protocollo/formato che avformat sa
-        // aprire — non solo HTTP/HLS semplice ma anche RTSP live, tutte
-        // le varianti RTMP, MMS/MMSH/MMST, UDP/RTP multicast e playlist
-        // concat/subfile. Essendo semplici chiavi di dizionario passate a
-        // FFmpeg via `AVDictionary`, una chiave non pertinente al
-        // protocollo del flusso corrente (es. "rtsp_transport" su una
-        // URL http://) viene semplicemente ignorata da FFmpeg — non causa
-        // mai un errore di apertura né di compilazione.
-        //
-        // - "reconnect"/"reconnect_at_eof"/"reconnect_streamed" (1): fa
-        //   ritentare automaticamente la connessione HTTP/HLS quando il
-        //   server IPTV la chiude o si raggiunge un EOF anomalo.
-        // - "reconnect_delay_max" (5): attesa massima (s) tra i tentativi
-        //   di riconnessione.
-        // - "rw_timeout" (15000000 µs = 15s): timeout generico di
-        //   lettura/scrittura I/O.
-        // - "multiple_requests" (1) / "http_persistent" (1): riusa la
-        //   stessa connessione HTTP (keep-alive) tra le richieste
-        //   successive, riducendo la latenza di zapping.
-        // - "rtsp_transport" ("tcp") / "rtsp_flags" ("prefer_tcp"): forza
-        //   il trasporto RTSP su TCP invece di UDP, molto più affidabile
-        //   dietro NAT/firewall tipici delle reti IPTV domestiche.
-        // - "fflags" ("+genpts+discardcorrupt"): rigenera i timestamp
-        //   mancanti/malformati e scarta i pacchetti corrotti invece di
-        //   bloccare la decodifica — fondamentale su molti multiplex
-        //   IPTV non standard che altrimenti apparirebbero come "formato
-        //   non supportato".
-        // - "protocol_whitelist": elenco esplicito di TUTTI i protocolli
-        //   che avformat deve poter apire (necessario perché demuxer
-        //   come HLS/concat aprono sotto-URL con protocolli diversi da
-        //   quello iniziale): file, http(s), tcp/tls, rtp, rtsp, tutte le
-        //   varianti rtmp, udp, mms(h/t), crypto, httpproxy, data,
-        //   concat, subfile, hls, applehttp.
-        // - "allowed_extensions" ("ALL"): rimuove ogni restrizione di
-        //   estensione file, altrimenti alcuni demuxer (concat) potrebbero
-        //   rifiutare URL IPTV con estensioni "atipiche".
-        //
-        // Si sommano — e in caso di conflitto sovrascrivono chiave per
-        // chiave — con qualunque opzione l'utente aggiunga/rimuova dal
-        // pannello "Impostazioni avanzate".
-        /// `KSOptions.formatContextOptions`: opzioni passate direttamente
-        /// ad `AVFormatContext`/ai protocolli sottostanti.
-        var formatContextOptions: [String: String] = [
-            "reconnect": "1",
-            "reconnect_at_eof": "1",
-            "reconnect_streamed": "1",
-            "reconnect_delay_max": "5",
-            "rw_timeout": "15000000",
-            "multiple_requests": "1",
-            "http_persistent": "1",
-            "rtsp_transport": "tcp",
-            "rtsp_flags": "prefer_tcp",
-            "fflags": "+genpts+discardcorrupt",
-            "protocol_whitelist": "file,http,https,tcp,tls,rtp,rtsp,rtmp,rtmpt,rtmps,rtmpe,rtmpte,rtmpts,udp,mmsh,mmst,crypto,httpproxy,data,concat,subfile,hls,applehttp",
-            "allowed_extensions": "ALL",
-        ]
+        // A differenza della versione precedente, questo dizionario parte
+        // VUOTO: i default di rete non sono più iniettati qui in modo
+        // globale (era la causa del bug "avformat: can't open input" sui
+        // VOD), ma calcolati DINAMICAMENTE in base al protocollo dell'URL
+        // da `KSPlaybackController.networkFormatContextOptions(for:)` e
+        // uniti a queste eventuali chiavi scelte dall'utente, che hanno
+        // sempre la precedenza in caso di conflitto sulla stessa chiave.
+        /// `KSOptions.formatContextOptions`: opzioni AGGIUNTIVE passate
+        /// direttamente ad `AVFormatContext` (es. `"analyzeduration": "0"`).
+        var formatContextOptions: [String: String] = [:]
         /// `KSOptions.decoderOptions`: opzioni passate al decoder FFmpeg
-        /// selezionato. Popolato di fabbrica con `"threads": "auto"` per
-        /// sfruttare tutti i core disponibili su qualunque codec software
-        /// (H.264, H.265, MPEG-2, VP9, AV1, ...) senza configurazione
-        /// manuale.
-        var decoderOptions: [String: String] = [
-            "threads": "auto",
-        ]
+        /// selezionato (es. `"threads": "4"`).
+        var decoderOptions: [String: String] = [:]
         /// `KSOptions.avOptions`: opzioni FFmpeg generiche di libreria.
         var avOptions: [String: String] = [:]
     }
 
-    /// Probing esteso (10 MB) applicato quando `preferences.probesize`
-    /// è `nil`: rileva correttamente tutte le tracce audio/video/
-    /// sottotitoli anche su multiplex IPTV che annunciano le proprie
-    /// tracce in ritardo o in modo non standard ("formati mancanti").
+    /// Default probing/analisi robusti, sempre attivi (proprietà TIPIZZATE
+    /// di `KSOptions`, non chiavi del dizionario grezzo: non soffrono del
+    /// problema delle "opzioni non consumate" che ha causato il bug sui
+    /// VOD, quindi possono restare sempre attivi senza alcun rischio).
     private static let builtInProbesize: Int64 = 10_000_000
-    /// Durata massima di analisi estesa (10s, µs) applicata quando
-    /// `preferences.maxAnalyzeDuration` è `nil`, allineata al probing
-    /// esteso qui sopra.
     private static let builtInMaxAnalyzeDuration: Int64 = 10_000_000
+
+    /// Calcola le opzioni `AVFormatContext`/protocollo di rete pertinenti
+    /// ESCLUSIVAMENTE allo schema dell'URL corrente. Questo è il fix
+    /// centrale del bug "avformat: can't open input" sui VOD: prima,
+    /// `rtsp_transport`/`rtsp_flags` venivano applicate a QUALUNQUE URL,
+    /// venendo lasciate "non consumate" nel dizionario da protocolli non
+    /// RTSP (http/https di file VOD, file locali, RTMP, ...) — condizione
+    /// che alcuni demuxer FFmpeg (in particolare quelli usati per
+    /// contenuti MKV/AVI aperti esclusivamente dal motore FFmpeg perché
+    /// AVPlayer non li supporta nativamente) rifiutano con errore di
+    /// apertura invece di ignorare silenziosamente. Ora ogni chiave è
+    /// applicata SOLO quando il protocollo la può effettivamente
+    /// consumare: http(s) riceve le opzioni di riconnessione/keep-alive,
+    /// rtsp(s) riceve le opzioni di trasporto TCP, tutti gli altri schemi
+    /// (rtmp*, mms*, udp, rtp, file, ...) non ricevono alcuna chiave
+    /// estranea e si affidano ai default nativi di FFmpeg.
+    private static func networkFormatContextOptions(for url: URL) -> [String: String] {
+        switch url.scheme?.lowercased() {
+        case "http", "https":
+            return [
+                // Riconnessione automatica su drop di rete/HTTP: essenziale
+                // per IPTV live e per download VOD interrotti a metà.
+                "reconnect": "1",
+                "reconnect_at_eof": "1",
+                "reconnect_streamed": "1",
+                "reconnect_delay_max": "5",
+                // Timeout generico di lettura/scrittura I/O (15s, µs).
+                "rw_timeout": "15000000",
+                // Riutilizza la connessione HTTP keep-alive tra richieste
+                // successive (segmenti HLS, seek), riducendo la latenza.
+                "multiple_requests": "1",
+                "http_persistent": "1",
+            ]
+        case "rtsp", "rtsps":
+            return [
+                // RTSP forzato su TCP: evita la perdita di pacchetti UDP
+                // tipica delle reti IPTV/mobile dietro NAT.
+                "rtsp_transport": "tcp",
+                "rtsp_flags": "prefer_tcp",
+                "stimeout": "10000000",
+            ]
+        default:
+            // rtmp/rtmps/rtmpt/mms/mmsh/mmst/udp/rtp/file/altro: nessuna
+            // opzione di protocollo estranea — evita esattamente la
+            // classe di bug diagnosticata sopra.
+            return [:]
+        }
+    }
 
     @Published var state: KSPlayerState = .initialized
     @Published var currentTime: TimeInterval = 0
@@ -445,12 +429,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     /// Costruisce un nuovo `KSPlayerLayer` applicando l'intera superficie
-    /// di `PlaybackPreferences` confermata presente in `KSOptions` per
-    /// questa versione della libreria (INCLUSI i default avformat di
-    /// riconnessione/timeout/RTSP-TCP/whitelist protocolli/probing
-    /// estesi, già attivi di fabbrica in `PlaybackPreferences`) alle
-    /// opzioni del nuovo layer. Metodo `static` perché deve poter essere
-    /// chiamato anche dall'`init`, prima che `super.init()` completi.
+    /// di `PlaybackPreferences` confermata presente in `KSOptions`, con i
+    /// default di rete calcolati IN BASE AL PROTOCOLLO dell'URL corrente
+    /// (`networkFormatContextOptions`) e i default di probing/analisi
+    /// sempre attivi. Metodo `static` perché deve poter essere chiamato
+    /// anche dall'`init`, prima che `super.init()` completi.
     private static func buildLayer(for url: URL, preferences: PlaybackPreferences) -> KSPlayerLayer {
         let options = KSOptions()
 
@@ -473,8 +456,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.videoDelay = preferences.videoDelay
 
         // Sottotitoli (autoSelectEmbedSubtitle/isSeekImageSubtitle
-        // confermati esistenti; subtitleDisable/subtitleDelay NON
-        // esistono più su KSOptions in questa versione, vedi nota sopra)
+        // confermati esistenti su questa versione di KSOptions)
         options.autoSelectEmbedSubtitle = preferences.autoSelectEmbedSubtitle
         options.isSeekImageSubtitle = preferences.isSeekImageSubtitle
 
@@ -490,17 +472,22 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.startPlayTime = preferences.startPlayTime
         options.startPlayRate = preferences.startPlayRate
 
-        // Rete
+        // Rete: User-Agent/Referer/intestazioni sono proprietà tipizzate
+        // o passate via appendHeader, quindi sempre sicure su qualunque
+        // protocollo. Le opzioni sensibili al protocollo (reconnect,
+        // rtsp_transport, ...) sono invece calcolate SOLO per lo schema
+        // dell'URL corrente — vedi `networkFormatContextOptions`.
         options.userAgent = preferences.userAgent
         options.referer = preferences.referer
         if !preferences.customHTTPHeaders.isEmpty {
             options.appendHeader(preferences.customHTTPHeaders)
         }
         options.cache = preferences.httpCacheEnabled
-        // Se l'utente non ha impostato un override esplicito, usa SEMPRE
-        // il default robusto "avformat" (10 MB / 10s) invece del default
-        // minimale di FFmpeg: compatibilità di serie con multiplex IPTV
-        // che annunciano male le proprie tracce ("formati mancanti").
+        // Probing/analisi: proprietà tipizzate, sempre sicure. Se
+        // l'utente non ha impostato un override esplicito, usa il
+        // default robusto (10 MB / 10s) pensato per rilevare
+        // correttamente tutte le tracce anche su file VOD/MKV con indici
+        // non standard.
         options.probesize = preferences.probesize ?? builtInProbesize
         options.maxAnalyzeDuration = preferences.maxAnalyzeDuration ?? builtInMaxAnalyzeDuration
 
@@ -508,14 +495,16 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.videoFilters = preferences.videoFilters
         options.audioFilters = preferences.audioFilters
 
-        // Opzioni FFmpeg grezze — unite ai default della libreria senza
-        // rimpiazzarli. Riconnessione, timeout, RTSP-TCP, whitelist
-        // protocolli e threading decoder sono quindi già effettivi qui,
-        // ad ogni apertura o ricarica del flusso, anche se l'utente non
-        // ha mai aperto il pannello "Impostazioni avanzate".
-        if !preferences.formatContextOptions.isEmpty {
-            options.formatContextOptions.merge(preferences.formatContextOptions.mapValues { $0 as Any }) { _, new in new }
+        // Opzioni FFmpeg grezze: la base è SOLO ciò che il protocollo
+        // dell'URL corrente può realmente consumare (fix del bug VOD),
+        // le personalizzazioni dell'utente si sommano e vincono chiave
+        // per chiave in caso di conflitto.
+        var effectiveFormatContextOptions = networkFormatContextOptions(for: url)
+        effectiveFormatContextOptions.merge(preferences.formatContextOptions) { _, new in new }
+        if !effectiveFormatContextOptions.isEmpty {
+            options.formatContextOptions.merge(effectiveFormatContextOptions.mapValues { $0 as Any }) { _, new in new }
         }
+
         if !preferences.decoderOptions.isEmpty {
             options.decoderOptions.merge(preferences.decoderOptions.mapValues { $0 as Any }) { _, new in new }
         }
@@ -536,8 +525,9 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// distrutta/ricreata. Il vecchio layer viene fermato e scollegato, un
     /// nuovo `KSPlayerLayer` viene creato riapplicando integralmente le
     /// `preferences` correnti (incluse le opzioni FFmpeg avanzate e i
-    /// default avformat di riconnessione/RTSP-TCP/whitelist/probing), e
-    /// tutto lo stato di avanzamento/errore viene azzerato.
+    /// default di rete corretti per il NUOVO protocollo, ricalcolati ad
+    /// ogni chiamata), e tutto lo stato di avanzamento/errore viene
+    /// azzerato.
     func load(url: URL, title: String) {
         layer.delegate = nil
         layer.pause()
@@ -823,14 +813,12 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     // MARK: - Opzioni FFmpeg grezze (potere assoluto, richiede reload)
     //
-    // Queste funzioni restano il punto di ingresso per personalizzare o
-    // RIMUOVERE anche i default avformat impostati di fabbrica in
-    // `PlaybackPreferences.formatContextOptions`/`decoderOptions` (es. se
-    // un server IPTV specifico si comporta meglio con
-    // `reconnect_delay_max` diverso, o con `rtsp_transport=udp`):
-    // `setFormatContextOption` sovrascrive la singola chiave, mentre
-    // `removeFormatContextOption` la elimina anche se era un default di
-    // fabbrica, senza toccare le altre.
+    // Queste funzioni restano il punto di ingresso per aggiungere
+    // manualmente opzioni AGGIUNTIVE a quelle calcolate automaticamente
+    // in base al protocollo (`networkFormatContextOptions`): utile per
+    // casi limite specifici (es. un singolo server IPTV che richiede un
+    // "user_agent" diverso a livello di formatContext, o "analyzeduration"
+    // personalizzato per un file particolare).
 
     func setFormatContextOption(key: String, value: String) {
         guard !key.isEmpty else { return }
