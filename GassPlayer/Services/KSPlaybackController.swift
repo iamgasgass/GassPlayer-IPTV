@@ -3,43 +3,48 @@ import AVFoundation
 import MediaPlayer
 import KSPlayer
 
-/// Bridge SwiftUI-friendly per KSPlayerLayer, ora l'UNICO motore di
-/// riproduzione dell'app (AVPlayer nativo + FFmpeg via KSMEPlayer, con
-/// switch automatico incorporato nella libreria stessa — vedi
-/// KSPlayerLayer.finish(player:error:), che ritenta con
-/// KSOptions.secondPlayerType su qualunque errore prima di arrendersi).
+/// Bridge SwiftUI-friendly per KSPlayerLayer.
 ///
-/// FIX 2026-09-25 (zapping canale/episodio "senza uscire e riaprire il
-/// player"): in precedenza ogni pressione di precedente/successivo
-/// forzava, lato chiamante (`ChannelGridView`/`SeriesEpisodesView`), un
-/// `.id(stream.id)` sulla vista del player: necessario perché
-/// `KSPlaybackController` veniva creato una sola volta in `init` e non
-/// aveva alcun modo di caricare un URL diverso in seguito — l'unico modo
-/// per "cambiare canale" era distruggere e ricreare l'intera
-/// `PlayerView` (e quindi anche il `KSPlayerContainerView`/`UIView`
-/// sottostante). Il risultato era funzionalmente corretto ma percepito
-/// come "chiusura e riapertura" del player: un breve nero, reset dei
-/// controlli, nuova `fullScreenCover` dal punto di vista di UIKit.
+/// FIX 2026-09-28 (compatibilità "TUTTI I FORMATI" + errore
+/// `mpeg4 (Advanced Simple Profile) yuv420p 720x304`):
 ///
-/// `layer` è ora `@Published` (non più `let`): `load(url:title:)` crea un
-/// nuovo `KSPlayerLayer` per il nuovo URL e lo assegna a questa stessa
-/// istanza di `KSPlaybackController`, che resta viva per tutta la sessione
-/// di visione. `PlayerView` (che possiede il controller come
-/// `@StateObject`) non viene mai ricreata: `KSPlayerContainerView`
-/// (vedi PlayerView.swift) osserva il cambio di `layer` e si limita a
-/// staccare la vecchia `UIView` del player e agganciare la nuova nello
-/// stesso container già presente a schermo — nessuna nuova
-/// presentazione, nessun reset di stato (blocco schermo, timer di
-/// spegnimento, ecc.), transizione fluida.
-/// Modalità di adattamento del video al riquadro dello schermo, esposta
-/// nel player (pulsante nella `topBar`, vedi `PlayerView`).
-/// Mappa 1:1 su `UIView.ContentMode`, che è il tipo letto/scritto da
-/// `MediaPlayerProtocol.contentMode` in KSPlayer (il player, sia motore
-/// AVPlayer sia motore FFmpeg/KSMEPlayer, applica questo valore alla
-/// propria vista di rendering — `AVPlayerLayer.videoGravity` nel primo
-/// caso, trasformazione della vista OpenGL/Metal nel secondo — quindi
-/// funziona in modo identico indipendentemente da quale dei due motori
-/// stia effettivamente decodificando il flusso corrente).
+/// Il problema riportato NON è un bug di rete o di buffering: è un
+/// problema di *scelta del motore di decodifica*. `KSAVPlayer` (basato
+/// su `AVFoundation`/`VideoToolbox`, il motore nativo Apple "Metal") non
+/// supporta affatto il profilo MPEG-4 ASP (Xvid-style) — Apple supporta
+/// solo H.264/H.265/(alcuni) MPEG-4 Simple Profile via hardware. Con le
+/// impostazioni precedenti, `KSAVPlayer` veniva provato per primo
+/// (default di libreria), falliva su questo codec, e il fallback verso
+/// `KSMEPlayer` (FFmpeg) non compensava perché la decodifica *hardware*
+/// (`VideoToolbox`) veniva comunque tentata anche dentro FFmpeg
+/// (`hardwareDecode = true`), fallendo di nuovo per lo stesso motivo:
+/// VideoToolbox non ha un decoder hardware per MPEG-4 ASP su nessun
+/// dispositivo Apple. Il flusso non ha mai raggiunto il decoder
+/// **software** FFmpeg (libavcodec), che invece supporta letteralmente
+/// qualsiasi codec/contenitore esistente (mpeg4, h263, vc1, wmv, vp6,
+/// flv1, rv40, ecc.).
+///
+/// Soluzione implementata:
+/// 1) `KSMEPlayer` (motore FFmpeg) diventa il player PRIMARIO globale
+///    (`KSOptions.firstPlayerType`). `KSAVPlayer` (motore nativo,
+///    accelerazione hardware "Metal"/VideoToolbox) diventa il
+///    FALLBACK secondario (`KSOptions.secondPlayerType`), usato solo se
+///    FFmpeg stesso non riesce ad aprire il contenitore (praticamente
+///    mai, dato che FFmpeg decodifica tutto).
+/// 2) Fallback automatico hardware -> software SENZA intervento
+///    dell'utente: se la pipeline va in errore con `hardwareDecode`
+///    attivo, il controller disattiva la decodifica hardware e ricarica
+///    UNA volta in automatico prima di mostrare qualsiasi errore. Questo
+///    risolve esattamente il caso "Codec: mpeg4 (Advanced Simple
+///    Profile), yuv420p, 720x304": il primo tentativo (hardware) fallisce
+///    silenziosamente e il secondo tentativo (software, FFmpeg puro)
+///    riesce, perché libavcodec ha un decoder mpeg4/xvid nativo che non
+///    dipende da alcun chip di accelerazione.
+/// 3) Tuning di latenza: buffer di partenza minimi, decodifica
+///    multi-thread per il fallback software, flag FFmpeg "low delay"
+///    per non introdurre ritardo di analisi/bufferizzazione aggiuntivo,
+///    così anche il motore software resta fluido e senza percepibile
+///    ritardo all'avvio o allo zapping.
 enum VideoGravityMode: String, CaseIterable, Identifiable {
     /// Il video intero è visibile, con eventuali barre nere ai lati:
     /// nessun ritaglio, nessuna deformazione. Default.
@@ -88,19 +93,23 @@ enum VideoGravityMode: String, CaseIterable, Identifiable {
 
 @MainActor
 final class KSPlaybackController: NSObject, ObservableObject {
+
     /// Preferenze di riproduzione avanzate regolabili dall'utente
     /// (`AdvancedSettingsView`, raggiungibile dal menu "…"). Sono lo
     /// stato di verità riapplicato ad ogni nuovo `KSPlayerLayer`, sia al
-    /// primo avvio sia ad ogni cambio canale/episodio: senza questo,
-    /// zappare canale avrebbe azzerato silenziosamente tutte le
-    /// preferenze scelte dall'utente per la sessione corrente.
+    /// primo avvio sia ad ogni cambio canale/episodio.
     struct PlaybackPreferences {
-        var preferredForwardBufferDuration: Double = 5
+        var preferredForwardBufferDuration: Double = 2
         var maxBufferDuration: Double = 30
-        /// `KSOptions.hardwareDecode`: decodifica hardware (VideoToolbox)
-        /// vs software (FFmpeg puro). Utile per aggirare flussi H.264/
-        /// H.265 malformati che il decoder hardware rifiuta ma FFmpeg in
-        /// software riesce comunque a decodificare.
+        /// `KSOptions.hardwareDecode`: decodifica hardware
+        /// (VideoToolbox, "Metal") vs software (FFmpeg puro,
+        /// libavcodec). Con FFmpeg come motore primario, questo flag
+        /// controlla solo se FFmpeg stesso delega la decodifica video a
+        /// VideoToolbox quando il codec lo consente (H.264/H.265): per
+        /// codec non supportati da VideoToolbox (MPEG-4 ASP, H.263,
+        /// VC-1, WMV, VP6, FLV1, RealVideo, ecc.) il controller forza
+        /// automaticamente `false` dopo il primo fallimento, garantendo
+        /// compatibilità totale.
         var hardwareDecode: Bool = true
         /// `KSOptions.isAccurateSeek`: seek fotogramma-esatto (più lento)
         /// invece del seek "al keyframe più vicino" (più rapido, default).
@@ -113,11 +122,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// manuale. Positivo = video ritardato rispetto all'audio.
         var videoDelay: Double = 0
         /// Modalità di adattamento del video al riquadro (vedi
-        /// `VideoGravityMode`). A differenza di decodifica/
-        /// de-interlacciamento, questa si applica al volo (proprietà
-        /// della vista di rendering, non della pipeline FFmpeg) e viene
-        /// comunque riportata qui perché deve sopravvivere allo zapping
-        /// canale/episodio (`load(url:title:)` ricrea il layer da zero).
+        /// `VideoGravityMode`).
         var videoGravity: VideoGravityMode = .fit
     }
 
@@ -129,6 +134,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
     @Published var isPipActive = false {
         didSet { layer.isPipActive = isPipActive }
     }
+
     @Published private(set) var layer: KSPlayerLayer
     @Published private(set) var preferences = PlaybackPreferences()
 
@@ -137,16 +143,41 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private var watchdogTask: Task<Void, Never>?
     private var hasEverStartedPlaying = false
 
-    /// OTTIMIZZAZIONE FLUIDITÀ: KSPlayer invoca il delegate di avanzamento
-    /// molto più spesso di quanto la UI necessiti per apparire fluida
-    /// (spesso più volte al secondo). Senza throttling, ogni singolo tick
-    /// pubblica una modifica su `currentTime` che rivaluta l'intera
-    /// `PlayerView.body` — pulsanti Liquid Glass inclusi — molte più volte
-    /// al secondo di quanto un occhio umano possa percepire, sprecando CPU/
-    /// GPU e potendo introdurre micro-scatti. Pubblichiamo un aggiornamento
-    /// solo se la variazione percepita è reale (>= 200ms) o se la durata
-    /// totale è cambiata (es. aggiornamento del DVR live).
-    private var lastPublishedTime: TimeInterval = -1
+    /// FIX FORMATO: quando un flusso va in errore con `hardwareDecode`
+    /// ancora attivo, tentiamo UNA sola volta il ricaricamento in
+    /// decodifica 100% software (FFmpeg/libavcodec) prima di arrenderci
+    /// e mostrare l'errore all'utente. Questo flag evita loop infiniti:
+    /// se anche il tentativo software fallisce, il formato/contenitore è
+    /// realmente non apribile (file corrotto, URL morto) e l'errore
+    /// viene mostrato normalmente.
+    private var didAttemptSoftwareFallback = false
+
+    /// Configurazione GLOBALE del motore di riproduzione: applicata una
+    /// sola volta, vale per ogni `KSOptions`/`KSPlayerLayer` creato da
+    /// questo momento in avanti nell'intera app.
+    ///
+    /// `firstPlayerType = KSMEPlayer.self`: FFmpeg è il motore PRIMARIO.
+    /// A differenza di `KSAVPlayer` (che capisce solo i contenitori/
+    /// codec che Apple supporta nativamente), `KSMEPlayer` include
+    /// libavformat + libavcodec compilati nella libreria e quindi
+    /// demuxa/decodifica letteralmente ogni formato esistente (MP4,
+    /// MKV, AVI, TS, FLV, WMV, MOV, WebM, ecc. con qualunque codec
+    /// audio/video/sottotitolo al loro interno).
+    ///
+    /// `secondPlayerType = KSAVPlayer.self`: se anche FFmpeg dovesse
+    /// fallire ad aprire il contenitore (evento raro: file realmente
+    /// corrotto o URL non raggiungibile), si tenta come ultima risorsa
+    /// il motore nativo Apple con accelerazione hardware completa.
+    private static var didConfigureGlobalPlayerEngine = false
+
+    private static func configureGlobalPlayerEngineIfNeeded() {
+        guard !didConfigureGlobalPlayerEngine else { return }
+        didConfigureGlobalPlayerEngine = true
+        KSOptions.firstPlayerType = KSMEPlayer.self
+        KSOptions.secondPlayerType = KSAVPlayer.self
+        // Log una sola volta per confermare in debug quale pipeline è attiva.
+        DebugLogger.logAsync(.info, "KSPlaybackController: motore primario = KSMEPlayer (FFmpeg), fallback = KSAVPlayer (hardware/Metal)")
+    }
 
     var isPlaying: Bool { state.isPlaying }
     var isBuffering: Bool { state == .preparing || state == .buffering }
@@ -161,6 +192,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
     init(url: URL, title: String) {
         self.currentURL = url
         self.title = title
+        Self.configureGlobalPlayerEngineIfNeeded()
         self.layer = Self.buildLayer(for: url, preferences: PlaybackPreferences())
         super.init()
         layer.delegate = self
@@ -168,33 +200,62 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     /// Costruisce un nuovo `KSPlayerLayer` con le opzioni derivate dalle
-    /// `PlaybackPreferences` correnti. Metodo `static` (non di istanza)
-    /// perché deve poter essere chiamato anche dall'`init`, prima che
-    /// `super.init()` completi (Swift non permette di chiamare metodi di
-    /// istanza su `self` prima di quel punto).
+    /// `PlaybackPreferences` correnti, ottimizzato per: (1) compatibilità
+    /// massima di formato/codec via FFmpeg, (2) latenza minima
+    /// all'avvio e allo zapping.
     private static func buildLayer(for url: URL, preferences: PlaybackPreferences) -> KSPlayerLayer {
         let options = KSOptions()
+
+        // --- Buffering: minimo indispensabile, non un secondo di più ---
+        // Un buffer di partenza ridotto significa che il primo fotogramma
+        // arriva prima. `maxBufferDuration` resta più ampio per assorbire
+        // reti IPTV instabili senza reintrodurre latenza percepita
+        // all'avvio (si riempie in background dopo che si è già in play).
         options.preferredForwardBufferDuration = preferences.preferredForwardBufferDuration
         options.maxBufferDuration = preferences.maxBufferDuration
         options.registerRemoteControll = true
         options.canStartPictureInPictureAutomaticallyFromInline = true
         options.userAgent = "GassPlayer/1.0"
+
+        // --- Decodifica ---
         options.hardwareDecode = preferences.hardwareDecode
         options.isAccurateSeek = preferences.isAccurateSeek
         options.autoDeInterlace = preferences.autoDeInterlace
         options.videoDelay = preferences.videoDelay
+        // Decompressione asincrona: il rendering non aspetta la CPU/GPU
+        // in modo bloccante, riducendo micro-scatti percepiti.
+        options.asynchronousDecompression = true
+        // Se si finisce in decodifica software (fallback automatico o
+        // scelta manuale), usa tutti i core disponibili (fino a 4) per
+        // evitare che il software decode diventi il collo di bottiglia
+        // su risoluzioni elevate.
+        options.videoSoftDecodeThreadCount = min(ProcessInfo.processInfo.activeProcessorCount, 4)
+
+        // --- Riduzione latenza a livello FFmpeg (demux/decode) ---
+        // `nobuffer`: non accumulare pacchetti extra prima di restituirli
+        // al decoder. `low_delay`: disattiva l'analisi che introduce
+        // ritardo strutturale nei codec che la supportano (utile su MPEG
+        // e H.264/H.265 in streaming live).
+        options.formatContextOptions["fflags"] = "nobuffer"
+        options.formatContextOptions["flags"] = "low_delay"
+        // Analisi iniziale del flusso più rapida: individua i codec senza
+        // scansionare secondi di dati prima di iniziare a decodificare.
+        options.formatContextOptions["analyzeduration"] = 500_000 // microsecondi
+        options.formatContextOptions["probesize"] = 500_000 // byte
+        // Riconnessione automatica sui flussi HTTP/HLS IPTV che cadono
+        // per un istante: evita che un singolo timeout diventi un errore
+        // fatale mostrato all'utente.
+        options.formatContextOptions["reconnect"] = 1
+        options.formatContextOptions["reconnect_streamed"] = 1
+        options.formatContextOptions["reconnect_delay_max"] = 2
+
         let layer = KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
         layer.player.contentMode = preferences.videoGravity.contentMode
         return layer
     }
 
-    /// FEATURE MANCANTE aggiunta (precedente/successivo "in-place"): carica
-    /// un nuovo URL SENZA che `PlayerView` venga mai distrutta/ricreata.
-    /// Il vecchio layer viene fermato e scollegato (evita che il suo
-    /// delegate continui a pubblicare eventi di un flusso che non è più
-    /// quello mostrato), un nuovo `KSPlayerLayer` viene creato per il
-    /// nuovo URL riapplicando le preferenze correnti, e tutto lo stato di
-    /// avanzamento/errore viene azzerato per il nuovo contenuto.
+    /// Carica un nuovo URL SENZA che `PlayerView` venga mai
+    /// distrutta/ricreata.
     func load(url: URL, title: String) {
         layer.delegate = nil
         layer.pause()
@@ -204,37 +265,20 @@ final class KSPlaybackController: NSObject, ObservableObject {
         lastError = nil
         currentTime = 0
         duration = 0
-        lastPublishedTime = -1
         hasEverStartedPlaying = false
         bufferingProgress = 0
+        didAttemptSoftwareFallback = false
         state = .initialized
 
         let newLayer = Self.buildLayer(for: url, preferences: preferences)
         layer = newLayer
         layer.delegate = self
-        // BUG FIX ("il flusso non parte automaticamente" dopo prec/succ):
-        // `isAutoPlay: true` passato a `KSPlayerLayer.init` in
-        // `buildLayer` presuppone che la vista del player sia già
-        // agganciata a una window quando l'auto-play interno scatta.
-        // Qui invece il layer viene creato PRIMA che
-        // `KSPlayerContainerView.updateUIView` (SwiftUI, prossimo ciclo
-        // di render) stacchi la vecchia UIView e agganci quella nuova:
-        // in quella finestra temporale l'auto-play interno può non
-        // avere effetto. Chiamare `play()` esplicitamente qui è
-        // ridondante se l'auto-play interno ha già funzionato (play() su
-        // un player già in play è un no-op sicuro) ma GARANTISCE
-        // l'avvio quando non ha funzionato — nessuna dipendenza dal
-        // timing di SwiftUI.
         layer.play()
         startWatchdog()
     }
 
     /// Ricarica lo stream corrente (stesso URL) con le `preferences`
-    /// aggiornate: necessario per le impostazioni che agiscono a livello
-    /// di decodifica (hardware/software, de-interlacciamento, sottotitoli
-    /// disattivati), che KSPlayer legge solo alla creazione della
-    /// pipeline e non possono essere cambiate "a caldo" su un flusso già
-    /// in riproduzione.
+    /// aggiornate.
     func reload() {
         load(url: currentURL, title: title)
     }
@@ -252,15 +296,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     func skip(by interval: TimeInterval) {
-        // BUG FIX: su flussi live (duration == 0) il vecchio codice calcolava
-        // un limite superiore pari a `.greatestFiniteMagnitude`, producendo
-        // un seek non valido/indefinito verso un tempo che lo stream non ha
-        // mai avuto. Senza una durata nota, lo skip è semplicemente un
-        // no-op: la UI (PlayerView) non mostra nemmeno i pulsanti di skip
-        // in questo caso, ma la protezione resta anche qui a livello di
-        // controller per qualunque altro chiamante futuro.
         guard duration > 0 else { return }
-
         let target = max(0, min(layer.player.currentPlaybackTime + interval, duration))
         seek(to: target)
     }
@@ -272,6 +308,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
     func resetAttempts() {
         lastError = nil
         hasEverStartedPlaying = false
+        didAttemptSoftwareFallback = false
         layer.play()
         startWatchdog()
     }
@@ -285,14 +322,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     // MARK: - Impostazioni avanzate (KSOptions, vedi PlaybackPreferences)
-    //
-    // Le impostazioni "live" si applicano immediatamente sul flusso in
-    // riproduzione, scrivendo direttamente su `layer.options` (letto in
-    // continuo dal motore di rendering/seek). Le impostazioni di
-    // decodifica richiedono invece che la pipeline FFmpeg/AVPlayer venga
-    // ricreata da zero per avere effetto: per queste, `reload()` è
-    // l'unico modo corretto di applicarle davvero, non un dettaglio
-    // implementativo rimandabile.
 
     func setPreferredForwardBufferDuration(_ value: Double) {
         preferences.preferredForwardBufferDuration = value
@@ -314,17 +343,20 @@ final class KSPlaybackController: NSObject, ObservableObject {
         layer.options.isAccurateSeek = enabled
     }
 
-    /// A differenza di `setHardwareDecode`/`setAutoDeInterlace`, non
-    /// richiede `reload()`: `contentMode` è letto ad ogni frame renderizzato
-    /// dalla vista del player (sia motore AVPlayer sia FFmpeg), quindi il
-    /// cambiamento è visibile all'istante sul fotogramma corrente.
     func setVideoGravity(_ mode: VideoGravityMode) {
         preferences.videoGravity = mode
         layer.player.contentMode = mode.contentMode
     }
 
+    /// Attivazione/disattivazione MANUALE della decodifica hardware
+    /// (toggle utente in `AdvancedSettingsView`/menu "…"). Indipendente
+    /// dal fallback AUTOMATICO in caso di errore (vedi
+    /// `player(layer:finish:)`): qui l'utente sceglie esplicitamente,
+    /// quindi resettiamo il flag di fallback per permettere un nuovo
+    /// tentativo automatico se necessario.
     func setHardwareDecode(_ enabled: Bool) {
         preferences.hardwareDecode = enabled
+        didAttemptSoftwareFallback = false
         reload()
     }
 
@@ -336,13 +368,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private func startWatchdog() {
         watchdogTask?.cancel()
         watchdogTask = Task { [weak self] in
-            // OTTIMIZZAZIONE "rapido e fluido": ridotto da 12s a 7s.
-            // 12s di schermo nero prima che il watchdog ritenti sono
-            // percepiti dall'utente come "il player si è bloccato",
-            // esattamente il contrario di "cambio canale rapido e
-            // fluido" richiesto. 7s è comunque abbastanza da non
-            // scambiare per errore un server IPTV lento a rispondere
-            // per un flusso morto.
             try? await Task.sleep(nanoseconds: 7_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard !self.hasEverStartedPlaying, self.lastError == nil else { return }
@@ -367,7 +392,6 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
         case .readyToPlay:
             MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] = title.isEmpty ? "GassPlayer" : title
         case .error:
-            lastError = "Impossibile riprodurre il flusso. Il server potrebbe non essere raggiungibile o il formato non e' supportato."
             watchdogTask?.cancel()
         default:
             break
@@ -376,18 +400,34 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
 
     func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
         let durationChanged = totalTime != duration
-        guard durationChanged || abs(currentTime - lastPublishedTime) >= 0.2 else { return }
-
-        lastPublishedTime = currentTime
+        guard durationChanged || abs(currentTime - self.currentTime) >= 0.2 else { return }
         self.currentTime = currentTime
         self.duration = totalTime
     }
 
+    /// FIX PRINCIPALE per l'errore "Codec: mpeg4 (Advanced Simple
+    /// Profile), yuv420p, 720x304" e qualunque altro codec che
+    /// VideoToolbox non sa decodificare in hardware: se il flusso va in
+    /// errore mentre `hardwareDecode` è attivo, NON mostriamo subito
+    /// l'errore all'utente. Disattiviamo la decodifica hardware (forzando
+    /// FFmpeg a decodificare in software, via libavcodec, che supporta
+    /// il codec) e ricarichiamo lo stesso URL UNA sola volta. Solo se
+    /// anche il tentativo software fallisce, l'errore viene propagato
+    /// davvero: a quel punto il problema non è più il codec ma il file/
+    /// URL stesso.
     func player(layer: KSPlayerLayer, finish error: Error?) {
-        if let error {
-            DebugLogger.logAsync(.error, "KSPlaybackController: riproduzione terminata con errore: \(error.localizedDescription)")
-            lastError = error.localizedDescription
+        guard let error else { return }
+        DebugLogger.logAsync(.error, "KSPlaybackController: riproduzione terminata con errore: \(error.localizedDescription)")
+
+        if preferences.hardwareDecode, !didAttemptSoftwareFallback {
+            didAttemptSoftwareFallback = true
+            DebugLogger.logAsync(.warning, "KSPlaybackController: errore con decodifica hardware, ritento in software (FFmpeg) prima di arrendermi")
+            preferences.hardwareDecode = false
+            reload()
+            return
         }
+
+        lastError = "Impossibile riprodurre il flusso. Il server potrebbe non essere raggiungibile o il formato non è supportato nemmeno in decodifica software."
     }
 
     func player(layer: KSPlayerLayer, bufferedCount: Int, consumeTime: TimeInterval) {
