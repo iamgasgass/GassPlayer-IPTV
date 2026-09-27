@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Scheda dettaglio di una serie TV a scala 1:1 identica al video di riferimento
+/// Scheda dettaglio Serie TV con layout, proporzioni e HStack compatti conformi al video
 struct SeriesEpisodesView: View {
     let credentials: XtreamCredentials
     let seriesId: Int
@@ -111,7 +111,7 @@ struct SeriesEpisodesView: View {
             Text("Caricamento serie...").font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
+        .background(Color(uiColor: .systemBackground))
     }
 
     private func errorView(_ message: String) -> some View {
@@ -122,7 +122,7 @@ struct SeriesEpisodesView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
+        .background(Color(uiColor: .systemBackground))
     }
 
     // MARK: - Contenuto principale
@@ -130,7 +130,7 @@ struct SeriesEpisodesView: View {
     private func detailContent(_ info: XtreamSeriesInfo) -> some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Header compatto
+                // Header Backdrop
                 MediaHeroHeader(
                     title: seriesName,
                     logoURL: detail.logoURL,
@@ -160,11 +160,12 @@ struct SeriesEpisodesView: View {
                     if let overview = detail.overview, !overview.isEmpty {
                         Text(overview)
                             .font(.system(size: 13))
-                            .foregroundStyle(.primary.opacity(0.92))
+                            .foregroundStyle(.primary.opacity(0.88))
                             .lineSpacing(2.5)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 2)
                     } else if isLoadingDetail {
                         ProgressView()
                             .frame(maxWidth: .infinity)
@@ -172,7 +173,7 @@ struct SeriesEpisodesView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 12)
+                .padding(.top, 10)
 
                 // Sezione Valutazioni
                 MediaRatingsSection(ratings: detail.ratings)
@@ -190,10 +191,10 @@ struct SeriesEpisodesView: View {
         }
         .scrollIndicators(.hidden)
         .ignoresSafeArea(edges: .top)
-        .background(Color.black)
+        .background(Color(uiColor: .systemBackground))
     }
 
-    // MARK: - Riga icone
+    // MARK: - Riga icone (4 elementi racchiusi perfettamente nell'HStack orizzontale)
 
     private var iconRow: some View {
         HStack(spacing: 8) {
@@ -225,6 +226,7 @@ struct SeriesEpisodesView: View {
                 showAlternateSources = true
             }
         }
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Sezione episodi
@@ -232,7 +234,7 @@ struct SeriesEpisodesView: View {
     private func episodesSection(_ info: XtreamSeriesInfo) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("EPISODI")
-                .font(.system(size: 11, weight: .bold))
+                .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
 
@@ -254,7 +256,7 @@ struct SeriesEpisodesView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 2)
+                .padding(.top, 4)
             }
         }
     }
@@ -289,7 +291,7 @@ struct SeriesEpisodesView: View {
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 episodeThumbnail(episode)
-                    .frame(width: 104, height: 60)
+                    .frame(width: 110, height: 66)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -304,10 +306,10 @@ struct SeriesEpisodesView: View {
 
                     if let plot = episode.plot, !plot.isEmpty {
                         Text(plot)
-                            .font(.system(size: 10))
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
-                            .lineSpacing(1.5)
+                            .lineSpacing(2)
                     }
                 }
                 Spacer(minLength: 0)
@@ -338,7 +340,7 @@ struct SeriesEpisodesView: View {
             .fill(Color.white.opacity(0.08))
             .overlay {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
     }

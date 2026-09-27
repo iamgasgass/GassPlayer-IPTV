@@ -6,7 +6,7 @@ private struct MoviePlaybackTarget: Identifiable {
     let title: String
 }
 
-/// Scheda dettaglio Film a scala 1:1 identica al video di riferimento
+/// Scheda dettaglio Film VOD con proporzioni calibrate ed allineamento orizzontale privo di zoom
 struct MovieDetailView: View {
     let credentials: XtreamCredentials
     let stream: XtreamStream
@@ -45,7 +45,7 @@ struct MovieDetailView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Header compatto
+                // Header Backdrop
                 MediaHeroHeader(
                     title: stream.name,
                     logoURL: detail.logoURL,
@@ -68,18 +68,19 @@ struct MovieDetailView: View {
                         play()
                     }
 
-                    // Riga icone
+                    // Riga icone: Preferiti, Muto, Download + Altre fonti
                     iconRow
 
-                    // Trama / Plot
+                    // Trama
                     if let overview = detail.overview, !overview.isEmpty {
                         Text(overview)
                             .font(.system(size: 13))
-                            .foregroundStyle(.primary.opacity(0.92))
+                            .foregroundStyle(.primary.opacity(0.88))
                             .lineSpacing(2.5)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 2)
                     } else if isLoadingDetail {
                         ProgressView()
                             .frame(maxWidth: .infinity)
@@ -87,7 +88,7 @@ struct MovieDetailView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 12)
+                .padding(.top, 10)
 
                 // Sezione Valutazioni
                 MediaRatingsSection(ratings: detail.ratings)
@@ -101,7 +102,7 @@ struct MovieDetailView: View {
         }
         .scrollIndicators(.hidden)
         .ignoresSafeArea(edges: .top)
-        .background(Color.black)
+        .background(Color(uiColor: .systemBackground))
         .task(id: stream.streamId) {
             await loadDetail()
         }
@@ -129,7 +130,7 @@ struct MovieDetailView: View {
         }
     }
 
-    // MARK: - Riga icone
+    // MARK: - Riga icone (Tutti i 4 elementi racchiusi in un unico HStack compatto)
 
     private var iconRow: some View {
         HStack(spacing: 8) {
@@ -161,6 +162,7 @@ struct MovieDetailView: View {
                 showAlternateSources = true
             }
         }
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Azioni

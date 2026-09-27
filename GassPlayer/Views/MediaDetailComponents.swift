@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// Dimensioni e metriche precise identiche al video di riferimento
+/// Metriche visive e proporzioni per le schede dettaglio VOD e Serie TV,
+/// calibrate per riprodurre la UI di riferimento su iPhone.
 enum MediaDetailMetrics {
-    static let heroHeight: CGFloat = 280
-    static let heroFadeHeight: CGFloat = 110
+    static let heroHeight: CGFloat = 340
+    static let heroFadeHeight: CGFloat = 120
 }
 
-/// Hero header compatto: backdrop proporzionato, sfumatura verso il nero, logo centrato e pulsante X
+/// Hero header con backdrop, sfumatura gradiente, logo/titolo e pulsante "X" in alto a destra.
 struct MediaHeroHeader: View {
     let title: String
     let logoURL: URL?
@@ -16,28 +17,29 @@ struct MediaHeroHeader: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            // Immagine Backdrop
+            // Backdrop
             backdropImage
                 .frame(maxWidth: .infinity)
                 .frame(height: MediaDetailMetrics.heroHeight)
                 .clipped()
 
-            // Sfumatura verso lo sfondo nero
+            // Gradiente inferiore
             LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0.0),
-                    .init(color: Color.black.opacity(0.6), location: 0.6),
-                    .init(color: Color.black, location: 1.0)
+                colors: [
+                    Color.clear,
+                    Color.black.opacity(0.3),
+                    Color(uiColor: .systemBackground).opacity(0.8),
+                    Color(uiColor: .systemBackground)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
             .frame(height: MediaDetailMetrics.heroFadeHeight)
 
-            // Titolo o Logo
+            // Logo TMDB o Titolo Fallback
             titleBlock
                 .padding(.bottom, 10)
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
         }
         .frame(maxWidth: .infinity)
         .frame(height: MediaDetailMetrics.heroHeight)
@@ -45,7 +47,7 @@ struct MediaHeroHeader: View {
         .overlay(alignment: .topTrailing) {
             closeButton
                 .padding(.trailing, 16)
-                .padding(.top, 48)
+                .padding(.top, 50)
         }
     }
 
@@ -73,7 +75,7 @@ struct MediaHeroHeader: View {
         Rectangle()
             .fill(
                 LinearGradient(
-                    colors: [Color(white: 0.15), Color.black],
+                    colors: [Color.black.opacity(0.85), Color.black.opacity(0.6)],
                     startPoint: .top,
                     endPoint: .bottom
                 )
@@ -89,8 +91,8 @@ struct MediaHeroHeader: View {
                     image
                         .resizable()
                         .scaledToFit()
-                        .frame(maxHeight: 60)
-                        .shadow(color: .black.opacity(0.8), radius: 8, y: 2)
+                        .frame(maxHeight: 74)
+                        .shadow(color: .black.opacity(0.6), radius: 8, y: 2)
                 default:
                     fallbackTitleText
                 }
@@ -102,27 +104,27 @@ struct MediaHeroHeader: View {
 
     private var fallbackTitleText: some View {
         Text(title)
-            .font(.system(size: 22, weight: .bold, design: .rounded))
+            .font(.system(size: 26, weight: .heavy, design: .rounded))
             .foregroundStyle(.white)
             .multilineTextAlignment(.center)
-            .shadow(color: .black.opacity(0.9), radius: 6, y: 2)
+            .shadow(color: .black.opacity(0.7), radius: 6, y: 2)
             .lineLimit(2)
     }
 
     private var closeButton: some View {
         Button(action: onClose) {
             Image(systemName: "xmark")
-                .font(.system(size: 11, weight: .bold))
+                .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(.white.opacity(0.9))
-                .frame(width: 28, height: 28)
-                .background(Color.black.opacity(0.55), in: Circle())
+                .frame(width: 32, height: 32)
+                .background(.black.opacity(0.5), in: Circle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Chiudi")
     }
 }
 
-/// Riga metadata compatta con pillola badge stella + anno/durata + generi
+/// Riga metadata: Badge Stella + Anno/Durata + Genere
 struct MediaMetaRow: View {
     let ratingText: String?
     let secondaryText: String?
@@ -141,7 +143,7 @@ struct MediaMetaRow: View {
                 }
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
-                .background(Color.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .background(Color.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
 
             if let secondaryText, !secondaryText.isEmpty {
@@ -161,23 +163,22 @@ struct MediaMetaRow: View {
     }
 }
 
-/// Pulsante Play a larghezza piena con altezza nativa
+/// Pulsante Play a larghezza piena con sfondo semitrasparente
 struct MediaPlayButton: View {
     let title: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 13, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                 Text(title)
                     .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
             }
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
-            .frame(height: 44)
+            .frame(height: 42)
             .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -188,7 +189,7 @@ struct MediaPlayButton: View {
     }
 }
 
-/// Tasto circolare proporzionato da 38x38 pt
+/// Pulsante circolare (Preferiti, Muto, Download) compatto (40x40)
 struct MediaIconButton: View {
     let systemImage: String
     var tint: Color = .white
@@ -211,10 +212,10 @@ struct MediaIconButton: View {
                 }
 
                 Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(tint)
             }
-            .frame(width: 38, height: 38)
+            .frame(width: 40, height: 40)
             .overlay {
                 Circle().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
             }
@@ -224,7 +225,7 @@ struct MediaIconButton: View {
     }
 }
 
-/// Pillola "Altre fonti" che si espande orizzontalmente senza forzare overflow
+/// Pillola "Altre fonti" che si espande orizzontalmente nello spazio rimanente
 struct AltreFontiButton: View {
     let action: () -> Void
 
@@ -234,7 +235,7 @@ struct AltreFontiButton: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .frame(height: 38)
+                .frame(height: 40)
                 .background(Color.white.opacity(0.12), in: Capsule())
                 .overlay {
                     Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
@@ -244,7 +245,7 @@ struct AltreFontiButton: View {
     }
 }
 
-/// Sezione "VALUTAZIONI" con loghi colorati e scorrimento fluido
+/// Sezione "VALUTAZIONI" orizzontale
 struct MediaRatingsSection: View {
     let ratings: MediaRatings
 
@@ -286,7 +287,7 @@ struct MediaRatingsSection: View {
         if !badges.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("VALUTAZIONI")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
 
@@ -316,7 +317,7 @@ struct MediaRatingsSection: View {
     }
 }
 
-/// Sezione "CAST" a scorrimento orizzontale
+/// Sezione "CAST" orizzontale
 struct MediaCastSection: View {
     let cast: [MediaCastMember]
 
@@ -324,7 +325,7 @@ struct MediaCastSection: View {
         if !cast.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("CAST")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
 
@@ -381,13 +382,13 @@ struct MediaCastSection: View {
             .fill(Color.secondary.opacity(0.25))
             .overlay {
                 Text(member.name.prefix(1))
-                    .font(.system(size: 13, weight: .bold))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
     }
 }
 
-/// Formattazione del rating a stella
+/// Formattazione condivisa per i voti
 enum MediaRatingFormatter {
     static func starText(fromPercent percent: Int?) -> String? {
         guard let percent, percent > 0 else { return nil }
