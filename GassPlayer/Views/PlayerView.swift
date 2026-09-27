@@ -939,13 +939,12 @@ struct QualityPickerView: View {
 /// Pannello impostazioni avanzate: espone la superficie di
 /// `KSPlaybackController.PlaybackPreferences` confermata compatibile con
 /// la versione di `KSOptions`/FFmpeg installata in questo progetto. I
-/// campi di questa vista rappresentano SEMPRE override facoltativi sopra
-/// i default "avformat" universali già attivi di fabbrica (reconnect
-/// automatico, RTSP su TCP, whitelist protocolli estesa a RTMP/MMS/UDP/
-/// concat, fflags di correzione timestamp, threading decoder automatico,
-/// probing/analisi robusti 10 MB/10s) descritti in
-/// `KSPlaybackController.PlaybackPreferences.formatContextOptions`/
-/// `decoderOptions`/`builtInProbesize`/`builtInMaxAnalyzeDuration`.
+/// campi della sezione "Rete"/"Opzioni FFmpeg avanzate" rappresentano
+/// SEMPRE override facoltativi ADDITIVI sopra i default calcolati
+/// automaticamente in base al protocollo dell'URL corrente
+/// (`KSPlaybackController.networkFormatContextOptions`, vedi nota "FIX
+/// MANIACALE" nel file del controller per il bug "avformat: can't open
+/// input" sui VOD che questa logica risolve).
 struct AdvancedSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
@@ -1003,8 +1002,9 @@ struct AdvancedSettingsView: View {
     @State private var newAVOptionKey: String = ""
     @State private var newAVOptionValue: String = ""
 
-    /// Placeholder informativi: mostrano il default "avformat" sempre
-    /// attivo quando l'utente non ha impostato un override esplicito.
+    /// Placeholder informativi: mostrano il default robusto sempre
+    /// attivo (proprietà tipizzate, non dizionario grezzo) quando
+    /// l'utente non ha impostato un override esplicito.
     private let probesizeDefaultPlaceholder = "10000000 (predefinito, già attivo)"
     private let maxAnalyzeDurationDefaultPlaceholder = "10000000 (predefinito, già attivo)"
 
@@ -1080,13 +1080,10 @@ struct AdvancedSettingsView: View {
                         .onChange(of: secondOpen) { newValue in controller.setSecondOpen(newValue) }
                     Toggle("De-interlacciamento automatico", isOn: $autoDeInterlace)
                         .onChange(of: autoDeInterlace) { newValue in controller.setAutoDeInterlace(newValue) }
-                    Text("Threading decoder \"auto\" già attivo di serie su tutti i codec software (H.264/H.265/MPEG-2/VP9/AV1).")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 } header: {
                     Text("Decodifica FFmpeg")
                 } footer: {
-                    Text("Disattiva la decodifica hardware se un canale si blocca o mostra artefatti: FFmpeg in software è più lento ma compatibile con flussi malformati. Ogni opzione in questa sezione ricarica il flusso per applicarsi.")
+                    Text("Se un film VOD non si apre più dopo aver attivato molte opzioni qui, prova prima \"Riprova\" in fondo al pannello: ogni voce ricarica il flusso da zero con le nuove impostazioni.")
                 }
 
                 Section {
@@ -1130,7 +1127,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Sottotitoli")
                 } footer: {
-                    Text("Copre testo, immagine (PGS/DVB/DVD) e Closed Captions incorporati nel flusso. La disattivazione totale e il ritardo sottotitoli non sono più opzioni pubbliche in questa versione di KSPlayer: gestiscili dal picker Audio e sottotitoli.")
+                    Text("Copre testo, immagine (PGS/DVB/DVD) e Closed Captions incorporati nel flusso.")
                 }
 
                 Section {
@@ -1206,7 +1203,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Rete")
                 } footer: {
-                    Text("Di serie sono già attivi: reconnect automatico su drop di rete, keep-alive HTTP, RTSP forzato su TCP, whitelist protocolli estesa (RTMP/MMS/UDP/RTSP/HLS/concat), fflags di correzione timestamp e probing/analisi estesi (10 MB / 10s) per rilevare correttamente tutte le tracce anche su multiplex IPTV mal formati. I campi qui sopra sono override facoltativi che si sommano a questi default e li sovrascrivono solo se compilati.")
+                    Text("Le opzioni di riconnessione (reconnect) e keep-alive HTTP sono già attive di serie solo per URL http/https; il trasporto RTSP via TCP è già attivo di serie solo per URL rtsp(s)://. Nessuna opzione estranea al protocollo dell'URL corrente viene più iniettata: era questa la causa dell'errore \"avformat: can't open input\" su alcuni film VOD.")
                 }
 
                 Section {
@@ -1253,7 +1250,7 @@ struct AdvancedSettingsView: View {
 
                 Section {
                     ffmpegOptionEditor(
-                        title: "Opzioni formato (AVFormatContext, includono i default di riconnessione/RTSP-TCP/whitelist protocolli)",
+                        title: "Opzioni formato AGGIUNTIVE (AVFormatContext)",
                         options: controller.preferences.formatContextOptions,
                         key: $newFormatOptionKey,
                         value: $newFormatOptionValue,
@@ -1261,7 +1258,7 @@ struct AdvancedSettingsView: View {
                         onRemove: { controller.removeFormatContextOption(key: $0) }
                     )
                     ffmpegOptionEditor(
-                        title: "Opzioni decoder (include il default \"threads\"=\"auto\")",
+                        title: "Opzioni decoder",
                         options: controller.preferences.decoderOptions,
                         key: $newDecoderOptionKey,
                         value: $newDecoderOptionValue,
@@ -1279,7 +1276,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Opzioni FFmpeg avanzate")
                 } footer: {
-                    Text("Le righe elencate sopra includono i default \"avformat\" già attivi di fabbrica (reconnect, rtsp_transport=tcp, protocol_whitelist estesa, fflags, threads=auto): puoi modificarle o rimuoverle qui, oppure aggiungerne di nuove. Per utenti esperti: valori errati possono impedire l'apertura del flusso.")
+                    Text("Questo elenco NON mostra più i default automatici di rete (ora calcolati internamente in base al protocollo dell'URL, senza inquinare mai un protocollo diverso): qui compaiono solo le chiavi che aggiungi tu manualmente. Per utenti esperti: valori errati possono impedire l'apertura del flusso, in particolare su protocolli diversi da quello per cui l'opzione è pensata (es. non aggiungere \"rtsp_transport\" per un URL http).")
                 }
 
                 Section("Riproduzione") {
