@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Scheda dettaglio di una serie TV con GeometryReader per prevenire l'estensione/zoom asincrono post-caricamento
+/// Scheda dettaglio di una serie TV
 struct SeriesEpisodesView: View {
     let credentials: XtreamCredentials
     let seriesId: Int
@@ -131,7 +131,7 @@ struct SeriesEpisodesView: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(spacing: 0) {
-                    // Header
+                    // Header Backdrop
                     MediaHeroHeader(
                         title: seriesName,
                         logoURL: detail.logoURL,

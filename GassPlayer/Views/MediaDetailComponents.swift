@@ -15,39 +15,41 @@ struct MediaHeroHeader: View {
     let onClose: () -> Void
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // Backdrop
-            backdropImage
-                .frame(maxWidth: .infinity)
-                .frame(height: MediaDetailMetrics.heroHeight)
-                .clipped()
+        GeometryReader { geo in
+            ZStack(alignment: .bottom) {
+                // Backdrop full-bleed vincolato alla larghezza dello schermo
+                backdropImage
+                    .frame(width: geo.size.width, height: MediaDetailMetrics.heroHeight)
+                    .clipped()
 
-            // Gradiente lineare inferiore
-            LinearGradient(
-                colors: [
-                    Color.clear,
-                    Color.black.opacity(0.35),
-                    Color(uiColor: .systemBackground).opacity(0.85),
-                    Color(uiColor: .systemBackground)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: MediaDetailMetrics.heroFadeHeight)
+                // Gradiente lineare inferiore
+                LinearGradient(
+                    colors: [
+                        Color.clear,
+                        Color.black.opacity(0.35),
+                        Color(uiColor: .systemBackground).opacity(0.85),
+                        Color(uiColor: .systemBackground)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(width: geo.size.width, height: MediaDetailMetrics.heroFadeHeight)
 
-            // Logo TMDB o Titolo Fallback
-            titleBlock
-                .padding(.bottom, 12)
-                .padding(.horizontal, 24)
+                // Logo TMDB o Titolo Fallback
+                titleBlock
+                    .padding(.bottom, 12)
+                    .padding(.horizontal, 24)
+                    .frame(width: geo.size.width, alignment: .center)
+            }
+            .frame(width: geo.size.width, height: MediaDetailMetrics.heroHeight)
+            .clipped()
+            .overlay(alignment: .topTrailing) {
+                closeButton
+                    .padding(.trailing, 16)
+                    .padding(.top, 50)
+            }
         }
-        .frame(maxWidth: .infinity)
         .frame(height: MediaDetailMetrics.heroHeight)
-        .clipped()
-        .overlay(alignment: .topTrailing) {
-            closeButton
-                .padding(.trailing, 16)
-                .padding(.top, 50)
-        }
     }
 
     @ViewBuilder

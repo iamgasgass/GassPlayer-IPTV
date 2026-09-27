@@ -6,7 +6,7 @@ private struct MoviePlaybackTarget: Identifiable {
     let title: String
 }
 
-/// Scheda dettaglio di un VOD (Film) con larghezza vincolata per impedire l'estensione/zoom asincrono
+/// Scheda dettaglio di un VOD (Film)
 struct MovieDetailView: View {
     let credentials: XtreamCredentials
     let stream: XtreamStream
@@ -46,7 +46,7 @@ struct MovieDetailView: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(spacing: 0) {
-                    // Header Backdrop
+                    // Header Backdrop vincolato rigidamente in larghezza
                     MediaHeroHeader(
                         title: stream.name,
                         logoURL: detail.logoURL,
