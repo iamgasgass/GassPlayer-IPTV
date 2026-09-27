@@ -6,7 +6,7 @@ private struct MoviePlaybackTarget: Identifiable {
     let title: String
 }
 
-/// Scheda dettaglio di un VOD (Film)
+/// Scheda dettaglio di un film VOD con UI identica al video dimostrativo
 struct MovieDetailView: View {
     let credentials: XtreamCredentials
     let stream: XtreamStream
@@ -46,7 +46,7 @@ struct MovieDetailView: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(spacing: 0) {
-                    // Header Backdrop vincolato rigidamente in larghezza
+                    // Header con Backdrop e Logo
                     MediaHeroHeader(
                         title: stream.name,
                         logoURL: detail.logoURL,
@@ -56,7 +56,7 @@ struct MovieDetailView: View {
                     )
                     .frame(width: geometry.size.width)
 
-                    // Blocco centrale
+                    // Blocco informazioni centrali
                     VStack(spacing: 16) {
                         MediaMetaRow(
                             ratingText: MediaRatingFormatter.starText(fromPercent: detail.ratings.tmdbPercent),
@@ -74,7 +74,7 @@ struct MovieDetailView: View {
                             Text(overview)
                                 .font(.subheadline)
                                 .foregroundStyle(.primary.opacity(0.92))
-                                .lineSpacing(3)
+                                .lineSpacing(3.5)
                                 .multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -88,12 +88,12 @@ struct MovieDetailView: View {
                     .padding(.top, 14)
                     .frame(width: geometry.size.width)
 
-                    // Sezione Valutazioni
+                    // Sezione Valutazioni (TMDB, Critica, Trakt, IMDb, Metacritic)
                     MediaRatingsSection(ratings: detail.ratings)
                         .padding(.top, 18)
                         .frame(width: geometry.size.width, alignment: .leading)
 
-                    // Sezione Cast
+                    // Sezione Cast con attori e ruoli
                     MediaCastSection(cast: detail.cast)
                         .padding(.top, 18)
                         .padding(.bottom, 40)
@@ -132,7 +132,7 @@ struct MovieDetailView: View {
         }
     }
 
-    // MARK: - Riga icone
+    // MARK: - Riga Icone d'azione (Preferiti, Muto anteprima, Download, Altre fonti)
 
     private var iconRow: some View {
         HStack(spacing: 12) {
@@ -166,7 +166,7 @@ struct MovieDetailView: View {
         }
     }
 
-    // MARK: - Azioni
+    // MARK: - Azioni di riproduzione e download
 
     private func play() {
         guard let url = api.streamURL(for: stream, kind: .movie) else { return }
@@ -185,7 +185,7 @@ struct MovieDetailView: View {
         downloadManager.startDownload(url: url, id: id)
     }
 
-    // MARK: - Caricamento dettaglio
+    // MARK: - Caricamento Metadati TMDB/Xtream
 
     private func loadDetail() async {
         isLoadingDetail = true

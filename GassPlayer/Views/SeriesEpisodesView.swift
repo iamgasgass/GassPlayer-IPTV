@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Scheda dettaglio di una serie TV
+/// Scheda dettaglio di una serie TV identica al video di riferimento
 struct SeriesEpisodesView: View {
     let credentials: XtreamCredentials
     let seriesId: Int
@@ -103,7 +103,7 @@ struct SeriesEpisodesView: View {
         }
     }
 
-    // MARK: - Stati di caricamento/errore
+    // MARK: - Stati di caricamento ed errore
 
     private var loadingView: some View {
         VStack(spacing: 12) {
@@ -131,7 +131,7 @@ struct SeriesEpisodesView: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(spacing: 0) {
-                    // Header
+                    // Header Backdrop
                     MediaHeroHeader(
                         title: seriesName,
                         logoURL: detail.logoURL,
@@ -159,7 +159,7 @@ struct SeriesEpisodesView: View {
                             Text(overview)
                                 .font(.subheadline)
                                 .foregroundStyle(.primary.opacity(0.92))
-                                .lineSpacing(3)
+                                .lineSpacing(3.5)
                                 .multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -231,7 +231,7 @@ struct SeriesEpisodesView: View {
         }
     }
 
-    // MARK: - Sezione episodi
+    // MARK: - Sezione Episodi e Stagioni
 
     private func episodesSection(_ info: XtreamSeriesInfo, containerWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -240,7 +240,7 @@ struct SeriesEpisodesView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 20)
 
-            // Selettore stagioni
+            // Selettore stagioni (Pillole / Chip con angoli arrotondati)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(info.sortedSeasonNumbers, id: \.self) { season in
@@ -250,7 +250,7 @@ struct SeriesEpisodesView: View {
                 .padding(.horizontal, 20)
             }
 
-            // Lista episodi
+            // Lista episodi con card orizzontale
             if let selectedSeason {
                 VStack(spacing: 16) {
                     ForEach(info.episodes(forSeason: selectedSeason)) { episode in
@@ -347,7 +347,7 @@ struct SeriesEpisodesView: View {
             }
     }
 
-    // MARK: - Riproduzione / ripresa
+    // MARK: - Riproduzione e ripresa automatica
 
     private var resumeEpisode: (season: Int, episode: XtreamSeriesInfo.Episode)? {
         guard let info = seriesInfo else { return nil }
