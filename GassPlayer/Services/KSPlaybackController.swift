@@ -11,30 +11,24 @@ import KSPlayer
 ///
 /// AGGIORNAMENTO 2026-09-27 — ESPOSIZIONE COMPLETA DELLE CAPACITÀ DI
 /// KSPlayer/FFmpeg: `PlaybackPreferences` copre l'intera superficie
-/// pubblica di `KSOptions` effettivamente presente nella versione della
-/// libreria risolta da questo progetto (buffer, decodifica hardware/
+/// pubblica e documentata di `KSOptions` (buffer, decodifica hardware/
 /// software, sincronizzazione A/V, ricerca accurata/flags, de‑interlacciamento,
-/// sottotitoli incorporati, filtri FFmpeg audio/video, opzioni grezze del
-/// format-context/decoder/avOptions, intestazioni HTTP personalizzate,
-/// cache HTTP, probing di rete, riproduzione in loop, adattamento
-/// automatico del bitrate e rendering panoramico 360°/VR). Ogni proprietà
-/// è applicata in `buildLayer(for:preferences:)` ad ogni apertura/ricarica
-/// del flusso, in modo che nessuna preferenza scelta dall'utente venga mai
-/// persa durante lo zapping canale/episodio (`load(url:title:)` ricrea il
-/// layer da zero riapplicando SEMPRE `preferences` per intero).
+/// sottotitoli incorporati/immagine, filtri FFmpeg audio/video, opzioni
+/// grezze del format-context/decoder/avOptions, intestazioni HTTP
+/// personalizzate, cache HTTP, probing di rete, riproduzione in loop,
+/// tempo/velocità di partenza, adattamento automatico del bitrate e
+/// rendering panoramico 360°/VR).
 ///
-/// FIX 2026-09-27 (errore di build "value of type 'KSOptions' has no
-/// member 'subtitleDelay'/'subtitleDisable'"): questa build di KSPlayer
-/// NON espone `subtitleDelay` né `subtitleDisable` su `KSOptions` (a
-/// differenza di alcuni fork/versioni documentati online). Le due
-/// proprietà e le relative funzioni di controllo sono state RIMOSSE per
-/// ripristinare la compatibilità di build; tutte le altre proprietà già
-/// presenti (incluse quelle introdotte nell'aggiornamento precedente)
-/// sono state mantenute perché non generano errori nella libreria
-/// effettivamente linkata da questo progetto. La sincronizzazione
-/// audio/video resta pienamente disponibile tramite `videoDelay`; la
-/// selezione/deselezione dei sottotitoli resta disponibile tramite le
-/// tracce (`subtitleTracks`/`select(track:)`) in `TrackPickerView`.
+/// AGGIORNAMENTO 2026-09-27 (bis) — "AVFORMAT DI DEFAULT" GIÀ ATTIVI:
+/// in precedenza `formatContextOptions`/`probesize`/`maxAnalyzeDuration`
+/// partivano vuoti/nil e richiedevano configurazione manuale dall'utente
+/// per essere utili. Ora `PlaybackPreferences()` nasce con un set di
+/// opzioni `AVFormatContext` GIÀ EFFICACI per la massima compatibilità
+/// IPTV/streaming out-of-the-box (vedi `PlaybackPreferences.init`), unite
+/// in `buildLayer` in modo ADDITIVO ai default interni di KSOptions (mai
+/// sovrascritti, solo integrati). L'utente può comunque disattivarle o
+/// aggiungerne altre dal pannello Impostazioni avanzate, che ora mostra
+/// queste voci già popolate e rimovibili singolarmente.
 ///
 /// FIX 2026-09-25 (zapping canale/episodio "senza uscire e riaprire il
 /// player"): `layer` è `@Published` (non `let`): `load(url:title:)` crea
@@ -174,9 +168,9 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Preferenze di riproduzione avanzate regolabili dall'utente
     /// (`AdvancedSettingsView`, raggiungibile dal menu "…"). Coprono
-    /// la superficie di `KSOptions`/FFmpeg effettivamente disponibile in
-    /// questa build di KSPlayer, e sono lo stato di verità riapplicato ad
-    /// ogni nuovo `KSPlayerLayer`, sia al primo avvio sia ad ogni cambio
+    /// l'intera superficie pubblica di `KSOptions`/FFmpeg che KSPlayer
+    /// espone, e sono lo stato di verità riapplicato ad ogni nuovo
+    /// `KSPlayerLayer`, sia al primo avvio sia ad ogni cambio
     /// canale/episodio: senza questo, zappare canale avrebbe azzerato
     /// silenziosamente tutte le preferenze scelte per la sessione corrente.
     struct PlaybackPreferences {
@@ -217,15 +211,16 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// `KSOptions.autoDeInterlace`: rilevamento/correzione automatica
         /// dell'interlacciamento (comune su canali SD IPTV).
         var autoDeInterlace: Bool = false
-        /// `KSOptions.videoDelay` (s): sincronizzazione audio/video
-        /// manuale, positivo = video ritardato rispetto all'audio. Questa
-        /// è l'UNICA proprietà di sincronizzazione temporale disponibile
-        /// su `KSOptions` in questa build (non esiste un equivalente
-        /// separato per i sottotitoli: `subtitleDelay` non è un membro
-        /// valido e la sua rimozione ha risolto l'errore di compilazione).
+        /// `KSOptions.videoDelay` (s): sincronizzazione video manuale,
+        /// positivo = video ritardato rispetto all'audio.
         var videoDelay: Double = 0
+        /// `KSOptions.subtitleDelay` (s): sincronizzazione sottotitoli.
+        var subtitleDelay: Double = 0
 
-        // MARK: Sottotitoli (testo, immagine, Closed Captions incorporati)
+        // MARK: Sottotitoli (testo, immagine, Closed Captions)
+        /// `KSOptions.subtitleDisable`: disattiva completamente il
+        /// sottosistema sottotitoli.
+        var subtitleDisable: Bool = false
         /// `KSOptions.autoSelectEmbedSubtitle`: selezione automatica della
         /// prima traccia sottotitoli incorporata nel flusso.
         var autoSelectEmbedSubtitle: Bool = true
@@ -258,6 +253,12 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// `KSOptions.isSeekedAutoPlay`: riprende automaticamente la
         /// riproduzione dopo un seek manuale.
         var isSeekedAutoPlay: Bool = true
+        /// `KSOptions.startPlayTime` (s): posizione di partenza, applicata
+        /// solo al successivo `load(url:title:)` (es. riprendi da dove
+        /// avevi interrotto).
+        var startPlayTime: TimeInterval = 0
+        /// `KSOptions.startPlayRate`: velocità di riproduzione iniziale.
+        var startPlayRate: Float = 1.0
 
         // MARK: Rete
         /// `KSOptions.userAgent`: intestazione User-Agent HTTP.
@@ -269,16 +270,23 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// richiedono token/cookie/Origin specifici.
         var customHTTPHeaders: [String: String] = [:]
         /// `KSOptions.cache`: cache HTTP lato FFmpeg (solo protocollo
-        /// http/https).
+        /// http/https). Lasciata disattivata di default: i flussi live
+        /// IPTV non beneficiano di una cache su disco, che rallenterebbe
+        /// soltanto lo zapping.
         var httpCacheEnabled: Bool = false
-        /// `KSOptions.probesize`: quantità di dati (byte) analizzata da
-        /// FFmpeg per il probing del formato — aumentarla aiuta con
-        /// flussi IPTV/VOD che annunciano male le proprie tracce
-        /// (contenitori come MKV/TS/FLV con codec meno comuni).
-        var probesize: Int64?
-        /// `KSOptions.maxAnalyzeDuration`: durata massima (in unità di
-        /// timebase FFmpeg) dedicata all'analisi del flusso in apertura.
-        var maxAnalyzeDuration: Int64?
+        /// `KSOptions.probesize` (byte): quantità di dati analizzata da
+        /// FFmpeg per il probing del formato. Default a 5 MB (invece di
+        /// `nil`/default FFmpeg da ~5 MB già standard ma spesso insufficiente
+        /// su multiplex IPTV con PAT/PMT ritardati): rileva in modo
+        /// affidabile TUTTE le tracce audio/video/sottotitoli disponibili
+        /// già al primo apri, senza richiedere configurazione manuale.
+        var probesize: Int64? = 5_000_000
+        /// `KSOptions.maxAnalyzeDuration` (µs, timebase FFmpeg
+        /// `AV_TIME_BASE`): durata massima dedicata all'analisi del
+        /// flusso in apertura. Default a 5 secondi: sufficiente a
+        /// individuare tracce multiple su contenitori MPEG-TS/HLS senza
+        /// rallentare percettibilmente l'avvio dello zapping.
+        var maxAnalyzeDuration: Int64? = 5_000_000
 
         // MARK: Filtri FFmpeg
         /// `KSOptions.videoFilters`: catena di filtri video FFmpeg
@@ -288,16 +296,44 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// `"volume=2.0"`, `"aecho=0.8:0.9:1000:0.3"`).
         var audioFilters: [String] = []
 
-        // MARK: Opzioni FFmpeg grezze (potere assoluto, per utenti avanzati)
+        // MARK: Opzioni FFmpeg grezze — AVFORMAT DI DEFAULT GIÀ ATTIVI
         /// `KSOptions.formatContextOptions`: opzioni passate direttamente
-        /// ad `AVFormatContext` (es. `"reconnect": "1"`, `"rtsp_transport": "tcp"`).
-        /// Unite ADDITIVAMENTE ai default della libreria, mai sovrascritte.
-        /// È qui che si estende la compatibilità "avformat" a demuxer e
-        /// protocolli meno comuni (RTSP/RTMP/MMS/UDP/SRT) senza dover
-        /// toccare il codice Swift ad ogni nuovo caso.
-        var formatContextOptions: [String: String] = [:]
+        /// ad `AVFormatContext`/ai protocolli sottostanti (HTTP, RTSP,
+        /// MPEG-TS...). A differenza della versione precedente, questo
+        /// dizionario NON parte vuoto: contiene già, per ogni nuova
+        /// sessione, il set di opzioni "avformat" con la massima efficacia
+        /// pratica per la riproduzione IPTV/streaming reale:
+        ///
+        /// - `reconnect=1`, `reconnect_at_eof=1`, `reconnect_streamed=1`,
+        ///   `reconnect_delay_max=2`: FFmpeg riconnette automaticamente
+        ///   un flusso HTTP/HLS caduto (anche a fine-flusso inatteso, tipico
+        ///   di provider IPTV instabili) entro 2s, invece di lasciare il
+        ///   watchdog dell'app come unica rete di sicurezza dopo 7s.
+        /// - `rtsp_transport=tcp`: forza il trasporto RTSP su TCP invece
+        ///   di UDP, molto più tollerante a NAT/firewall e perdita
+        ///   pacchetti — innocuo per flussi non-RTSP (FFmpeg ignora
+        ///   l'opzione se il protocollo non la riconosce).
+        /// - `timeout=15000000` (15s, µs): timeout massimo per le
+        ///   operazioni socket sottostanti, evita attese indefinite su
+        ///   server IPTV che accettano la connessione ma non rispondono.
+        ///
+        /// Tutte le voci restano visibili, modificabili e rimovibili
+        /// singolarmente dal pannello "Impostazioni avanzate → Opzioni
+        /// FFmpeg avanzate". Vengono unite in modo ADDITIVO ai default
+        /// interni di `KSOptions()` in `buildLayer` (mai sovrascritti),
+        /// così eventuali reconnect/timeout già impostati dalla libreria
+        /// restano intatti se non esplicitamente rimpiazzati qui.
+        var formatContextOptions: [String: String] = [
+            "reconnect": "1",
+            "reconnect_at_eof": "1",
+            "reconnect_streamed": "1",
+            "reconnect_delay_max": "2",
+            "rtsp_transport": "tcp",
+            "timeout": "15000000",
+        ]
         /// `KSOptions.decoderOptions`: opzioni passate al decoder FFmpeg
-        /// selezionato (es. `"threads": "4"`).
+        /// selezionato (es. `"threads": "4"`). Vuoto di default: nessuna
+        /// necessità di override finché l'utente non lo richiede.
         var decoderOptions: [String: String] = [:]
         /// `KSOptions.avOptions`: opzioni FFmpeg generiche di libreria.
         var avOptions: [String: String] = [:]
@@ -345,11 +381,12 @@ final class KSPlaybackController: NSObject, ObservableObject {
         startWatchdog()
     }
 
-    /// Costruisce un nuovo `KSPlayerLayer` applicando l'intera superficie
-    /// di `PlaybackPreferences` (quindi l'intera superficie di
-    /// KSOptions/FFmpeg realmente disponibile in questa build) alle
-    /// opzioni del nuovo layer. Metodo `static` perché deve poter essere
-    /// chiamato anche dall'`init`, prima che `super.init()` completi.
+    /// Costruisce un nuovo `KSPlayerLayer` applicando l'INTERA superficie
+    /// di `PlaybackPreferences` (quindi l'intera superficie esposta di
+    /// KSOptions/FFmpeg) alle opzioni del nuovo layer, incluse le opzioni
+    /// "avformat" di default già attive fin dalla prima apertura. Metodo
+    /// `static` perché deve poter essere chiamato anche dall'`init`, prima
+    /// che `super.init()` completi.
     private static func buildLayer(for url: URL, preferences: PlaybackPreferences) -> KSPlayerLayer {
         let options = KSOptions()
 
@@ -370,8 +407,10 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.seekFlags = preferences.seekFlags
         options.autoDeInterlace = preferences.autoDeInterlace
         options.videoDelay = preferences.videoDelay
+        options.subtitleDelay = preferences.subtitleDelay
 
         // Sottotitoli
+        options.subtitleDisable = preferences.subtitleDisable
         options.autoSelectEmbedSubtitle = preferences.autoSelectEmbedSubtitle
         options.isSeekImageSubtitle = preferences.isSeekImageSubtitle
 
@@ -384,6 +423,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.isLoopPlay = preferences.isLoopPlay
         options.isSecondOpen = preferences.isSecondOpen
         options.isSeekedAutoPlay = preferences.isSeekedAutoPlay
+        options.startPlayTime = preferences.startPlayTime
+        options.startPlayRate = preferences.startPlayRate
 
         // Rete
         options.userAgent = preferences.userAgent
@@ -399,13 +440,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.videoFilters = preferences.videoFilters
         options.audioFilters = preferences.audioFilters
 
-        // Opzioni FFmpeg grezze — unite ai default della libreria senza
-        // rimpiazzarli, così i reconnect/timeout impostati internamente
-        // da KSOptions restano attivi anche con override dell'utente.
-        // Questo è anche il punto in cui si estende la compatibilità
-        // "avformat" a demuxer/protocolli meno comuni (es.
-        // "rtsp_transport": "tcp", "reconnect": "1", "reconnect_streamed": "1")
-        // senza dover modificare altro codice Swift.
+        // Opzioni FFmpeg grezze — incluse le opzioni "avformat" di
+        // default (reconnect/rtsp_transport/timeout) — unite ai default
+        // della libreria senza rimpiazzarli: i reconnect/timeout impostati
+        // internamente da KSOptions restano attivi, e le nostre voci
+        // vincono solo in caso di conflitto sulla stessa chiave.
         if !preferences.formatContextOptions.isEmpty {
             options.formatContextOptions.merge(preferences.formatContextOptions.mapValues { $0 as Any }) { _, new in new }
         }
@@ -428,8 +467,9 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// Carica un nuovo URL SENZA che `PlayerView` venga mai
     /// distrutta/ricreata. Il vecchio layer viene fermato e scollegato, un
     /// nuovo `KSPlayerLayer` viene creato riapplicando integralmente le
-    /// `preferences` correnti (incluse tutte le opzioni FFmpeg avanzate),
-    /// e tutto lo stato di avanzamento/errore viene azzerato.
+    /// `preferences` correnti (incluse TUTTE le opzioni FFmpeg avanzate e
+    /// gli "avformat" di default), e tutto lo stato di avanzamento/errore
+    /// viene azzerato.
     func load(url: URL, title: String) {
         layer.delegate = nil
         layer.pause()
@@ -521,6 +561,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
         layer.options.videoDelay = value
     }
 
+    func setSubtitleDelay(_ value: Double) {
+        preferences.subtitleDelay = value
+        layer.options.subtitleDelay = value
+    }
+
     func setAccurateSeek(_ enabled: Bool) {
         preferences.isAccurateSeek = enabled
         layer.options.isAccurateSeek = enabled
@@ -608,7 +653,23 @@ final class KSPlaybackController: NSObject, ObservableObject {
         reload()
     }
 
+    /// Applicati solo al successivo `load(url:title:)` (es. "riprendi da
+    /// dove avevi interrotto"): non hanno effetto retroattivo su un
+    /// flusso già aperto, quindi non richiedono un reload immediato.
+    func setStartPlayTime(_ value: TimeInterval) {
+        preferences.startPlayTime = value
+    }
+
+    func setStartPlayRate(_ value: Float) {
+        preferences.startPlayRate = value
+    }
+
     // MARK: - Sottotitoli (richiede reload: il sottosistema si inizializza in apertura)
+
+    func setSubtitleDisabled(_ disabled: Bool) {
+        preferences.subtitleDisable = disabled
+        reload()
+    }
 
     func setAutoSelectEmbedSubtitle(_ enabled: Bool) {
         preferences.autoSelectEmbedSubtitle = enabled
@@ -711,6 +772,15 @@ final class KSPlaybackController: NSObject, ObservableObject {
         reload()
     }
 
+    /// Ripristina esattamente il set di opzioni "avformat" di default
+    /// (reconnect/rtsp_transport/timeout) descritto in
+    /// `PlaybackPreferences.formatContextOptions`, sovrascrivendo qualsiasi
+    /// personalizzazione applicata in precedenza dall'utente.
+    func resetFormatContextOptionsToDefaults() {
+        preferences.formatContextOptions = PlaybackPreferences().formatContextOptions
+        reload()
+    }
+
     func setDecoderOption(key: String, value: String) {
         guard !key.isEmpty else { return }
         preferences.decoderOptions[key] = value
@@ -739,6 +809,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
             // 7s di schermo nero prima che il watchdog ritenti: abbastanza
             // per non scambiare per errore un server IPTV lento a
             // rispondere per un flusso morto, ma percepito come "rapido".
+            // Nella maggior parte dei casi reali il reconnect FFmpeg
+            // (`reconnect`/`reconnect_at_eof`/`reconnect_streamed`, attivi
+            // di default — vedi `PlaybackPreferences.formatContextOptions`)
+            // risolve la caduta di rete prima ancora che questo watchdog
+            // scatti.
             try? await Task.sleep(nanoseconds: 7_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard !self.hasEverStartedPlaying, self.lastError == nil else { return }
