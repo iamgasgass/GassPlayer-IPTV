@@ -131,7 +131,7 @@ struct SeriesEpisodesView: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(spacing: 0) {
-                    // Header Backdrop
+                    // Header
                     MediaHeroHeader(
                         title: seriesName,
                         logoURL: detail.logoURL,
