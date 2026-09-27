@@ -937,18 +937,15 @@ struct QualityPickerView: View {
 }
 
 /// Pannello impostazioni avanzate: espone la superficie di
-/// `KSPlaybackController.PlaybackPreferences` effettivamente disponibile
-/// in questa build di KSPlayer/KSOptions per aprire, decodificare,
-/// sincronizzare e renderizzare qualunque formato (contenitore, codec,
-/// sottotitolo, protocollo di rete) che la libreria sia in grado di
-/// gestire tramite FFmpeg/avformat.
-///
-/// FIX 2026-09-27: rimossi i controlli "Disattiva sottotitoli" e
-/// "Sincronizzazione sottotitoli", basati su `subtitleDisable`/
-/// `subtitleDelay` — proprietà NON presenti su `KSOptions` in questa
-/// build (causavano l'errore di compilazione "has no member"). La
-/// sincronizzazione audio/video resta gestita da `videoDelay`; la
-/// selezione dei sottotitoli resta gestita da `TrackPickerView`.
+/// `KSPlaybackController.PlaybackPreferences` confermata compatibile con
+/// la versione di `KSOptions`/FFmpeg installata in questo progetto. I
+/// campi di questa vista rappresentano SEMPRE override facoltativi sopra
+/// i default "avformat" universali già attivi di fabbrica (reconnect
+/// automatico, RTSP su TCP, whitelist protocolli estesa a RTMP/MMS/UDP/
+/// concat, fflags di correzione timestamp, threading decoder automatico,
+/// probing/analisi robusti 10 MB/10s) descritti in
+/// `KSPlaybackController.PlaybackPreferences.formatContextOptions`/
+/// `decoderOptions`/`builtInProbesize`/`builtInMaxAnalyzeDuration`.
 struct AdvancedSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
@@ -1005,6 +1002,11 @@ struct AdvancedSettingsView: View {
     @State private var newDecoderOptionValue: String = ""
     @State private var newAVOptionKey: String = ""
     @State private var newAVOptionValue: String = ""
+
+    /// Placeholder informativi: mostrano il default "avformat" sempre
+    /// attivo quando l'utente non ha impostato un override esplicito.
+    private let probesizeDefaultPlaceholder = "10000000 (predefinito, già attivo)"
+    private let maxAnalyzeDurationDefaultPlaceholder = "10000000 (predefinito, già attivo)"
 
     init(controller: KSPlaybackController) {
         self.controller = controller
@@ -1078,6 +1080,9 @@ struct AdvancedSettingsView: View {
                         .onChange(of: secondOpen) { newValue in controller.setSecondOpen(newValue) }
                     Toggle("De-interlacciamento automatico", isOn: $autoDeInterlace)
                         .onChange(of: autoDeInterlace) { newValue in controller.setAutoDeInterlace(newValue) }
+                    Text("Threading decoder \"auto\" già attivo di serie su tutti i codec software (H.264/H.265/MPEG-2/VP9/AV1).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } header: {
                     Text("Decodifica FFmpeg")
                 } footer: {
@@ -1125,7 +1130,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Sottotitoli")
                 } footer: {
-                    Text("Copre testo, immagine (PGS/DVB/DVD) e Closed Captions incorporati nel flusso. La selezione/deselezione della traccia attiva si effettua da \"Audio e sottotitoli\" nel menu principale.")
+                    Text("Copre testo, immagine (PGS/DVB/DVD) e Closed Captions incorporati nel flusso. La disattivazione totale e il ritardo sottotitoli non sono più opzioni pubbliche in questa versione di KSPlayer: gestiscili dal picker Audio e sottotitoli.")
                 }
 
                 Section {
@@ -1192,16 +1197,16 @@ struct AdvancedSettingsView: View {
                     Toggle("Cache HTTP (FFmpeg)", isOn: $httpCacheEnabled)
                         .onChange(of: httpCacheEnabled) { newValue in controller.setHTTPCacheEnabled(newValue) }
 
-                    TextField("Probe size (byte)", text: $probesizeText)
+                    TextField(probesizeDefaultPlaceholder, text: $probesizeText)
                         .keyboardType(.numberPad)
-                        .onSubmit { controller.setProbesize(Int64(probesizeText)) }
-                    TextField("Durata massima analisi (µs)", text: $maxAnalyzeDurationText)
+                        .onSubmit { controller.setProbesize(probesizeText.isEmpty ? nil : Int64(probesizeText)) }
+                    TextField(maxAnalyzeDurationDefaultPlaceholder, text: $maxAnalyzeDurationText)
                         .keyboardType(.numberPad)
-                        .onSubmit { controller.setMaxAnalyzeDuration(Int64(maxAnalyzeDurationText)) }
+                        .onSubmit { controller.setMaxAnalyzeDuration(maxAnalyzeDurationText.isEmpty ? nil : Int64(maxAnalyzeDurationText)) }
                 } header: {
                     Text("Rete")
                 } footer: {
-                    Text("Aumenta probe size/durata di analisi per playlist IPTV che annunciano male le proprie tracce audio/video.")
+                    Text("Di serie sono già attivi: reconnect automatico su drop di rete, keep-alive HTTP, RTSP forzato su TCP, whitelist protocolli estesa (RTMP/MMS/UDP/RTSP/HLS/concat), fflags di correzione timestamp e probing/analisi estesi (10 MB / 10s) per rilevare correttamente tutte le tracce anche su multiplex IPTV mal formati. I campi qui sopra sono override facoltativi che si sommano a questi default e li sovrascrivono solo se compilati.")
                 }
 
                 Section {
@@ -1248,7 +1253,7 @@ struct AdvancedSettingsView: View {
 
                 Section {
                     ffmpegOptionEditor(
-                        title: "Opzioni formato (AVFormatContext / avformat)",
+                        title: "Opzioni formato (AVFormatContext, includono i default di riconnessione/RTSP-TCP/whitelist protocolli)",
                         options: controller.preferences.formatContextOptions,
                         key: $newFormatOptionKey,
                         value: $newFormatOptionValue,
@@ -1256,7 +1261,7 @@ struct AdvancedSettingsView: View {
                         onRemove: { controller.removeFormatContextOption(key: $0) }
                     )
                     ffmpegOptionEditor(
-                        title: "Opzioni decoder",
+                        title: "Opzioni decoder (include il default \"threads\"=\"auto\")",
                         options: controller.preferences.decoderOptions,
                         key: $newDecoderOptionKey,
                         value: $newDecoderOptionValue,
@@ -1274,7 +1279,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Opzioni FFmpeg avanzate")
                 } footer: {
-                    Text("Chiave/valore passati direttamente alle strutture avformat/FFmpeg sottostanti (es. \"rtsp_transport\"=\"tcp\", \"reconnect\"=\"1\", \"reconnect_streamed\"=\"1\") per estendere la compatibilità a protocolli e contenitori meno comuni senza modificare altro codice. Per utenti esperti: valori errati possono impedire l'apertura del flusso.")
+                    Text("Le righe elencate sopra includono i default \"avformat\" già attivi di fabbrica (reconnect, rtsp_transport=tcp, protocol_whitelist estesa, fflags, threads=auto): puoi modificarle o rimuoverle qui, oppure aggiungerne di nuove. Per utenti esperti: valori errati possono impedire l'apertura del flusso.")
                 }
 
                 Section("Riproduzione") {
