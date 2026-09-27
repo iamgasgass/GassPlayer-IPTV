@@ -23,6 +23,7 @@ struct MediaHeroHeader: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             backdropImage
+                .frame(maxWidth: .infinity)
                 .frame(height: MediaDetailMetrics.heroHeight)
                 .clipped()
 
@@ -37,7 +38,9 @@ struct MediaHeroHeader: View {
                 .padding(.bottom, 14)
                 .padding(.horizontal, 20)
         }
+        .frame(maxWidth: .infinity)
         .frame(height: MediaDetailMetrics.heroHeight)
+        .clipped()
         .overlay(alignment: .topTrailing) {
             closeButton
                 .padding(.trailing, 16)

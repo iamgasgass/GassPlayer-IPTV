@@ -163,6 +163,7 @@ struct SeriesEpisodesView: View {
                         secondaryText: detail.year,
                         genres: detail.genres
                     )
+                    .frame(maxWidth: .infinity)
 
                     MediaPlayButton(title: playButtonTitle) {
                         playResumeOrFirstEpisode(info)
@@ -174,6 +175,8 @@ struct SeriesEpisodesView: View {
                         Text(overview)
                             .font(.subheadline)
                             .foregroundStyle(.primary.opacity(0.9))
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                     } else if isLoadingDetail {
                         ProgressView()
@@ -190,8 +193,10 @@ struct SeriesEpisodesView: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
                 .padding(.bottom, 32)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .frame(maxWidth: .infinity)
         .ignoresSafeArea(edges: .top)
         .background(Color(uiColor: .systemBackground))
     }
