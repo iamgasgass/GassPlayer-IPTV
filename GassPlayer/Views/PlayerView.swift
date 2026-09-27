@@ -940,11 +940,13 @@ struct QualityPickerView: View {
 /// `KSPlaybackController.PlaybackPreferences` confermata compatibile con
 /// la versione di `KSOptions`/FFmpeg installata in questo progetto. I
 /// campi della sezione "Rete"/"Opzioni FFmpeg avanzate" rappresentano
-/// SEMPRE override facoltativi ADDITIVI sopra i default calcolati
+/// SEMPRE override facoltativi ADDITIVI sopra: (1) i default calcolati
 /// automaticamente in base al protocollo dell'URL corrente
-/// (`KSPlaybackController.networkFormatContextOptions`, vedi nota "FIX
-/// MANIACALE" nel file del controller per il bug "avformat: can't open
-/// input" sui VOD che questa logica risolve).
+/// (`KSPlaybackController.networkFormatContextOptions`) e (2) il retry
+/// automatico e silenzioso con User-Agent browser + Referer auto-derivato
+/// che il controller esegue da solo al primo fallimento di apertura,
+/// PRIMA di mostrare qualunque errore (vedi nota "ANALISI MANIACALE" nel
+/// file del controller).
 struct AdvancedSettingsView: View {
     @ObservedObject var controller: KSPlaybackController
     @Environment(\.dismiss) private var dismiss
@@ -1203,7 +1205,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Rete")
                 } footer: {
-                    Text("Le opzioni di riconnessione (reconnect) e keep-alive HTTP sono già attive di serie solo per URL http/https; il trasporto RTSP via TCP è già attivo di serie solo per URL rtsp(s)://. Nessuna opzione estranea al protocollo dell'URL corrente viene più iniettata: era questa la causa dell'errore \"avformat: can't open input\" su alcuni film VOD.")
+                    Text("Se un film VOD non si apre, il player ritenta già in automatico UNA volta con uno User-Agent da browser e un Referer dedotto dal dominio del flusso, prima di mostrare qualunque errore. Imposta qui uno User-Agent/Referer fisso solo se un provider specifico lo richiede in modo esplicito.")
                 }
 
                 Section {
@@ -1276,7 +1278,7 @@ struct AdvancedSettingsView: View {
                 } header: {
                     Text("Opzioni FFmpeg avanzate")
                 } footer: {
-                    Text("Questo elenco NON mostra più i default automatici di rete (ora calcolati internamente in base al protocollo dell'URL, senza inquinare mai un protocollo diverso): qui compaiono solo le chiavi che aggiungi tu manualmente. Per utenti esperti: valori errati possono impedire l'apertura del flusso, in particolare su protocolli diversi da quello per cui l'opzione è pensata (es. non aggiungere \"rtsp_transport\" per un URL http).")
+                    Text("Questo elenco mostra solo le chiavi aggiunte manualmente: i default automatici di rete sono calcolati internamente in base al protocollo dell'URL. Per utenti esperti: valori errati possono impedire l'apertura del flusso, in particolare su protocolli diversi da quello per cui l'opzione è pensata.")
                 }
 
                 Section("Riproduzione") {
