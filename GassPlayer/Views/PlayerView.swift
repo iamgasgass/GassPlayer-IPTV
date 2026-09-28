@@ -467,6 +467,12 @@ struct PlayerView: View {
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 
+    /// FIX 2026-09-28: il banner mostra ora anche `controller.lastErrorDetail`
+    /// (domain/code reali dell'errore, es. `NSURLErrorDomain#-1004` o
+    /// simili) in piccolo sotto il messaggio principale. Un errore di
+    /// rete/connessione ha un codice ben diverso da un errore di
+    /// formato/codec: questo dettaglio permette di distinguerli a
+    /// colpo d'occhio senza dover consultare i log di debug.
     private func playbackErrorBanner(_ message: String) -> some View {
         VStack {
             Spacer()
@@ -477,6 +483,13 @@ struct PlayerView: View {
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
+                if let detail = controller.lastErrorDetail {
+                    Text(detail)
+                        .font(.caption2.monospaced())
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                }
                 Button("Riprova") {
                     controller.resetAttempts()
                 }
