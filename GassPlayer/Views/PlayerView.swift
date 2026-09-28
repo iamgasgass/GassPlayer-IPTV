@@ -16,6 +16,7 @@ struct PlayerView: View {
     var onNext: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var controller: KSPlaybackController
 
     // Environment objects per cronologia canali e ricerca globale
@@ -49,6 +50,11 @@ struct PlayerView: View {
     @State private var showBrightnessHUD = false
     @State private var showVolumeHUD = false
     @State private var hudHideTask: Task<Void, Never>?
+    /// Valore di partenza (luminosita'/volume) catturato all'inizio del
+    /// gesto: senza, il delta cumulativo veniva sommato al valore GIA'
+    /// aggiornato ad ogni evento e il livello schizzava a 0/1.
+    @State private var dragBaseValue: Double?
+    @State private var dragAdjustsBrightness = true
 
     // Toast generico per feedback visivo
     @State private var toastMessage: String?
@@ -92,10 +98,19 @@ struct PlayerView: View {
 
             // Spinner di buffering centrale pulito durante il caricamento o cambio canale
             if controller.isBuffering {
-                ProgressView()
-                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                    .scaleEffect(1.4)
-                    .transition(.opacity)
+                VStack(spacing: 14) {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(1.4)
+                    if let status = controller.recoveryStatus {
+                        Text(status)
+                            .font(.footnote)
+                            .foregroundStyle(.white.opacity(0.85))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
+                    }
+                }
+                .transition(.opacity)
             }
         }
         .background(
@@ -106,7 +121,21 @@ struct PlayerView: View {
             }
         )
         .onAppear {
+            controller.resumeIfStopped()
             scheduleAutoHide()
+            if let resumed = controller.resumedFrom, resumed > 0 {
+                showToast("Ripreso da \(formatted(resumed))", duration: 1_800_000_000)
+            }
+        }
+        .onChange(of: scenePhase) { phase in
+            // Dopo un player esterno (che ha richiesto lo stop del flusso
+            // per liberare la connessione) riapre da dove si era.
+            if phase == .active { controller.resumeIfStopped() }
+        }
+        .onChange(of: controller.resumedFrom) { resumed in
+            if let resumed, resumed > 0 {
+                showToast("Ripreso da \(formatted(resumed))", duration: 1_800_000_000)
+            }
         }
         .task(id: url) {
             externalPlayers = ExternalPlayer.available(for: url)
@@ -119,7 +148,10 @@ struct PlayerView: View {
             }
         }
         .onDisappear {
-            controller.layer.pause()
+            // stop(), non pause(): chiude davvero la connessione col
+            // provider (altrimenti resta uno slot occupato) e salva la
+            // posizione per la ripresa.
+            controller.stop()
             hideControlsTask?.cancel()
             hudHideTask?.cancel()
             toastTask?.cancel()
@@ -172,7 +204,9 @@ struct PlayerView: View {
         .confirmationDialog("Apri con un altro player", isPresented: $showExternalPlayerMenu, titleVisibility: .visible) {
             ForEach(externalPlayers) { player in
                 Button(player.displayName) {
-                    controller.layer.pause()
+                    // Libera la connessione: molti provider ne concedono 1-2
+                    // e il player esterno userebbe lo stesso account.
+                    controller.stop()
                     UIApplication.shared.open(player.url)
                 }
             }
@@ -208,7 +242,6 @@ struct PlayerView: View {
             ChannelHistoryView(
                 items: recentlyWatched.items.filter { $0.kind == "live" },
                 onSelect: { item in
-                    controller.layer.pause()
                     controller.load(url: item.streamURL, title: item.title)
                     showChannelHistory = false
                 }
@@ -306,7 +339,8 @@ struct PlayerView: View {
                     hardwareDecode: controller.preferences.hardwareDecode,
                     currentPlaybackRate: currentPlaybackRate,
                     selectedVideoTrackName: selectedVideoTrackName,
-                    sleepTimerMinutes: sleepTimerMinutes
+                    sleepTimerMinutes: sleepTimerMinutes,
+                    isLive: controller.isLiveContent
                 ),
                 actions: PlayerTopBar.Actions(
                     dismiss: { dismiss() },
@@ -331,8 +365,7 @@ struct PlayerView: View {
                     trackPicker: { presentAfterMenuDismiss { showTrackPicker = true } },
                     sleepTimerPicker: { presentAfterMenuDismiss { showSleepTimerPicker = true } },
                     airPlayCreate: { airPlayRoutePicker = $0 },
-                    airPlayTrigger: triggerAirPlayPicker,
-                    chromecastTap: { showToast("Chromecast non ancora integrato", duration: 1_400_000_000) }
+                    airPlayTrigger: triggerAirPlayPicker
                 )
             )
             .equatable()
@@ -524,21 +557,35 @@ struct PlayerView: View {
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 10)
             .onChanged { value in
-                guard !isLocked else { return }
+                // Non interferire con lo scrubbing della timeline e ignora
+                // i trascinamenti orizzontali: il gesto vale solo se verticale.
+                guard !isLocked, !isScrubbing else { return }
+                if dragBaseValue == nil,
+                   abs(value.translation.height) < abs(value.translation.width) { return }
                 hudHideTask?.cancel()
 
-                let delta = -value.translation.height / 200
-                if value.startLocation.x < containerWidth / 2 {
-                    brightnessOverlay = min(max(UIScreen.main.brightness + delta, 0), 1)
-                    UIScreen.main.brightness = brightnessOverlay
+                if dragBaseValue == nil {
+                    dragAdjustsBrightness = value.startLocation.x < containerWidth / 2
+                    dragBaseValue = dragAdjustsBrightness
+                        ? Double(UIScreen.main.brightness)
+                        : Double(MPVolumeSlider.currentVolume())
+                }
+                let base = dragBaseValue ?? 0
+                let delta = -value.translation.height / 250
+                let target = min(max(base + delta, 0), 1)
+
+                if dragAdjustsBrightness {
+                    brightnessOverlay = target
+                    UIScreen.main.brightness = CGFloat(target)
                     showBrightnessHUD = true; showVolumeHUD = false
                 } else {
-                    volumeOverlay = min(max(Double(MPVolumeSlider.currentVolume()) + delta, 0), 1)
-                    MPVolumeSlider.setVolume(Float(volumeOverlay))
+                    volumeOverlay = target
+                    MPVolumeSlider.setVolume(Float(target))
                     showVolumeHUD = true; showBrightnessHUD = false
                 }
             }
             .onEnded { _ in
+                dragBaseValue = nil
                 hudHideTask?.cancel()
                 hudHideTask = Task {
                     try? await Task.sleep(nanoseconds: 800_000_000)
@@ -584,6 +631,7 @@ struct PlayerTopBarData: Equatable {
     var currentPlaybackRate: Double
     var selectedVideoTrackName: String?
     var sleepTimerMinutes: Int?
+    var isLive: Bool = true
 }
 
 struct PlayerTopBar: View, Equatable {
@@ -603,7 +651,6 @@ struct PlayerTopBar: View, Equatable {
         var sleepTimerPicker: () -> Void
         var airPlayCreate: (AVRoutePickerView) -> Void
         var airPlayTrigger: () -> Void
-        var chromecastTap: () -> Void
     }
 
     let data: PlayerTopBarData
@@ -658,11 +705,13 @@ struct PlayerTopBar: View, Equatable {
                 Button("Rapporto di aspetto", systemImage: "aspectratio") {
                     actions.aspectPicker()
                 }
-                Button("Cronologia dei canali", systemImage: "clock") {
-                    actions.channelHistory()
-                }
-                Button("Cerca canale", systemImage: "magnifyingglass") {
-                    actions.channelSearch()
+                if data.isLive {
+                    Button("Cronologia dei canali", systemImage: "clock") {
+                        actions.channelHistory()
+                    }
+                    Button("Cerca canale", systemImage: "magnifyingglass") {
+                        actions.channelSearch()
+                    }
                 }
                 Button("Blocca schermo", systemImage: "lock") {
                     actions.lock()
@@ -695,14 +744,12 @@ struct PlayerTopBar: View, Equatable {
                 }
             }
             Section("Trasmissione video e audio") {
-                Button("AirPlay audio", systemImage: "airplayaudio") {
+                // AirPlay gestisce sia audio che video dallo stesso selettore
+                // di sistema: una sola voce (prima erano due identiche).
+                // Chromecast non e' integrato (richiede Google Cast SDK): la
+                // voce-segnaposto e' stata rimossa invece di fingere.
+                Button("AirPlay", systemImage: "airplayvideo") {
                     actions.airPlayTrigger()
-                }
-                Button("AirPlay video", systemImage: "airplayvideo") {
-                    actions.airPlayTrigger()
-                }
-                Button("Chromecast (richiede Google Cast SDK)", systemImage: "tv.badge.wifi") {
-                    actions.chromecastTap()
                 }
             }
         } label: {
@@ -879,11 +926,30 @@ struct ExternalPlayer: Identifiable {
 }
 
 enum MPVolumeSlider {
-    private static let sharedVolumeView = MPVolumeView(frame: .zero)
+    /// `MPVolumeView` deve stare in una finestra reale perche' il suo
+    /// slider interno controlli davvero il volume di sistema: prima la
+    /// vista non era mai aggiunta a una gerarchia e `setVolume` non faceva
+    /// nulla. Ora e' agganciata (invisibile, fuori schermo) alla finestra attiva.
+    @MainActor private static let sharedVolumeView: MPVolumeView = {
+        let view = MPVolumeView(frame: CGRect(x: -3000, y: -3000, width: 10, height: 10))
+        view.alpha = 0.011
+        view.isUserInteractionEnabled = false
+        return view
+    }()
+
+    @MainActor private static func attachIfNeeded() {
+        guard sharedVolumeView.superview == nil else { return }
+        let window = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .first(where: { $0.isKeyWindow })
+        window?.addSubview(sharedVolumeView)
+    }
 
     static func currentVolume() -> Float { AVAudioSession.sharedInstance().outputVolume }
 
-    static func setVolume(_ value: Float) {
+    @MainActor static func setVolume(_ value: Float) {
+        attachIfNeeded()
         if let slider = sharedVolumeView.subviews.compactMap({ $0 as? UISlider }).first {
             slider.value = value
         }
