@@ -3,45 +3,6 @@ import AVFoundation
 import MediaPlayer
 import KSPlayer
 
-/// Bridge SwiftUI-friendly per KSPlayerLayer.
-///
-/// FIX 2026-09-28a (compatibilità "TUTTI I FORMATI" + errore
-/// `mpeg4 (Advanced Simple Profile) yuv420p 720x304`):
-/// FFmpeg (`KSMEPlayer`) diventa il motore PRIMARIO globale, con
-/// fallback automatico hardware -> software su qualsiasi errore prima
-/// di arrendersi (vedi `configureGlobalPlayerEngineIfNeeded()` e
-/// `player(layer:finish:)`).
-///
-/// FIX 2026-09-28b ("risorsa non disponibile" identico su hardware E
-/// software): il log mostrava lo STESSO errore, ISTANTANEO, su entrambi
-/// i tentativi — segno che il problema non era il decoder ma la nostra
-/// stessa configurazione FFmpeg, che impediva l'apertura del flusso
-/// ancora prima di arrivare al decoder. Due cause individuate e
-/// corrette:
-///
-/// 1) `avOptions` in KSPlayer sono le opzioni di **AVFoundation/
-///    AVURLAsset**, usate SOLO dal motore nativo `KSAVPlayer`: non
-///    hanno alcun effetto (e possono confondere l'engine) sul motore
-///    FFmpeg `KSMEPlayer`, che è il nostro primario. Le opzioni FFmpeg
-///    reali (avformat/protocollo: `reconnect`, `timeout`, ecc.) vanno
-///    invece in `formatContextOptions`, che è la vera controparte
-///    dell'`AVDictionary` passata a `avformat_open_input`. Le chiavi di
-///    riconnessione sono state spostate lì.
-/// 2) `probesize`/`maxAnalyzeDuration` erano stati ridotti in modo
-///    troppo aggressivo (500KB / 1s) per "guadagnare" qualche
-///    millisecondo di latenza. Molti file AVI/MP4 di IPTV/VOD (incluso
-///    verosimilmente questo film) hanno metadata di stream non
-///    immediatamente all'inizio del file: con un probe troppo piccolo,
-///    FFmpeg può fallire silenziosamente l'apertura del contenitore
-///    PRIMA ancora di sapere quali codec sono coinvolti — da cui
-///    l'errore generico e identico su entrambi i motori. Questi limiti
-///    sono stati rimossi (si lascia FFmpeg usare i suoi default
-///    robusti): la compatibilità totale ha priorità sui millisecondi.
-///
-/// Inoltre l'errore ora viene SEMPRE mostrato con il testo reale
-/// riportato dal motore (non più un messaggio generico "formato non
-/// supportato" quando il problema è di rete/risorsa): questo evita di
-/// confondere un URL non raggiungibile con un problema di codec.
 enum VideoGravityMode: String, CaseIterable, Identifiable {
     /// Il video intero è visibile, con eventuali barre nere ai lati:
     /// nessun ritaglio, nessuna deformazione. Default.
@@ -88,38 +49,51 @@ enum VideoGravityMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Bridge SwiftUI-friendly per KSPlayerLayer.
+///
+/// Motore primario: FFmpeg (`KSMEPlayer`) -> compatibile con praticamente
+/// ogni contenitore/codec (MP4, MKV, AVI, TS, FLV, WMV, MOV, WebM, MPEG-4
+/// ASP, VC-1, ...). Fallback: `KSAVPlayer` (AVFoundation nativo).
+///
+/// AGGIORNAMENTO 2026-09-28c — "il provider non serve il contenuto":
+/// il player prima mostrava il messaggio del SECONDO motore (AVFoundation,
+/// generico: "risorsa non disponibile") che mascherava la causa reale, e
+/// non provava mai formati/UA alternativi. Cause corrette:
+///
+/// 1. Connessione rimasta aperta: `pause()` NON chiude il socket. Ogni
+///    reload/zapping/fallback lasciava viva la connessione precedente e i
+///    provider con 1-2 connessioni rifiutavano la nuova (HTTP 458/509/
+///    884, o 5xx). Ora ogni layer scartato viene fermato e distrutto
+///    (`teardown`) PRIMA di aprire il successivo e alla chiusura della vista.
+/// 2. `container_extension` errata/obsoleta nel catalogo (404/5xx su
+///    quel formato): in caso di errore si sonda il provider
+///    (`StreamDiagnostics`) e si prova mp4/mkv/avi/m3u8/ts/... finche' uno
+///    viene servito davvero.
+/// 3. User-Agent `GassPlayer/1.0` respinto da alcuni backend: default VLC
+///    + ladder di UA, con memorizzazione dell'UA che funziona per host.
+/// 4. Errori di rete/provider presentati come errori di formato: ora il
+///    messaggio finale e' il risultato della diagnosi HTTP reale (403,
+///    404, limite connessioni, 5xx del backend, timeout, ...).
+///
+/// In piu': ripresa automatica della posizione per film/episodi.
 @MainActor
 final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Preferenze di riproduzione avanzate regolabili dall'utente
     /// (`AdvancedSettingsView`, raggiungibile dal menu "…"). Sono lo
-    /// stato di verità riapplicato ad ogni nuovo `KSPlayerLayer`, sia al
-    /// primo avvio sia ad ogni cambio canale/episodio.
+    /// stato di verita' riapplicato ad ogni nuovo `KSPlayerLayer`.
     struct PlaybackPreferences {
         var preferredForwardBufferDuration: Double = 3
         var maxBufferDuration: Double = 30
-        /// `KSOptions.hardwareDecode`: decodifica hardware
-        /// (VideoToolbox, "Metal") vs software (FFmpeg puro,
-        /// libavcodec). Con FFmpeg come motore primario, questo flag
-        /// controlla solo se FFmpeg stesso delega la decodifica video a
-        /// VideoToolbox quando il codec lo consente (H.264/H.265): per
-        /// codec non supportati da VideoToolbox (MPEG-4 ASP, H.263,
-        /// VC-1, WMV, VP6, FLV1, RealVideo, ecc.) il controller forza
-        /// automaticamente `false` dopo il primo fallimento, garantendo
-        /// compatibilità totale.
+        /// `KSOptions.hardwareDecode`: VideoToolbox vs software puro. Con
+        /// FFmpeg come motore primario controlla solo se FFmpeg delega la
+        /// decodifica video a VideoToolbox (H.264/H.265). Dopo un errore
+        /// il controller passa da solo a `false` (fallback software).
         var hardwareDecode: Bool = true
-        /// `KSOptions.isAccurateSeek`: seek fotogramma-esatto (più lento)
-        /// invece del seek "al keyframe più vicino" (più rapido, default).
         var isAccurateSeek: Bool = false
-        /// `KSOptions.autoDeInterlace`: rileva e corregge automaticamente
-        /// l'interlacciamento, comune su molti canali SD delle
-        /// playlist IPTV.
         var autoDeInterlace: Bool = false
-        /// `KSOptions.videoDelay` (secondi): sincronizzazione audio/video
-        /// manuale. Positivo = video ritardato rispetto all'audio.
+        /// Secondi. Positivo = video ritardato rispetto all'audio.
         var videoDelay: Double = 0
-        /// Modalità di adattamento del video al riquadro (vedi
-        /// `VideoGravityMode`).
         var videoGravity: VideoGravityMode = .fit
     }
 
@@ -128,6 +102,12 @@ final class KSPlaybackController: NSObject, ObservableObject {
     @Published var duration: TimeInterval = 0
     @Published var lastError: String?
     @Published var bufferingProgress: Int = 0
+    /// Testo mostrato sotto lo spinner mentre il controller diagnostica il
+    /// provider o prova un formato/profilo alternativo.
+    @Published private(set) var recoveryStatus: String?
+    @Published private(set) var isRecovering = false
+    /// Posizione da cui e' stata ripresa la riproduzione (film/episodi).
+    @Published private(set) var resumedFrom: TimeInterval?
     @Published var isPipActive = false {
         didSet { layer.isPipActive = isPipActive }
     }
@@ -135,47 +115,45 @@ final class KSPlaybackController: NSObject, ObservableObject {
     @Published private(set) var layer: KSPlayerLayer
     @Published private(set) var preferences = PlaybackPreferences()
 
+    /// URL richiesto dal chiamante (non cambia durante il recupero).
     private(set) var currentURL: URL
+    private(set) var isStopped = false
+
+    /// URL/UA effettivamente in uso (possono differire da `currentURL`
+    /// dopo un recupero riuscito su un formato alternativo).
+    private var activeURL: URL
+    private var activeUserAgent: String
     private var title: String
+
     private var watchdogTask: Task<Void, Never>?
+    private var recoveryTask: Task<Void, Never>?
     private var hasEverStartedPlaying = false
-
-    /// FIX FORMATO: quando un flusso va in errore con `hardwareDecode`
-    /// ancora attivo, tentiamo UNA sola volta il ricaricamento in
-    /// decodifica 100% software (FFmpeg/libavcodec) prima di arrenderci
-    /// e mostrare l'errore all'utente. Questo flag evita loop infiniti:
-    /// se anche il tentativo software fallisce, mostriamo l'errore reale
-    /// (che può essere di rete/risorsa, non necessariamente di codec).
     private var didAttemptSoftwareFallback = false
+    private var recoveryRounds = 0
+    private var triedKeys = Set<String>()
+    private var loadGeneration = 0
+    private var lastPositionSave = Date.distantPast
+    private weak var tornDownLayer: KSPlayerLayer?
 
-    /// Configurazione GLOBALE del motore di riproduzione: applicata una
-    /// sola volta, vale per ogni `KSOptions`/`KSPlayerLayer` creato da
-    /// questo momento in avanti nell'intera app.
-    ///
-    /// `firstPlayerType = KSMEPlayer.self`: FFmpeg è il motore PRIMARIO.
-    /// A differenza di `KSAVPlayer` (che capisce solo i contenitori/
-    /// codec che Apple supporta nativamente), `KSMEPlayer` include
-    /// libavformat + libavcodec compilati nella libreria e quindi
-    /// demuxa/decodifica letteralmente ogni formato esistente (MP4,
-    /// MKV, AVI, TS, FLV, WMV, MOV, WebM, ecc. con qualunque codec
-    /// audio/video/sottotitolo al loro interno).
-    ///
-    /// `secondPlayerType = KSAVPlayer.self`: se anche FFmpeg dovesse
-    /// fallire ad aprire il contenitore (evento raro: file realmente
-    /// corrotto o URL non raggiungibile), si tenta come ultima risorsa
-    /// il motore nativo Apple con accelerazione hardware completa.
+    private static let maxRecoveryRounds = 3
+
+    // MARK: - Motore globale
+
     private static var didConfigureGlobalPlayerEngine = false
 
+    /// `firstPlayerType = KSMEPlayer` (FFmpeg): demuxa/decodifica ogni
+    /// formato. `secondPlayerType = KSAVPlayer`: ultima risorsa nativa
+    /// Apple (utile soprattutto per HLS).
     private static func configureGlobalPlayerEngineIfNeeded() {
         guard !didConfigureGlobalPlayerEngine else { return }
         didConfigureGlobalPlayerEngine = true
         KSOptions.firstPlayerType = KSMEPlayer.self
         KSOptions.secondPlayerType = KSAVPlayer.self
-        DebugLogger.logAsync(.info, "KSPlaybackController: motore primario = KSMEPlayer (FFmpeg), fallback = KSAVPlayer (hardware/Metal)")
+        DebugLogger.logAsync(.info, "KSPlaybackController: motore primario = KSMEPlayer (FFmpeg), fallback = KSAVPlayer")
     }
 
     var isPlaying: Bool { state.isPlaying }
-    var isBuffering: Bool { state == .preparing || state == .buffering }
+    var isBuffering: Bool { state == .preparing || state == .buffering || isRecovering }
 
     var supportsPictureInPicture: Bool {
         if #available(iOS 14.0, tvOS 14.0, *) {
@@ -184,22 +162,45 @@ final class KSPlaybackController: NSObject, ObservableObject {
         return false
     }
 
+    /// `true` per Live TV (nessuna durata, URL non film/serie).
+    var isLiveContent: Bool {
+        PlaybackPositionStore.identity(for: currentURL) == nil && duration <= 0
+    }
+
+    // MARK: - Init
+
     init(url: URL, title: String) {
+        let userAgent = PlaybackProfileStore.userAgent(for: url) ?? StreamUserAgents.vlc
+        let start = PlaybackPositionStore.position(for: url)
+
         self.currentURL = url
+        self.activeURL = url
+        self.activeUserAgent = userAgent
         self.title = title
         Self.configureGlobalPlayerEngineIfNeeded()
-        self.layer = Self.buildLayer(for: url, preferences: PlaybackPreferences())
+        self.layer = Self.buildLayer(
+            for: url,
+            preferences: PlaybackPreferences(),
+            userAgent: userAgent,
+            startTime: start
+        )
         super.init()
         layer.delegate = self
+        resumedFrom = start
+        triedKeys = [Self.key(url, userAgent)]
         startWatchdog()
     }
 
-    /// Costruisce un nuovo `KSPlayerLayer` con le opzioni derivate dalle
-    /// `PlaybackPreferences` correnti, ottimizzato per: (1) compatibilità
-    /// massima di formato/codec via FFmpeg, (2) latenza minima
-    /// all'avvio e allo zapping, SENZA sacrificare la capacità di
-    /// FFmpeg di analizzare correttamente il contenitore.
-    private static func buildLayer(for url: URL, preferences: PlaybackPreferences) -> KSPlayerLayer {
+    // MARK: - Costruzione layer
+
+    /// Costruisce un `KSPlayerLayer` ottimizzato per compatibilita' di
+    /// formato e latenza, con l'UA indicato.
+    private static func buildLayer(
+        for url: URL,
+        preferences: PlaybackPreferences,
+        userAgent: String,
+        startTime: TimeInterval?
+    ) -> KSPlayerLayer {
         let options = KSOptions()
 
         // --- Buffering ---
@@ -207,89 +208,181 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.maxBufferDuration = preferences.maxBufferDuration
         options.registerRemoteControll = true
         options.canStartPictureInPictureAutomaticallyFromInline = true
-        options.userAgent = "GassPlayer/1.0"
+        options.userAgent = userAgent
+
+        // --- Ripresa posizione (film/episodi) ---
+        if let startTime, startTime > 0 {
+            options.startPlayTime = startTime
+        }
 
         // --- Decodifica ---
         options.hardwareDecode = preferences.hardwareDecode
         options.isAccurateSeek = preferences.isAccurateSeek
         options.autoDeInterlace = preferences.autoDeInterlace
         options.videoDelay = preferences.videoDelay
-        // Decompressione asincrona: il rendering non aspetta la CPU/GPU
-        // in modo bloccante, riducendo micro-scatti percepiti.
         options.asynchronousDecompression = true
 
-        // Se si finisce in decodifica software (fallback automatico o
-        // scelta manuale), usa più thread FFmpeg per il decoder video
-        // (chiave libavcodec "threads"), evitando che il software decode
-        // diventi il collo di bottiglia su risoluzioni elevate.
         let threadCount = min(ProcessInfo.processInfo.activeProcessorCount, 4)
         options.decoderOptions["threads"] = "\(threadCount)"
 
-        // NON tocchiamo `probesize`/`maxAnalyzeDuration`: forzarli a
-        // valori piccoli per "guadagnare latenza" ha causato in
-        // precedenza il fallimento di apertura di contenitori AVI/MP4
-        // con metadata non lineare (l'errore "risorsa non disponibile"
-        // riprodotto identico su hardware E software). Si lasciano i
-        // default della libreria, che sanno già bilanciare velocità e
-        // correttezza dell'analisi del contenitore.
+        // NON si toccano `probesize`/`maxAnalyzeDuration`: valori piccoli
+        // rompevano l'apertura di AVI/MP4 con metadata non lineari.
 
-        // --- Opzioni FFmpeg reali (avformat/protocollo), NON opzioni
-        // AVFoundation: vanno in `formatContextOptions`, la vera
-        // controparte dell'AVDictionary passata a
-        // `avformat_open_input`. `avOptions` in KSPlayer è invece
-        // riservato alle opzioni di AVURLAsset usate solo dal motore
-        // nativo KSAVPlayer: metterci opzioni FFmpeg lì non ha alcun
-        // effetto sul motore primario e va evitato.
+        // --- Opzioni FFmpeg reali (avformat) ---
         if url.scheme == "http" || url.scheme == "https" {
-            // Riconnessione automatica sui flussi HTTP/HLS IPTV che
-            // cadono per un istante: evita che un singolo timeout
-            // diventi un errore fatale mostrato all'utente.
+            options.formatContextOptions["user_agent"] = userAgent
             options.formatContextOptions["reconnect"] = 1
             options.formatContextOptions["reconnect_streamed"] = 1
+            options.formatContextOptions["reconnect_on_network_error"] = 1
             options.formatContextOptions["reconnect_delay_max"] = 2
-            // Timeout di connessione/lettura (microsecondi): evita che
-            // un server IPTV lento a rispondere blocchi indefinitamente
-            // l'apertura del flusso senza mai restituire un errore.
-            options.formatContextOptions["timeout"] = 15_000_000
-            options.formatContextOptions["rw_timeout"] = 15_000_000
+            // Tetto al tempo totale di riconnessione: senza, FFmpeg puo'
+            // insistere per minuti su un backend morto prima di dare errore.
+            options.formatContextOptions["reconnect_delay_total_max"] = 10
+            // Microsecondi. I film hanno bisogno di piu' margine (il
+            // server deve spesso cercare il file/moov atom prima di rispondere).
+            let isVOD = PlaybackPositionStore.identity(for: url) != nil
+            let timeout = isVOD ? 30_000_000 : 15_000_000
+            options.formatContextOptions["timeout"] = timeout
+            options.formatContextOptions["rw_timeout"] = timeout
         }
-        // Molte playlist HLS di IPTV referenziano sotto-manifest/segmenti
-        // su protocolli diversi (http/https/crypto per gli stream
-        // cifrati AES-128): senza whitelist esplicita FFmpeg può
-        // rifiutare l'apertura con "Protocol not found" su alcuni CDN.
-        options.formatContextOptions["protocol_whitelist"] = "file,http,https,tcp,tls,crypto,hls,applehttp"
+        // Whitelist ampia: sotto-manifest HLS/CDN su protocolli diversi,
+        // stream cifrati AES-128, sorgenti M3U con rtmp/rtsp/udp/rtp.
+        options.formatContextOptions["protocol_whitelist"] =
+            "file,http,https,tcp,tls,crypto,hls,applehttp,udp,rtp,rtsp,rtmp,rtmps,data,httpproxy,subfile,async,cache"
 
         let layer = KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
         layer.player.contentMode = preferences.videoGravity.contentMode
         return layer
     }
 
-    /// Carica un nuovo URL SENZA che `PlayerView` venga mai
-    /// distrutta/ricreata.
-    func load(url: URL, title: String) {
-        layer.delegate = nil
-        layer.pause()
+    /// Ferma e distrugge un layer: `pause()` da solo NON chiude la
+    /// connessione HTTP e con provider a 1-2 connessioni la successiva
+    /// viene rifiutata. Ordine: pause -> reset -> shutdown.
+    private func teardown(_ target: KSPlayerLayer) {
+        // Idempotente: stop()/load()/recupero possono incrociarsi sullo
+        // stesso layer (riferimento debole: nessun rischio di riuso).
+        guard tornDownLayer !== target else { return }
+        tornDownLayer = target
+        target.delegate = nil
+        target.pause()
+        target.resetPlayer()
+        target.player.shutdown()
+    }
 
-        self.currentURL = url
-        self.title = title
-        lastError = nil
-        currentTime = 0
-        duration = 0
+    private func startLayer(url: URL, userAgent: String, startTime: TimeInterval?) {
+        loadGeneration += 1
+        activeURL = url
+        activeUserAgent = userAgent
         hasEverStartedPlaying = false
-        bufferingProgress = 0
-        didAttemptSoftwareFallback = false
         state = .initialized
 
-        let newLayer = Self.buildLayer(for: url, preferences: preferences)
+        let newLayer = Self.buildLayer(
+            for: url,
+            preferences: preferences,
+            userAgent: userAgent,
+            startTime: startTime
+        )
         layer = newLayer
-        layer.delegate = self
-        layer.play()
+        newLayer.delegate = self
+        newLayer.play()
         startWatchdog()
     }
 
-    /// Ricarica lo stream corrente (stesso URL) con le `preferences`
-    /// aggiornate.
+    private func resetPlaybackState() {
+        lastError = nil
+        currentTime = 0
+        duration = 0
+        bufferingProgress = 0
+        hasEverStartedPlaying = false
+        didAttemptSoftwareFallback = false
+        isRecovering = false
+        recoveryStatus = nil
+        state = .initialized
+    }
+
+    private func cancelRecovery() {
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        watchdogTask?.cancel()
+    }
+
+    private static func key(_ url: URL, _ userAgent: String) -> String {
+        "\(url.absoluteString)|\(userAgent)"
+    }
+
+    // MARK: - API pubblica
+
+    /// Carica un nuovo URL SENZA distruggere/ricreare `PlayerView`. Il
+    /// vecchio flusso viene chiuso davvero prima di aprire il nuovo.
+    func load(url: URL, title: String) {
+        persistPosition()
+        cancelRecovery()
+        teardown(layer)
+
+        currentURL = url
+        activeURL = url
+        activeUserAgent = PlaybackProfileStore.userAgent(for: url) ?? StreamUserAgents.vlc
+        self.title = title
+        isStopped = false
+        recoveryRounds = 0
+        resetPlaybackState()
+        triedKeys = [Self.key(url, activeUserAgent)]
+
+        let start = PlaybackPositionStore.position(for: url)
+        resumedFrom = start
+        startLayer(url: url, userAgent: activeUserAgent, startTime: start)
+    }
+
+    /// Ricarica lo stream in uso con le `preferences` aggiornate,
+    /// mantenendo la posizione corrente.
     func reload() {
+        let resumeAt = (duration > 0 && currentTime > 5) ? currentTime : nil
+        let url = activeURL
+        let userAgent = activeUserAgent
+
+        cancelRecovery()
+        teardown(layer)
+        recoveryRounds = 0
+        resetPlaybackState()
+        startLayer(
+            url: url,
+            userAgent: userAgent,
+            startTime: resumeAt ?? PlaybackPositionStore.position(for: currentURL)
+        )
+    }
+
+    /// "Riprova" dell'utente: ripartenza pulita con diagnosi completa se
+    /// fallisce ancora.
+    func resetAttempts() {
+        let resumeAt = resumeTime()
+        let restartURL = hasEverStartedPlaying ? activeURL : currentURL
+
+        cancelRecovery()
+        teardown(layer)
+        recoveryRounds = 0
+        resetPlaybackState()
+        let userAgent = PlaybackProfileStore.userAgent(for: currentURL) ?? StreamUserAgents.vlc
+        triedKeys = [Self.key(restartURL, userAgent)]
+        startLayer(url: restartURL, userAgent: userAgent, startTime: resumeAt)
+    }
+
+    /// Chiude davvero il flusso (rilascia la connessione col provider) e
+    /// salva la posizione. Chiamato alla chiusura della vista.
+    func stop() {
+        guard !isStopped else { return }
+        persistPosition()
+        isStopped = true
+        cancelRecovery()
+        teardown(layer)
+        isRecovering = false
+        recoveryStatus = nil
+        state = .initialized
+    }
+
+    /// Se la vista ricompare dopo uno `stop()` (es. swipe di chiusura
+    /// annullato) riapre il flusso dalla posizione salvata.
+    func resumeIfStopped() {
+        guard isStopped else { return }
         load(url: currentURL, title: title)
     }
 
@@ -315,14 +408,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
         layer.player.playbackRate = rate
     }
 
-    func resetAttempts() {
-        lastError = nil
-        hasEverStartedPlaying = false
-        didAttemptSoftwareFallback = false
-        layer.play()
-        startWatchdog()
-    }
-
     var audioTracks: [MediaPlayerTrack] { layer.player.tracks(mediaType: .audio) }
     var subtitleTracks: [MediaPlayerTrack] { layer.player.tracks(mediaType: .subtitle) }
     var videoTracks: [MediaPlayerTrack] { layer.player.tracks(mediaType: .video) }
@@ -331,7 +416,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         layer.player.select(track: track)
     }
 
-    // MARK: - Impostazioni avanzate (KSOptions, vedi PlaybackPreferences)
+    // MARK: - Impostazioni avanzate
 
     func setPreferredForwardBufferDuration(_ value: Double) {
         preferences.preferredForwardBufferDuration = value
@@ -358,15 +443,9 @@ final class KSPlaybackController: NSObject, ObservableObject {
         layer.player.contentMode = mode.contentMode
     }
 
-    /// Attivazione/disattivazione MANUALE della decodifica hardware
-    /// (toggle utente in `AdvancedSettingsView`/menu "…"). Indipendente
-    /// dal fallback AUTOMATICO in caso di errore (vedi
-    /// `player(layer:finish:)`): qui l'utente sceglie esplicitamente,
-    /// quindi resettiamo il flag di fallback per permettere un nuovo
-    /// tentativo automatico se necessario.
+    /// Scelta MANUALE hardware/software (indipendente dal fallback automatico).
     func setHardwareDecode(_ enabled: Bool) {
         preferences.hardwareDecode = enabled
-        didAttemptSoftwareFallback = false
         reload()
     }
 
@@ -375,32 +454,149 @@ final class KSPlaybackController: NSObject, ObservableObject {
         reload()
     }
 
+    // MARK: - Posizione
+
+    private func resumeTime() -> TimeInterval? {
+        if duration > 0, currentTime > 15 { return currentTime }
+        return PlaybackPositionStore.position(for: currentURL)
+    }
+
+    private func persistPosition() {
+        lastPositionSave = Date()
+        guard duration > 0, hasEverStartedPlaying else { return }
+        PlaybackPositionStore.record(time: currentTime, duration: duration, for: currentURL)
+    }
+
+    private func markStarted() {
+        guard !hasEverStartedPlaying else { return }
+        hasEverStartedPlaying = true
+        watchdogTask?.cancel()
+        recoveryStatus = nil
+        recoveryRounds = 0
+        triedKeys = [Self.key(activeURL, activeUserAgent)]
+        PlaybackProfileStore.remember(userAgent: activeUserAgent, for: currentURL)
+    }
+
+    // MARK: - Watchdog
+
+    /// Dopo 7s senza avvio forza pausa->play; dopo altri 18s (25s totali)
+    /// considera il flusso fallito e avvia la diagnosi del provider.
     private func startWatchdog() {
         watchdogTask?.cancel()
+        let generation = loadGeneration
         watchdogTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 7_000_000_000)
-            guard let self, !Task.isCancelled else { return }
-            guard !self.hasEverStartedPlaying, self.lastError == nil else { return }
-            DebugLogger.logAsync(.warning, "KSPlaybackController: nessuna riproduzione avviata dopo 7s (stato=\(self.state)), forzo ciclo pausa->play")
+            guard let self, !Task.isCancelled, generation == self.loadGeneration else { return }
+            guard !self.hasEverStartedPlaying, self.lastError == nil, !self.isRecovering else { return }
+            DebugLogger.logAsync(.warning, "KSPlaybackController: nessuna riproduzione dopo 7s (stato=\(self.state)), ciclo pausa->play")
             self.layer.pause()
             self.layer.play()
+
+            try? await Task.sleep(nanoseconds: 18_000_000_000)
+            guard !Task.isCancelled, generation == self.loadGeneration else { return }
+            guard !self.hasEverStartedPlaying, self.lastError == nil, !self.isRecovering else { return }
+            self.handlePlaybackFailure("Timeout: nessun dato valido ricevuto dal provider entro 25 secondi.")
+        }
+    }
+
+    // MARK: - Recupero errori
+
+    /// Errore del motore: chiude il flusso (libera la connessione),
+    /// sonda il provider per capire la causa reale e poi riprova con
+    /// un URL/UA/decoder diverso oppure mostra la causa vera.
+    private func handlePlaybackFailure(_ description: String) {
+        guard !isRecovering, !isStopped else { return }
+        DebugLogger.logAsync(.error, "KSPlaybackController: errore riproduzione: \(description)")
+
+        recoveryRounds += 1
+        guard recoveryRounds <= Self.maxRecoveryRounds else {
+            recoveryStatus = nil
+            lastError = description
+            return
+        }
+
+        let failedMidstream = hasEverStartedPlaying
+        isRecovering = true
+        recoveryStatus = "Il flusso non parte: controllo cosa risponde il provider…"
+        watchdogTask?.cancel()
+
+        // Siamo dentro la callback del layer che ha fallito: si scollega
+        // subito il delegate e lo si distrugge al giro successivo, fuori
+        // dalla callback (evita rientranze dentro KSPlayer).
+        let failedLayer = layer
+        failedLayer.delegate = nil
+
+        let generation = loadGeneration
+        let requested = currentURL
+        let userAgent = activeUserAgent
+
+        recoveryTask?.cancel()
+        recoveryTask = Task { [weak self] in
+            await Task.yield()
+            self?.teardown(failedLayer)
+            // Lascia al provider il tempo di rilasciare lo slot connessione.
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            let diagnosis = await StreamDiagnostics.diagnose(url: requested, preferredUserAgent: userAgent)
+            guard let self, !Task.isCancelled, generation == self.loadGeneration, !self.isStopped else { return }
+            self.applyDiagnosis(diagnosis, engineError: description, failedMidstream: failedMidstream)
+        }
+    }
+
+    private func applyDiagnosis(_ diagnosis: StreamDiagnosis, engineError: String, failedMidstream: Bool) {
+        isRecovering = false
+
+        switch diagnosis {
+        case .unplayable(let message):
+            DebugLogger.logAsync(.error, "KSPlaybackController: diagnosi provider: \(message)")
+            recoveryStatus = nil
+            lastError = message
+
+        case .playable(let resolution):
+            let key = Self.key(resolution.playURL, resolution.userAgent)
+
+            if !triedKeys.contains(key) || failedMidstream {
+                triedKeys.insert(key)
+                if resolution.playURL.pathExtension.lowercased() != currentURL.pathExtension.lowercased() {
+                    recoveryStatus = "Provo il formato \(resolution.playURL.pathExtension.uppercased())…"
+                } else {
+                    recoveryStatus = "Riprovo la connessione…"
+                }
+                DebugLogger.logAsync(.warning, "KSPlaybackController: ritento con \(resolution.playURL.lastPathComponent) (UA: \(resolution.userAgent))")
+                startLayer(url: resolution.playURL, userAgent: resolution.userAgent, startTime: resumeTime())
+
+            } else if preferences.hardwareDecode, !didAttemptSoftwareFallback {
+                // Il provider serve il file: il problema e' il decoder.
+                didAttemptSoftwareFallback = true
+                preferences.hardwareDecode = false
+                recoveryStatus = "Passo alla decodifica software (FFmpeg)…"
+                startLayer(url: activeURL, userAgent: activeUserAgent, startTime: resumeTime())
+
+            } else {
+                recoveryStatus = nil
+                lastError = "Il provider serve il file correttamente ma il player non riesce a decodificarlo.\n\nDettaglio: \(engineError)\n\nProva «Apri con un altro player»."
+            }
         }
     }
 
     deinit {
         watchdogTask?.cancel()
+        recoveryTask?.cancel()
     }
 }
 
 extension KSPlaybackController: KSPlayerLayerDelegate {
     func player(layer: KSPlayerLayer, state: KSPlayerState) {
+        guard layer === self.layer else { return }
         self.state = state
         switch state {
-        case .bufferFinished, .buffering:
-            hasEverStartedPlaying = true
-            watchdogTask?.cancel()
         case .readyToPlay:
+            markStarted()
             MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] = title.isEmpty ? "GassPlayer" : title
+        case .bufferFinished:
+            markStarted()
+        case .playedToTheEnd:
+            PlaybackPositionStore.clear(for: currentURL)
         case .error:
             watchdogTask?.cancel()
         default:
@@ -409,42 +605,19 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
     }
 
     func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
+        guard layer === self.layer else { return }
         let durationChanged = totalTime != duration
         guard durationChanged || abs(currentTime - self.currentTime) >= 0.2 else { return }
         self.currentTime = currentTime
         self.duration = totalTime
+        if totalTime > 0, Date().timeIntervalSince(lastPositionSave) > 15 {
+            persistPosition()
+        }
     }
 
-    /// Gestione unificata degli errori di riproduzione.
-    ///
-    /// Se il flusso va in errore mentre `hardwareDecode` è attivo,
-    /// tentiamo automaticamente UNA volta la decodifica 100% software
-    /// (FFmpeg/libavcodec), che copre i codec che VideoToolbox non
-    /// decodifica in hardware (es. MPEG-4 Advanced Simple Profile).
-    ///
-    /// FIX 2026-09-28: mostriamo sempre il messaggio di errore REALE
-    /// riportato dal motore (`error.localizedDescription`), non più un
-    /// testo generico che ipotizzava sempre "formato non supportato".
-    /// Un errore come "risorsa non disponibile" indica quasi sempre un
-    /// problema di rete/URL (server irraggiungibile, link scaduto,
-    /// playlist non più valida) e va comunicato come tale: continuare a
-    /// suggerire "il formato potrebbe non essere supportato" in quel
-    /// caso è fuorviante e fa perdere tempo a diagnosticare la causa
-    /// vera.
     func player(layer: KSPlayerLayer, finish error: Error?) {
-        guard let error else { return }
-        let description = error.localizedDescription
-        DebugLogger.logAsync(.error, "KSPlaybackController: riproduzione terminata con errore: \(description)")
-
-        if preferences.hardwareDecode, !didAttemptSoftwareFallback {
-            didAttemptSoftwareFallback = true
-            DebugLogger.logAsync(.warning, "KSPlaybackController: errore con decodifica hardware, ritento in software (FFmpeg) prima di arrendermi")
-            preferences.hardwareDecode = false
-            reload()
-            return
-        }
-
-        lastError = description
+        guard layer === self.layer, let error else { return }
+        handlePlaybackFailure(error.localizedDescription)
     }
 
     func player(layer: KSPlayerLayer, bufferedCount: Int, consumeTime: TimeInterval) {
