@@ -170,25 +170,125 @@ final class KSPlaybackController: NSObject, ObservableObject {
     // MARK: - Init
 
     init(url: URL, title: String) {
-        let userAgent = PlaybackProfileStore.userAgent(for: url) ?? StreamUserAgents.vlc
+        var userAgent = PlaybackProfileStore.userAgent(for: url) ?? StreamUserAgents.vlc
+        var playURL = url
         let start = PlaybackPositionStore.position(for: url)
 
+        // Risoluzione recente gia' verificata: parte subito, senza sonde.
+        let cached = ResolutionCache.fresh(for: url)
+        if let cached {
+            playURL = cached.playURL
+            userAgent = cached.userAgent
+        }
+        let needsPreflight = cached == nil && Self.needsPreflight(url)
+
         self.currentURL = url
-        self.activeURL = url
+        self.activeURL = playURL
         self.activeUserAgent = userAgent
         self.title = title
         Self.configureGlobalPlayerEngineIfNeeded()
+        // Con la verifica preventiva il layer iniziale e' solo un segnaposto
+        // (niente autoplay): quello vero nasce dopo, sull'URL verificato.
         self.layer = Self.buildLayer(
-            for: url,
+            for: playURL,
             preferences: PlaybackPreferences(),
             userAgent: userAgent,
-            startTime: start
+            startTime: start,
+            autoPlay: !needsPreflight
         )
         super.init()
         layer.delegate = self
         resumedFrom = start
-        triedKeys = [Self.key(url, userAgent)]
-        startWatchdog()
+        triedKeys = [Self.key(playURL, userAgent)]
+        if needsPreflight {
+            beginPreflight(startTime: start)
+        } else {
+            startWatchdog()
+        }
+    }
+
+    // MARK: - Verifica preventiva
+
+    /// Film ed episodi (URL Xtream `movie`/`series`): si verifica PRIMA di
+    /// avviare il player cosa serve davvero il provider. La Live non si
+    /// sonda (aprirebbe un flusso continuo e i canali raramente falliscono
+    /// per il formato).
+    private static func needsPreflight(_ url: URL) -> Bool {
+        guard url.scheme == "http" || url.scheme == "https" else { return false }
+        return PlaybackPositionStore.identity(for: url) != nil
+    }
+
+    /// Sceglie come avviare `requested`: cache -> subito; VOD -> verifica
+    /// preventiva; altrimenti (Live, URL generici) -> avvio diretto.
+    private func launch(requested: URL, startTime: TimeInterval?) {
+        let userAgent = PlaybackProfileStore.userAgent(for: requested) ?? StreamUserAgents.vlc
+        activeURL = requested
+        activeUserAgent = userAgent
+
+        if let cached = ResolutionCache.fresh(for: requested) {
+            triedKeys = [Self.key(cached.playURL, cached.userAgent)]
+            startLayer(url: cached.playURL, userAgent: cached.userAgent, startTime: startTime)
+        } else if Self.needsPreflight(requested) {
+            beginPreflight(startTime: startTime)
+        } else {
+            startLayer(url: requested, userAgent: userAgent, startTime: startTime)
+        }
+    }
+
+    private func beginPreflight(startTime: TimeInterval?) {
+        loadGeneration += 1
+        let requested = currentURL
+        let userAgent = activeUserAgent
+        let generation = loadGeneration
+
+        // Segnaposto / layer precedente: mai attivo durante la verifica
+        // (una connessione aperta occuperebbe lo slot del provider).
+        teardown(layer)
+        watchdogTask?.cancel()
+        isRecovering = true
+        recoveryStatus = "Verifico il provider…"
+
+        recoveryTask?.cancel()
+        recoveryTask = Task { [weak self] in
+            let diagnosis = await StreamDiagnostics.diagnose(
+                url: requested,
+                preferredUserAgent: userAgent,
+                useCache: true
+            )
+            if case .playable = diagnosis {
+                // Breve pausa: il provider deve registrare la chiusura della
+                // connessione della sonda prima di aprire quella del player.
+                try? await Task.sleep(nanoseconds: 150_000_000)
+            }
+            guard let self, !Task.isCancelled, generation == self.loadGeneration, !self.isStopped else { return }
+            self.finishPreflight(diagnosis, requested: requested, userAgent: userAgent, startTime: startTime)
+        }
+    }
+
+    private func finishPreflight(
+        _ diagnosis: StreamDiagnosis,
+        requested: URL,
+        userAgent: String,
+        startTime: TimeInterval?
+    ) {
+        isRecovering = false
+        recoveryStatus = nil
+
+        switch diagnosis {
+        case .playable(let resolution):
+            triedKeys = [Self.key(resolution.playURL, resolution.userAgent)]
+            startLayer(url: resolution.playURL, userAgent: resolution.userAgent, startTime: startTime)
+
+        case .inconclusive(let message):
+            // La sonda non basta a decidere: provo comunque col motore video.
+            DebugLogger.logAsync(.warning, "KSPlaybackController: verifica inconcludente (\(message)), avvio diretto")
+            triedKeys = [Self.key(requested, userAgent)]
+            startLayer(url: requested, userAgent: userAgent, startTime: startTime)
+
+        case .unplayable(let message):
+            DebugLogger.logAsync(.error, "KSPlaybackController: verifica provider fallita: \(message)")
+            lastError = message
+        }
     }
 
     // MARK: - Costruzione layer
@@ -199,7 +299,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
         for url: URL,
         preferences: PlaybackPreferences,
         userAgent: String,
-        startTime: TimeInterval?
+        startTime: TimeInterval?,
+        autoPlay: Bool = true
     ) -> KSPlayerLayer {
         let options = KSOptions()
 
@@ -244,13 +345,19 @@ final class KSPlaybackController: NSObject, ObservableObject {
             let timeout = isVOD ? 30_000_000 : 15_000_000
             options.formatContextOptions["timeout"] = timeout
             options.formatContextOptions["rw_timeout"] = timeout
+            if isVOD {
+                // Riusa la stessa connessione HTTP per i seek invece di
+                // aprirne una nuova ogni volta: seek piu' rapidi e meno
+                // slot occupati sul provider.
+                options.formatContextOptions["multiple_requests"] = 1
+            }
         }
         // Whitelist ampia: sotto-manifest HLS/CDN su protocolli diversi,
         // stream cifrati AES-128, sorgenti M3U con rtmp/rtsp/udp/rtp.
         options.formatContextOptions["protocol_whitelist"] =
             "file,http,https,tcp,tls,crypto,hls,applehttp,udp,rtp,rtsp,rtmp,rtmps,data,httpproxy,subfile,async,cache"
 
-        let layer = KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
+        let layer = KSPlayerLayer(url: url, isAutoPlay: autoPlay, options: options, delegate: nil)
         layer.player.contentMode = preferences.videoGravity.contentMode
         return layer
     }
@@ -329,7 +436,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
         let start = PlaybackPositionStore.position(for: url)
         resumedFrom = start
-        startLayer(url: url, userAgent: activeUserAgent, startTime: start)
+        launch(requested: url, startTime: start)
     }
 
     /// Ricarica lo stream in uso con le `preferences` aggiornate,
@@ -354,15 +461,15 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// fallisce ancora.
     func resetAttempts() {
         let resumeAt = resumeTime()
-        let restartURL = hasEverStartedPlaying ? activeURL : currentURL
 
         cancelRecovery()
         teardown(layer)
         recoveryRounds = 0
         resetPlaybackState()
-        let userAgent = PlaybackProfileStore.userAgent(for: currentURL) ?? StreamUserAgents.vlc
-        triedKeys = [Self.key(restartURL, userAgent)]
-        startLayer(url: restartURL, userAgent: userAgent, startTime: resumeAt)
+        // Ripartenza pulita: si scarta la risoluzione in cache (potrebbe
+        // essere proprio quella che ha smesso di funzionare).
+        ResolutionCache.invalidate(for: currentURL)
+        launch(requested: currentURL, startTime: resumeAt)
     }
 
     /// Chiude davvero il flusso (rilascia la connessione col provider) e
@@ -474,6 +581,13 @@ final class KSPlaybackController: NSObject, ObservableObject {
         recoveryRounds = 0
         triedKeys = [Self.key(activeURL, activeUserAgent)]
         PlaybackProfileStore.remember(userAgent: activeUserAgent, for: currentURL)
+        if PlaybackPositionStore.identity(for: currentURL) != nil {
+            // Il motore ha davvero riprodotto: la prossima apertura salta la verifica.
+            ResolutionCache.store(
+                StreamResolution(requestedURL: currentURL, playURL: activeURL, userAgent: activeUserAgent),
+                for: currentURL
+            )
+        }
     }
 
     // MARK: - Watchdog
@@ -536,6 +650,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
             // Lascia al provider il tempo di rilasciare lo slot connessione.
             try? await Task.sleep(nanoseconds: 700_000_000)
             guard !Task.isCancelled else { return }
+            ResolutionCache.invalidate(for: requested)
             let diagnosis = await StreamDiagnostics.diagnose(url: requested, preferredUserAgent: userAgent)
             guard let self, !Task.isCancelled, generation == self.loadGeneration, !self.isStopped else { return }
             self.applyDiagnosis(diagnosis, engineError: description, failedMidstream: failedMidstream)
@@ -546,7 +661,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         isRecovering = false
 
         switch diagnosis {
-        case .unplayable(let message):
+        case .unplayable(let message), .inconclusive(let message):
             DebugLogger.logAsync(.error, "KSPlaybackController: diagnosi provider: \(message)")
             recoveryStatus = nil
             lastError = message

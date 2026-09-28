@@ -22,26 +22,79 @@ enum StreamUserAgents {
     ]
 }
 
-/// Ricorda, per host, l'UA che ha funzionato l'ultima volta, cosi' i
-/// tentativi successivi partono subito da quello giusto.
+/// Ricorda, per host, l'UA e l'estensione che hanno funzionato, cosi' i
+/// tentativi successivi partono subito dalla combinazione giusta.
 enum PlaybackProfileStore {
-    private static let key = "gassplayer.playback.userAgentByHost"
+    private static let uaKey = "gassplayer.playback.userAgentByHost"
+    private static let extKey = "gassplayer.playback.extensionByHostKind"
 
     static func userAgent(for url: URL) -> String? {
         guard let host = url.host?.lowercased() else { return nil }
-        let map = UserDefaults.standard.dictionary(forKey: key) as? [String: String]
+        let map = UserDefaults.standard.dictionary(forKey: uaKey) as? [String: String]
         return map?[host]
     }
 
     static func remember(userAgent: String, for url: URL) {
         guard let host = url.host?.lowercased() else { return }
-        var map = (UserDefaults.standard.dictionary(forKey: key) as? [String: String]) ?? [:]
+        var map = (UserDefaults.standard.dictionary(forKey: uaKey) as? [String: String]) ?? [:]
         if userAgent == StreamUserAgents.vlc {
             map.removeValue(forKey: host)   // e' gia' il default
         } else {
             map[host] = userAgent
         }
-        UserDefaults.standard.set(map, forKey: key)
+        UserDefaults.standard.set(map, forKey: uaKey)
+    }
+
+    // MARK: Estensione appresa (per host + tipo movie/series/live)
+
+    private static func extensionKey(for url: URL) -> String? {
+        guard let host = url.host?.lowercased(), let kind = StreamURLCandidates.kind(of: url) else { return nil }
+        return "\(host)|\(kind)"
+    }
+
+    /// Estensione che il provider ha effettivamente servito quando quella
+    /// del catalogo falliva. Viene provata per prima la volta dopo.
+    static func learnedExtension(for url: URL) -> String? {
+        guard let key = extensionKey(for: url) else { return nil }
+        let map = UserDefaults.standard.dictionary(forKey: extKey) as? [String: String]
+        return map?[key]
+    }
+
+    static func rememberExtension(_ ext: String, for url: URL) {
+        guard let key = extensionKey(for: url), !ext.isEmpty else { return }
+        var map = (UserDefaults.standard.dictionary(forKey: extKey) as? [String: String]) ?? [:]
+        map[key] = ext.lowercased()
+        UserDefaults.standard.set(map, forKey: extKey)
+    }
+}
+
+/// Cache in memoria delle risoluzioni riuscite: riaprire lo stesso film
+/// (ripresa, cambio app, "Riprova") parte subito, senza nuova verifica.
+/// Chiave = URL richiesto completo (quindi legata anche alle credenziali).
+enum ResolutionCache {
+    private static let lock = NSLock()
+    private static var entries: [String: (resolution: StreamResolution, date: Date)] = [:]
+    private static let ttl: TimeInterval = 600
+
+    static func fresh(for url: URL) -> StreamResolution? {
+        lock.lock(); defer { lock.unlock() }
+        guard let entry = entries[url.absoluteString] else { return nil }
+        if Date().timeIntervalSince(entry.date) > ttl {
+            entries.removeValue(forKey: url.absoluteString)
+            return nil
+        }
+        return entry.resolution
+    }
+
+    static func store(_ resolution: StreamResolution, for url: URL) {
+        lock.lock(); defer { lock.unlock() }
+        if entries.count > 200 { entries.removeAll() }
+        entries[url.absoluteString] = (resolution, Date())
+    }
+
+    static func invalidate(for url: URL) {
+        lock.lock(); defer { lock.unlock() }
+        entries.removeValue(forKey: url.absoluteString)
     }
 }
 
@@ -60,6 +113,29 @@ enum StreamURLCandidates {
     static let vodExtensions = ["mp4", "mkv", "avi", "m3u8", "ts", "mov", "m4v", "webm", "flv", "wmv", "mpg"]
     static let liveExtensions = ["m3u8", "ts"]
     static let maxAlternatives = 6
+
+    /// `movie` / `series` / `live` se l'URL ha forma Xtream, altrimenti `nil`.
+    static func kind(of url: URL) -> String? {
+        let comps = url.pathComponents
+        guard comps.count >= 5 else { return nil }
+        let kind = comps[comps.count - 4].lowercased()
+        return ["movie", "series", "live"].contains(kind) ? kind : nil
+    }
+
+    /// URL richiesto + alternative, con in testa l'estensione che questo
+    /// provider ha gia' dimostrato di servire (se diversa da quella del
+    /// catalogo). Il primo elemento e' quello da provare per primo.
+    static func ordered(for url: URL) -> [URL] {
+        var list = [url] + alternatives(for: url)
+        guard let learned = PlaybackProfileStore.learnedExtension(for: url),
+              learned != url.pathExtension.lowercased() else { return list }
+
+        let base = url.deletingPathExtension().lastPathComponent
+        let learnedURL = url.deletingLastPathComponent().appendingPathComponent("\(base).\(learned)")
+        list.removeAll { $0 == learnedURL }
+        list.insert(learnedURL, at: 0)
+        return list
+    }
 
     /// Restituisce gli URL alternativi (mai quello originale). Vuoto se
     /// l'URL non ha la forma Xtream `/{movie|series|live}/user/pass/{id}.{ext}`.
@@ -118,7 +194,12 @@ struct StreamResolution: Equatable {
 
 enum StreamDiagnosis {
     case playable(StreamResolution)
+    /// Il provider ha rifiutato/fallito in modo verificato su ogni tentativo.
     case unplayable(message: String)
+    /// La sonda non ha potuto stabilire nulla (TLS, metodo non supportato,
+    /// ...): il motore video puo' comunque riuscire, quindi si prova lo
+    /// stesso l'URL originale prima di dare errore.
+    case inconclusive(message: String)
 }
 
 // MARK: - Diagnostica
@@ -129,70 +210,166 @@ enum StreamDiagnostics {
     /// simultanee (429 standard, 458/509/884 non standard ma diffusi).
     static let connectionLimitCodes: Set<Int> = [429, 458, 509, 884]
 
-    /// Verifica davvero cosa risponde il provider e, se possibile, trova
-    /// una combinazione (URL/UA) che il provider serve correttamente.
+    private enum RaceEvent {
+        case probe(StreamProbeResult)
+        case tick
+    }
+
+    /// Trova un URL/UA che il provider serve davvero, il piu' in fretta
+    /// possibile.
     ///
-    /// Strategia (ferma al primo esito valido):
-    /// 1. URL richiesto, con 2 ripetizioni a distanza crescente per errori
-    ///    transitori (5xx, 429, timeout) tipici di backend sotto carico.
-    /// 2. Altri user-agent, se l'accesso e' negato o la risposta e' una
-    ///    pagina di errore.
-    /// 3. Estensioni alternative, se il formato richiesto non esiste o il
-    ///    backend fallisce solo su quello.
+    /// - Prova gli URL in *parallelo scaglionato* (max 2 connessioni, la
+    ///   seconda parte dopo 0,7 s o subito se la prima fallisce): vince il
+    ///   primo che risponde con un flusso valido. Un formato sbagliato
+    ///   costa ~1 round-trip invece di una lunga catena di tentativi.
+    /// - Se il provider rifiuta lo user-agent prova la ladder di UA.
+    /// - Errori transitori / limite connessioni: al massimo 2 ripetizioni
+    ///   (dopo 1,5 s e 3 s), poi diagnosi.
+    /// - `useCache`: riusa una risoluzione recente dello stesso URL.
     static func diagnose(
         url: URL,
         preferredUserAgent: String,
-        deadline: TimeInterval = 45
+        useCache: Bool = false,
+        deadline overall: TimeInterval = 40
     ) async -> StreamDiagnosis {
-        let start = Date()
-        func hasTime() -> Bool { Date().timeIntervalSince(start) < deadline && !Task.isCancelled }
+        if useCache, let cached = ResolutionCache.fresh(for: url) {
+            return .playable(cached)
+        }
 
+        let deadline = Date().addingTimeInterval(overall)
+        var userAgent = preferredUserAgent
         var log: [StreamProbeResult] = []
-        var bestUA = preferredUserAgent
+        var primary: StreamProbeResult?
 
-        // 1. URL richiesto (+ retry per errori transitori)
-        var base = await probe(url, userAgent: bestUA)
-        log.append(base)
+        func note(_ results: [StreamProbeResult]) {
+            log += results
+            if primary == nil { primary = results.first { $0.requestedURL == url } }
+        }
+        func canContinue() -> Bool { !Task.isCancelled && Date() < deadline }
 
-        var retries = 0
-        while !base.isPlayable, isTransient(base), retries < 2, hasTime() {
-            retries += 1
-            try? await Task.sleep(nanoseconds: UInt64(retries) * 1_200_000_000)
-            guard hasTime() else { break }
-            base = await probe(url, userAgent: bestUA)
-            log.append(base)
+        let candidates = StreamURLCandidates.ordered(for: url)
+
+        // A. URL richiesto + formati alternativi in parallelo scaglionato.
+        let firstPairs: [(url: URL, ua: String)] = candidates.map { (url: $0, ua: userAgent) }
+        var outcome = await race(firstPairs, deadline: deadline)
+        note(outcome.results)
+        if let winner = outcome.winner {
+            return .playable(finish(winner, userAgent: userAgent, requested: url))
         }
 
-        if base.isPlayable {
-            return .playable(resolution(for: base, userAgent: bestUA))
+        // B. Accesso negato / pagina di errore: altri user-agent sull'URL richiesto.
+        if canContinue(), shouldTryOtherUserAgents(primary) {
+            let others: [(url: URL, ua: String)] = StreamUserAgents.ladder
+                .filter { $0 != userAgent }
+                .map { (url: url, ua: $0) }
+            outcome = await race(others, stagger: 0.5, deadline: deadline)
+            note(outcome.results)
+            if let winner = outcome.winner {
+                userAgent = winner.userAgent
+                return .playable(finish(winner, userAgent: userAgent, requested: url))
+            }
         }
 
-        // 2. Ladder di user-agent
-        if shouldTryOtherUserAgents(base) {
-            for ua in StreamUserAgents.ladder where ua != bestUA {
-                guard hasTime() else { break }
-                let result = await probe(url, userAgent: ua)
-                log.append(result)
-                if result.isPlayable {
-                    bestUA = ua
-                    return .playable(resolution(for: result, userAgent: ua))
+        // C. Errore transitorio o slot connessione ancora occupato: attendi e riprova.
+        if isTransient(primary) || isConnectionLimit(primary) {
+            for attempt in 1...2 where canContinue() {
+                try? await Task.sleep(nanoseconds: UInt64(Double(attempt) * 1_500_000_000))
+                guard canContinue() else { break }
+                let retryPairs: [(url: URL, ua: String)] = candidates.map { (url: $0, ua: userAgent) }
+                outcome = await race(retryPairs, deadline: deadline)
+                note(outcome.results)
+                if let winner = outcome.winner {
+                    return .playable(finish(winner, userAgent: userAgent, requested: url))
                 }
             }
         }
 
-        // 3. Estensioni alternative
-        if shouldTryAlternateExtensions(base) {
-            for alternative in StreamURLCandidates.alternatives(for: url) {
-                guard hasTime() else { break }
-                let result = await probe(alternative, userAgent: bestUA)
-                log.append(result)
-                if result.isPlayable {
-                    return .playable(resolution(for: result, userAgent: bestUA))
+        let message = describe(base: primary, log: log)
+        return isInconclusive(primary) ? .inconclusive(message: message) : .unplayable(message: message)
+    }
+
+    /// Sonda le coppie (URL, UA) con concorrenza limitata e ritorna alla prima valida.
+    private static func race(
+        _ pairs: [(url: URL, ua: String)],
+        stagger: TimeInterval = 0.7,
+        maxConcurrent: Int = 2,
+        probeTimeout: TimeInterval = 8,
+        deadline: Date
+    ) async -> (winner: StreamProbeResult?, results: [StreamProbeResult]) {
+        guard !pairs.isEmpty else { return (nil, []) }
+
+        var results: [StreamProbeResult] = []
+        var winner: StreamProbeResult?
+
+        await withTaskGroup(of: RaceEvent.self) { group in
+            var next = 0
+            var inFlight = 0
+
+            func launch() {
+                let pair = pairs[next]
+                next += 1
+                inFlight += 1
+                group.addTask {
+                    .probe(await StreamDiagnostics.probe(pair.url, userAgent: pair.ua, timeout: probeTimeout))
+                }
+            }
+            func scheduleTick() {
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: UInt64(stagger * 1_000_000_000))
+                    return .tick
+                }
+            }
+
+            launch()
+            if pairs.count > 1 { scheduleTick() }
+
+            for await event in group {
+                if Task.isCancelled || Date() >= deadline {
+                    group.cancelAll()
+                    return
+                }
+                switch event {
+                case .tick:
+                    if next < pairs.count {
+                        if inFlight < maxConcurrent { launch() }
+                        scheduleTick()
+                    }
+                case .probe(let result):
+                    inFlight -= 1
+                    results.append(result)
+                    if result.isPlayable {
+                        winner = result
+                        group.cancelAll()
+                        return
+                    }
+                    // Fallimento: rimpiazza subito la sonda persa.
+                    while next < pairs.count && inFlight < maxConcurrent { launch() }
+                    if inFlight == 0 && next >= pairs.count {
+                        group.cancelAll()
+                        return
+                    }
                 }
             }
         }
+        return (winner, results)
+    }
 
-        return .unplayable(message: describe(log))
+    /// Registra l'esito: memorizza UA/estensione che funzionano e mette in
+    /// cache la risoluzione. Si riproduce l'URL *originale* del candidato,
+    /// non quello dopo i redirect: i token CDN dei redirect possono essere
+    /// monouso e il player ne ottiene uno nuovo da solo.
+    private static func finish(_ winner: StreamProbeResult, userAgent: String, requested: URL) -> StreamResolution {
+        let resolution = StreamResolution(
+            requestedURL: requested,
+            playURL: winner.requestedURL,
+            userAgent: userAgent
+        )
+        ResolutionCache.store(resolution, for: requested)
+        let ext = winner.requestedURL.pathExtension.lowercased()
+        if ext != requested.pathExtension.lowercased() {
+            PlaybackProfileStore.rememberExtension(ext, for: requested)
+        }
+        return resolution
     }
 
     // MARK: Probe
@@ -200,8 +377,8 @@ enum StreamDiagnostics {
     /// Richiesta GET con `Range: bytes=0-1023`: legge al massimo 512 byte,
     /// poi chiude la connessione (non scarica il film). Cosi' si vede lo
     /// stesso status che vedrebbe il player, dopo i redirect.
-    static func probe(_ url: URL, userAgent: String) async -> StreamProbeResult {
-        var request = URLRequest(url: url, timeoutInterval: 10)
+    static func probe(_ url: URL, userAgent: String, timeout: TimeInterval = 8) async -> StreamProbeResult {
+        var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = "GET"
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
@@ -209,8 +386,8 @@ enum StreamDiagnostics {
         request.setValue("*/*", forHTTPHeaderField: "Accept")
 
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 10
-        configuration.timeoutIntervalForResource = 20
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout + 6
         configuration.waitsForConnectivity = false
         let session = URLSession(configuration: configuration)
         // Chiude comunque la connessione: non deve restare uno slot
@@ -285,41 +462,41 @@ enum StreamDiagnostics {
 
     // MARK: Classificazione
 
-    private static func resolution(for result: StreamProbeResult, userAgent: String) -> StreamResolution {
-        StreamResolution(
-            requestedURL: result.requestedURL,
-            playURL: result.finalURL ?? result.requestedURL,
-            userAgent: userAgent
-        )
-    }
-
     /// Errori che spesso passano da soli (backend sotto carico, rete lenta).
-    private static func isTransient(_ r: StreamProbeResult) -> Bool {
+    private static func isTransient(_ r: StreamProbeResult?) -> Bool {
+        guard let r else { return false }
         if let code = r.statusCode {
-            return code == 429 || code == 408 || (500...599).contains(code)
+            return code == 408 || (500...599).contains(code)
         }
         // NSURLErrorTimedOut (-1001), NetworkConnectionLost (-1005)
         return r.networkErrorCode == -1001 || r.networkErrorCode == -1005
     }
 
-    private static func shouldTryOtherUserAgents(_ r: StreamProbeResult) -> Bool {
-        if r.looksLikeErrorPage { return true }
-        guard let code = r.statusCode else { return false }
-        if connectionLimitCodes.contains(code) { return false }
-        return [401, 403, 406, 451].contains(code) || (500...599).contains(code)
+    private static func isConnectionLimit(_ r: StreamProbeResult?) -> Bool {
+        guard let code = r?.statusCode else { return false }
+        return connectionLimitCodes.contains(code)
     }
 
-    private static func shouldTryAlternateExtensions(_ r: StreamProbeResult) -> Bool {
+    private static func shouldTryOtherUserAgents(_ r: StreamProbeResult?) -> Bool {
+        guard let r else { return false }
         if r.looksLikeErrorPage { return true }
         guard let code = r.statusCode else { return false }
-        if connectionLimitCodes.contains(code) { return false }
-        return !(code == 200 || code == 206)
+        return [401, 403, 406, 451].contains(code)
+    }
+
+    /// Casi in cui la sonda non e' affidabile ma FFmpeg potrebbe riuscire:
+    /// metodo/Range non gestiti dal server, errori TLS, ATS.
+    private static func isInconclusive(_ r: StreamProbeResult?) -> Bool {
+        guard let r else { return false }
+        if let code = r.statusCode { return [400, 405, 416, 501].contains(code) }
+        guard let net = r.networkErrorCode else { return true }
+        return net == -1022 || net == -999 || (-1206 ... -1200).contains(net)
     }
 
     // MARK: Messaggi
 
-    private static func describe(_ log: [StreamProbeResult]) -> String {
-        guard let base = log.first else { return "Il provider non ha risposto." }
+    private static func describe(base: StreamProbeResult?, log: [StreamProbeResult]) -> String {
+        guard let base = base ?? log.first else { return "Il provider non ha risposto in tempo." }
 
         // Riepilogo per formato (solo se e' stato provato piu' di un formato).
         var perFormat: [String] = []
