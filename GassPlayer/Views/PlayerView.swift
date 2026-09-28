@@ -146,6 +146,13 @@ struct PlayerView: View {
         .overlay {
             if isLocked {
                 lockedOverlay
+            } else if let retryMessage = controller.transientRetryMessage {
+                // FIX 2026-09-28: durante i retry automatici su errori
+                // server 5xx (vedi KSPlaybackController), mostra un
+                // banner esplicito invece di uno schermo apparentemente
+                // bloccato: l'utente capisce che l'app sta ritentando
+                // da sola, non che si è congelata.
+                transientRetryBanner(retryMessage)
             } else if let errorMessage = controller.lastError {
                 playbackErrorBanner(errorMessage)
             } else {
@@ -467,12 +474,37 @@ struct PlayerView: View {
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 
+    /// FIX 2026-09-28: banner dedicato ai retry automatici su errori
+    /// server transitori (5xx). Diverso dal banner di errore finale:
+    /// qui comunichiamo che l'app sta ATTIVAMENTE ritentando da sola,
+    /// non che ha smesso di funzionare.
+    private func transientRetryBanner(_ message: String) -> some View {
+        VStack {
+            Spacer()
+            VStack(spacing: 10) {
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                Text("Il server sta rispondendo con un errore temporaneo")
+                    .font(.headline)
+                Text(message)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .padding()
+            Spacer()
+        }
+        .transition(.opacity)
+    }
+
     /// FIX 2026-09-28: il banner mostra ora anche `controller.lastErrorDetail`
-    /// (domain/code reali dell'errore, es. `NSURLErrorDomain#-1004` o
-    /// simili) in piccolo sotto il messaggio principale. Un errore di
-    /// rete/connessione ha un codice ben diverso da un errore di
-    /// formato/codec: questo dettaglio permette di distinguerli a
-    /// colpo d'occhio senza dover consultare i log di debug.
+    /// (domain/code reali dell'errore) in piccolo sotto il messaggio
+    /// principale, che a sua volta (`controller.lastError`) è già stato
+    /// tradotto dal controller in un messaggio onesto e specifico
+    /// (server 5xx/4xx, DNS, TLS, ecc.) invece di un generico "formato
+    /// non supportato" quando il vero problema è di rete/server.
     private func playbackErrorBanner(_ message: String) -> some View {
         VStack {
             Spacer()
