@@ -257,7 +257,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Ferma e distrugge un layer: `pause()` da solo NON chiude la
     /// connessione HTTP e con provider a 1-2 connessioni la successiva
-    /// viene rifiutata. Ordine: pause -> reset -> shutdown.
+    /// viene rifiutata. Ordine: pause -> shutdown.
     private func teardown(_ target: KSPlayerLayer) {
         // Idempotente: stop()/load()/recupero possono incrociarsi sullo
         // stesso layer (riferimento debole: nessun rischio di riuso).
@@ -265,7 +265,6 @@ final class KSPlaybackController: NSObject, ObservableObject {
         tornDownLayer = target
         target.delegate = nil
         target.pause()
-        target.resetPlayer()
         target.player.shutdown()
     }
 
