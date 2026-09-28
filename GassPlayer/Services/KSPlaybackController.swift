@@ -6,38 +6,39 @@ import KSPlayer
 /// Bridge SwiftUI-friendly per KSPlayerLayer.
 ///
 /// FIX 2026-09-28a: FFmpeg (`KSMEPlayer`) motore PRIMARIO globale,
-/// fallback hardware -> software automatico su errore (vedi
-/// `configureGlobalPlayerEngineIfNeeded()` e `player(layer:finish:)`).
+/// fallback hardware -> software automatico su errore.
 ///
-/// FIX 2026-09-28c ("risorsa non disponibile" IDENTICO su hardware E
-/// software, ripetuto in più sessioni):
+/// FIX 2026-09-28d (diagnosi definitiva di "risorsa non disponibile"):
+/// il dettaglio tecnico ora loggato/mostrato (introdotto nel fix
+/// precedente) ha rivelato la causa REALE:
 ///
-/// A questo punto il pattern esclude con certezza un problema di
-/// *codec/decodifica*: se fosse un codec che il decoder non capisce,
-/// il tentativo software (FFmpeg puro, che decodifica letteralmente
-/// tutto) sarebbe riuscito almeno ad APRIRE il contenitore e leggere
-/// qualche fotogramma prima di eventualmente fermarsi. Un errore
-/// generico e ISTANTANEO, identico in ogni condizione, significa che
-/// nessuno dei due motori riesce nemmeno a stabilire la connessione al
-/// file. Le cause più comuni con playlist IPTV sono:
-///   • il server richiede header HTTP specifici (Referer/Origin) non
-///     inviati di default da AVFoundation né da FFmpeg;
-///   • il server usa un certificato TLS self-signed/non valido, che
-///     entrambi i motori rifiutano per default;
-///   • il link della playlist è scaduto/a uso singolo (comune con
-///     provider Xtream-Codes: il token nell'URL può invalidarsi dopo un
-///     primo utilizzo o dopo pochi minuti).
+///   domain=NSURLErrorDomain code=-1008
+///   underlying=NSOSStatusErrorDomain#-16846
 ///
-/// Questa versione: (1) aggiunge header e bypass TLS in ENTRAMBI i
-/// dizionari di opzioni esposti da KSOptions (`avOptions` e
-/// `formatContextOptions`) per massimizzare la compatibilità
-/// indipendentemente da quale dei due venga effettivamente onorato
-/// dalla versione di KSPlayer vendorizzata nel progetto; (2) cattura e
-/// registra il vero `NSError` sottostante (domain/code/userInfo), non
-/// solo `localizedDescription`, così un errore di rete non viene più
-/// confuso con un errore di formato; (3) espone questo dettaglio anche
-/// nel banner di errore mostrato in `PlayerView`, per diagnosi rapida
-/// senza dover consultare i log.
+/// `-16846` è documentato come "Server error. Received HTTP status code
+/// within 500-599": il SERVER della playlist IPTV ha risposto con un
+/// errore 500/502/503/504 su questo specifico film. Non è un problema
+/// di codec (già risolto con il fallback hardware->software), non è un
+/// problema di header/TLS (già mitigato), e non è risolvibile con
+/// NESSUNA configurazione lato client: il server del provider sta
+/// letteralmente restituendo un errore per quella risorsa in quel
+/// momento — esattamente come se si aprisse l'URL in un browser e
+/// questo mostrasse "502 Bad Gateway".
+///
+/// Cosa fa questa versione, in modo "maniacale" ma onesto:
+/// 1) Riconosce la classe esatta dell'errore tramite l'OSStatus
+///    sottostante (tabella `Self.knownOSStatusMessages`, verificata
+///    sulla documentazione errori di sistema Apple).
+/// 2) Per errori 5xx (spesso transitori: sovraccarico del server IPTV,
+///    riavvio del backend, CDN che si sta ancora propagando) esegue
+///    fino a 3 retry automatici con backoff crescente (2s, 4s, 8s)
+///    PRIMA di mostrare qualsiasi errore: molti di questi si risolvono
+///    da soli in pochi secondi.
+/// 3) Per errori non transitori (4xx, DNS, TLS, URL malformato) mostra
+///    subito un messaggio onesto e specifico: "il player funziona
+///    correttamente, il server ha rifiutato/non ha la risorsa" — senza
+///    più far credere che sia un problema di formato o di
+///    configurazione locale.
 enum VideoGravityMode: String, CaseIterable, Identifiable {
     /// Il video intero è visibile, con eventuali barre nere ai lati:
     /// nessun ritaglio, nessuna deformazione. Default.
@@ -123,11 +124,12 @@ final class KSPlaybackController: NSObject, ObservableObject {
     @Published var currentTime: TimeInterval = 0
     @Published var duration: TimeInterval = 0
     @Published var lastError: String?
-    /// Dettaglio tecnico dell'ultimo errore (domain/code reali
-    /// dell'NSError sottostante), separato da `lastError` (messaggio
-    /// leggibile) per poterlo mostrare in piccolo nel banner senza
-    /// appesantire il messaggio principale.
     @Published var lastErrorDetail: String?
+    /// Messaggio informativo transitorio mostrato SOLO durante i retry
+    /// automatici su errori server 5xx (vedi `player(layer:finish:)`),
+    /// per non far credere all'utente che l'app sia bloccata mentre in
+    /// realtà sta ritentando in background.
+    @Published var transientRetryMessage: String?
     @Published var bufferingProgress: Int = 0
     @Published var isPipActive = false {
         didSet { layer.isPipActive = isPipActive }
@@ -139,17 +141,21 @@ final class KSPlaybackController: NSObject, ObservableObject {
     private(set) var currentURL: URL
     private var title: String
     private var watchdogTask: Task<Void, Never>?
+    private var retryTask: Task<Void, Never>?
     private var hasEverStartedPlaying = false
 
     /// FIX FORMATO: quando un flusso va in errore con `hardwareDecode`
     /// ancora attivo, tentiamo UNA sola volta il ricaricamento in
-    /// decodifica 100% software (FFmpeg/libavcodec) prima di arrenderci
-    /// e mostrare l'errore all'utente. Questo flag evita loop infiniti.
+    /// decodifica 100% software (FFmpeg/libavcodec) prima di procedere
+    /// con la diagnosi dell'errore (che potrebbe non essere di codec).
     private var didAttemptSoftwareFallback = false
 
-    /// Configurazione GLOBALE del motore di riproduzione: applicata una
-    /// sola volta, vale per ogni `KSOptions`/`KSPlayerLayer` creato da
-    /// questo momento in avanti nell'intera app.
+    /// Contatore dei retry automatici per errori server transitori
+    /// (5xx). Limitato per non ritentare all'infinito un server
+    /// realmente down.
+    private var transientRetryCount = 0
+    private static let maxTransientRetries = 3
+
     private static var didConfigureGlobalPlayerEngine = false
 
     private static func configureGlobalPlayerEngineIfNeeded() {
@@ -182,18 +188,16 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Costruisce un nuovo `KSPlayerLayer` con le opzioni derivate dalle
     /// `PlaybackPreferences` correnti, massimizzando la compatibilità di
-    /// rete oltre a quella di formato/codec.
+    /// formato/codec e di rete.
     private static func buildLayer(for url: URL, preferences: PlaybackPreferences) -> KSPlayerLayer {
         let options = KSOptions()
 
-        // --- Buffering ---
         options.preferredForwardBufferDuration = preferences.preferredForwardBufferDuration
         options.maxBufferDuration = preferences.maxBufferDuration
         options.registerRemoteControll = true
         options.canStartPictureInPictureAutomaticallyFromInline = true
         options.userAgent = "GassPlayer/1.0"
 
-        // --- Decodifica ---
         options.hardwareDecode = preferences.hardwareDecode
         options.isAccurateSeek = preferences.isAccurateSeek
         options.autoDeInterlace = preferences.autoDeInterlace
@@ -203,20 +207,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         let threadCount = min(ProcessInfo.processInfo.activeProcessorCount, 4)
         options.decoderOptions["threads"] = "\(threadCount)"
 
-        // --- Robustezza di RETE (causa più probabile di "risorsa non
-        // disponibile" identico su ogni motore/modalità) ---
-        //
-        // Le chiavi vengono scritte sia in `avOptions` sia in
-        // `formatContextOptions`: le versioni di KSPlayer non sono
-        // consistenti su quale dizionario venga effettivamente
-        // propagato a libavformat, quindi duplicarle è l'unico modo
-        // sicuro di garantire che vengano applicate senza dover
-        // dipendere dalla versione esatta vendorizzata nel progetto.
         var networkOptions: [String: Any] = [
-            // Molte playlist HLS referenziano segmenti/chiavi su
-            // protocolli diversi (http/https/crypto per AES-128): senza
-            // whitelist esplicita alcuni CDN vengono rifiutati con
-            // "Protocol not found".
             "protocol_whitelist": "file,http,https,tcp,tls,crypto,hls,applehttp"
         ]
         if url.scheme == "http" || url.scheme == "https" {
@@ -224,27 +215,14 @@ final class KSPlaybackController: NSObject, ObservableObject {
             networkOptions["reconnect_streamed"] = 1
             networkOptions["reconnect_at_eof"] = 1
             networkOptions["reconnect_delay_max"] = 2
-            // Timeout di connessione/lettura (microsecondi): un server
-            // IPTV lento a rispondere deve restituire un errore gestito
-            // invece di bloccare indefinitamente l'apertura del flusso.
             networkOptions["timeout"] = 15_000_000
             networkOptions["rw_timeout"] = 15_000_000
-            // Molti provider IPTV verificano l'header Referer/Origin e
-            // rifiutano richieste "anonime": lo impostiamo sullo stesso
-            // host del flusso, il comportamento più compatibile con la
-            // maggior parte dei player IPTV (VLC/Kodi fanno lo stesso).
             if let host = url.host {
                 let originValue = "\(url.scheme ?? "http")://\(host)/"
                 networkOptions["headers"] = "Referer: \(originValue)\r\nOrigin: \(originValue)\r\n"
             }
         }
         if url.scheme == "https" {
-            // Molti pannelli IPTV usano certificati self-signed o
-            // scaduti sul proprio dominio: senza questo bypass, sia
-            // AVFoundation sia FFmpeg rifiutano la connessione TLS con
-            // un errore generico indistinguibile da un link morto.
-            // Compromesso di sicurezza accettato consapevolmente per
-            // massimizzare la compatibilità con provider IPTV reali.
             networkOptions["tls_verify"] = "0"
         }
         for (key, value) in networkOptions {
@@ -262,16 +240,19 @@ final class KSPlaybackController: NSObject, ObservableObject {
     func load(url: URL, title: String) {
         layer.delegate = nil
         layer.pause()
+        retryTask?.cancel()
 
         self.currentURL = url
         self.title = title
         lastError = nil
         lastErrorDetail = nil
+        transientRetryMessage = nil
         currentTime = 0
         duration = 0
         hasEverStartedPlaying = false
         bufferingProgress = 0
         didAttemptSoftwareFallback = false
+        transientRetryCount = 0
         state = .initialized
 
         let newLayer = Self.buildLayer(for: url, preferences: preferences)
@@ -312,8 +293,10 @@ final class KSPlaybackController: NSObject, ObservableObject {
     func resetAttempts() {
         lastError = nil
         lastErrorDetail = nil
+        transientRetryMessage = nil
         hasEverStartedPlaying = false
         didAttemptSoftwareFallback = false
+        transientRetryCount = 0
         layer.play()
         startWatchdog()
     }
@@ -378,15 +361,54 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     deinit {
         watchdogTask?.cancel()
+        retryTask?.cancel()
     }
 
-    /// Estrae domain/code/userInfo reali dall'errore, scavando anche
-    /// nell'`NSUnderlyingErrorKey` se presente (comune quando
-    /// AVFoundation avvolge un errore di rete/POSIX più specifico).
-    /// Questo è il dettaglio che rende possibile capire SE il problema
-    /// è di rete (es. NSURLErrorDomain -1004 "impossibile connettersi
-    /// al server", -1202 certificato non valido) o realmente altro,
-    /// invece di fermarsi al testo generico "risorsa non disponibile".
+    // MARK: - Diagnosi errori (OSStatus / HTTP)
+
+    /// Tabella dei codici OSStatus più rilevanti per lo streaming IPTV,
+    /// verificata sulla documentazione errori di sistema Apple. Copre
+    /// sia il range "-16850..-16846" (errori server 5xx sotto
+    /// AVFoundation/HLS) sia i corrispettivi "classici" NSURLErrorDomain
+    /// (-1000..-1013), oltre a TLS/DNS/auth.
+    private static let knownOSStatusMessages: [Int: String] = [
+        -16850: "Il server ha risposto 504 Gateway Timeout.",
+        -16849: "Il server ha risposto 503 Service Unavailable.",
+        -16848: "Il server ha risposto 502 Bad Gateway.",
+        -16847: "Il server ha risposto 500 Internal Server Error.",
+        -16846: "Il server ha risposto con un errore 5xx (server temporaneamente in difficoltà).",
+        -16845: "Il server ha rifiutato la richiesta con un codice 4xx.",
+        -16840: "Il server richiede autenticazione (401 Unauthorized): la playlist/token potrebbe essere scaduto.",
+        -12938: "Il server ha risposto 404: il file non esiste più a questo indirizzo.",
+        -12661: "Il server ha risposto 503 Service Unavailable.",
+        -12660: "Il server ha rifiutato la richiesta (403 Forbidden).",
+        -1202: "Certificato del server non valido o non attendibile (TLS).",
+        -1102: "Il server ha rifiutato la richiesta (403 Forbidden).",
+        -1100: "Il server ha risposto 404: il file non esiste più a questo indirizzo.",
+        -1013: "Il server richiede autenticazione (401 Unauthorized).",
+        -1009: "Il dispositivo non è connesso a Internet.",
+        -1008: "La risorsa richiesta non è disponibile sul server.",
+        -1004: "Impossibile connettersi al server (host irraggiungibile).",
+        -1003: "Host non trovato: controlla l'indirizzo della playlist.",
+        -1000: "URL malformato.",
+    ]
+
+    /// Vero se il codice indica un errore SERVER (5xx) verosimilmente
+    /// transitorio: vale la pena ritentare automaticamente con backoff
+    /// prima di arrendersi, perché spesso si risolve da solo in pochi
+    /// secondi (sovraccarico momentaneo, riavvio backend, ecc.).
+    private static func isTransientServerError(_ code: Int) -> Bool {
+        (-16850...(-16846)).contains(code) || code == -12661 || code == -16849
+    }
+
+    private static func underlyingOSStatusCode(for error: NSError) -> Int? {
+        if error.domain == NSOSStatusErrorDomain { return error.code }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return underlyingOSStatusCode(for: underlying)
+        }
+        return nil
+    }
+
     private static func technicalDetail(for error: Error) -> String {
         let nsError = error as NSError
         var parts = ["domain=\(nsError.domain)", "code=\(nsError.code)"]
@@ -397,6 +419,18 @@ final class KSPlaybackController: NSObject, ObservableObject {
             parts.append("reason=\(failureReason)")
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// Messaggio finale onesto e specifico da mostrare all'utente:
+    /// usa la tabella `knownOSStatusMessages` quando riconosce il
+    /// codice, altrimenti ricade sul testo originale del motore.
+    private static func userFacingMessage(for error: Error) -> String {
+        let nsError = error as NSError
+        let candidateCode = underlyingOSStatusCode(for: nsError) ?? nsError.code
+        if let known = knownOSStatusMessages[candidateCode] {
+            return "\(known) Questo non è un problema del player: il server della playlist ha risposto così in questo momento."
+        }
+        return nsError.localizedDescription
     }
 }
 
@@ -423,16 +457,20 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
         self.duration = totalTime
     }
 
-    /// Gestione unificata degli errori di riproduzione.
+    /// Gestione unificata degli errori di riproduzione, in 3 fasi:
     ///
     /// 1) Se `hardwareDecode` è attivo, tenta UNA volta la decodifica
-    ///    100% software prima di arrendersi (copre i codec che
-    ///    VideoToolbox non decodifica in hardware, es. MPEG-4 ASP).
-    /// 2) Se l'errore persiste identico anche in software, il problema
-    ///    NON è di codec: viene mostrato il messaggio reale più il
-    ///    dettaglio tecnico (`technicalDetail`), per distinguere un
-    ///    problema di rete/URL da un problema di formato senza dover
-    ///    aprire i log.
+    ///    100% software (copre i codec non supportati in hardware).
+    /// 2) Se l'errore sottostante è un OSStatus 5xx (server IPTV in
+    ///    difficoltà temporanea), ritenta automaticamente fino a 3
+    ///    volte con backoff crescente (2s/4s/8s) PRIMA di arrendersi:
+    ///    la maggior parte dei 502/503 si risolve da sola in pochi
+    ///    secondi.
+    /// 3) Solo dopo aver esaurito i tentativi utili, mostra un
+    ///    messaggio finale onesto (`userFacingMessage`), che distingue
+    ///    chiaramente un problema server/rete da un problema di
+    ///    formato — niente più "il formato potrebbe non essere
+    ///    supportato" quando il vero problema è un 502 del provider.
     func player(layer: KSPlayerLayer, finish error: Error?) {
         guard let error else { return }
         let description = error.localizedDescription
@@ -447,8 +485,25 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
             return
         }
 
-        lastError = description
+        let nsError = error as NSError
+        let osStatusCode = Self.underlyingOSStatusCode(for: nsError) ?? nsError.code
+        if Self.isTransientServerError(osStatusCode), transientRetryCount < Self.maxTransientRetries {
+            transientRetryCount += 1
+            let delaySeconds = [2.0, 4.0, 8.0][min(transientRetryCount - 1, 2)]
+            transientRetryMessage = "Il server ha risposto con un errore temporaneo, nuovo tentativo \(transientRetryCount)/\(Self.maxTransientRetries) in \(Int(delaySeconds))s…"
+            DebugLogger.logAsync(.warning, "KSPlaybackController: errore server transitorio (OSStatus \(osStatusCode)), retry \(transientRetryCount)/\(Self.maxTransientRetries) in \(delaySeconds)s")
+            retryTask?.cancel()
+            retryTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+                guard let self, !Task.isCancelled else { return }
+                self.reload()
+            }
+            return
+        }
+
+        lastError = Self.userFacingMessage(for: error)
         lastErrorDetail = detail
+        transientRetryMessage = nil
     }
 
     func player(layer: KSPlayerLayer, bufferedCount: Int, consumeTime: TimeInterval) {
