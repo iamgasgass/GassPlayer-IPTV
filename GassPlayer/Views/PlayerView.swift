@@ -185,39 +185,8 @@ struct PlayerView: View {
                 toastOverlay(toastMessage)
             }
         }
-        .overlay {
-            if isLocked {
-                lockedOverlay
-            } else if let errorMessage = controller.lastError {
-                playbackErrorBanner(errorMessage)
-            } else {
-                unifiedControlSurface
-                    .opacity(showControls ? 1 : 0)
-                    .allowsHitTesting(showControls)
-                    .animation(.easeInOut(duration: 0.2), value: showControls)
-
-                if !isLocked, let onNext, autoplayNextEpisode, showNextEpisodeButton {
-                    nextEpisodeButton(onNext)
-                }
-            }
-        }
-        .overlay {
-            if let pendingResume = controller.pendingResume {
-                ResumeConfirmationOverlay(
-                    time: pendingResume,
-                    formattedTime: formatted(pendingResume),
-                    onResume: {
-                        haptic()
-                        controller.confirmResume()
-                    },
-                    onRestart: {
-                        haptic()
-                        controller.declineResume()
-                    }
-                )
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
-            }
-        }
+        .overlay { primaryControlsOverlay }
+        .overlay { resumeConfirmationOverlay }
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: controller.pendingResume != nil)
         .statusBarHidden(true)
         .sheet(isPresented: $showTrackPicker) {
@@ -522,6 +491,51 @@ struct PlayerView: View {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
             await MainActor.run { showControls = false }
+        }
+    }
+
+    // MARK: - Overlay principali
+    // Estratti da `body` come proprietà separate: un unico `var body`
+    // con troppi `.overlay`/modificatori concatenati e `if/else` innestati
+    // può mandare in timeout il type-checker di Swift ("unable to
+    // type-check this expression in reasonable time"). Spezzarlo in
+    // sotto-espressioni più piccole risolve il problema e non cambia il
+    // comportamento a runtime.
+
+    @ViewBuilder
+    private var primaryControlsOverlay: some View {
+        if isLocked {
+            lockedOverlay
+        } else if let errorMessage = controller.lastError {
+            playbackErrorBanner(errorMessage)
+        } else {
+            unifiedControlSurface
+                .opacity(showControls ? 1 : 0)
+                .allowsHitTesting(showControls)
+                .animation(.easeInOut(duration: 0.2), value: showControls)
+
+            if let onNext, autoplayNextEpisode, showNextEpisodeButton {
+                nextEpisodeButton(onNext)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var resumeConfirmationOverlay: some View {
+        if let pendingResume = controller.pendingResume {
+            ResumeConfirmationOverlay(
+                time: pendingResume,
+                formattedTime: formatted(pendingResume),
+                onResume: {
+                    haptic()
+                    controller.confirmResume()
+                },
+                onRestart: {
+                    haptic()
+                    controller.declineResume()
+                }
+            )
+            .transition(.opacity.combined(with: .scale(scale: 0.96)))
         }
     }
 
