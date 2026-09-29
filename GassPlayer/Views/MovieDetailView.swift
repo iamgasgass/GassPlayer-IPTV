@@ -55,7 +55,8 @@ struct MovieDetailView: View {
                         title: stream.name,
                         logoURL: detail.logoURL,
                         backdropURL: detail.backdropURL,
-                        fallbackImageURLString: stream.streamIcon
+                        fallbackImageURLString: stream.streamIcon,
+                        onClose: { dismiss() }
                     )
                     .frame(width: geometry.size.width)
                     .modifier(MediaDetailScrollTracker())

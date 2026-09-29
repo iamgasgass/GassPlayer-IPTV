@@ -44,9 +44,15 @@ struct MediaHeroHeader: View {
             .frame(width: geo.size.width, height: MediaDetailMetrics.heroHeight)
             .clipped()
             .overlay(alignment: .topTrailing) {
-                closeButton
-                    .padding(.trailing, 16)
-                    .padding(.top, 48)
+                GlassIconButton(
+                    systemImage: "xmark",
+                    tint: .white,
+                    size: 32,
+                    accessibilityLabel: "Chiudi",
+                    action: onClose
+                )
+                .padding(.trailing, 16)
+                .padding(.top, 48)
             }
         }
         .frame(height: MediaDetailMetrics.heroHeight)
@@ -112,17 +118,6 @@ struct MediaHeroHeader: View {
             .lineLimit(2)
     }
 
-    private var closeButton: some View {
-        Button(action: onClose) {
-            Image(systemName: "xmark")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 32, height: 32)
-                .background(.black.opacity(0.55), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Chiudi")
-    }
 }
 
 // MARK: - Riga Metadati (Badge Stella ★7 | Anno/Durata | Genere)
@@ -179,16 +174,10 @@ struct MediaPlayButton: View {
                 Text(title)
                     .font(.system(size: 15, weight: .semibold))
             }
-            .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
-            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
-            }
         }
-        .buttonStyle(.plain)
+        .modifier(NativeOrLegacyGlassNeutralCapsule())
     }
 }
 
@@ -203,27 +192,22 @@ struct MediaIconButton: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                Circle()
-                    .fill(Color.white.opacity(0.12))
+                GlassIconGlyph(systemImage: systemImage, size: 44)
 
+                // Anello di avanzamento del download, sopra il glifo: resta
+                // visibile con entrambi gli stili (nativo iOS 26 e fallback).
                 if let progress, progress < 1 {
                     Circle()
                         .trim(from: 0, to: progress)
                         .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                         .padding(3)
+                        .frame(width: 44, height: 44)
+                        .allowsHitTesting(false)
                 }
-
-                Image(systemName: systemImage)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(tint)
-            }
-            .frame(width: 44, height: 44)
-            .overlay {
-                Circle().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
             }
         }
-        .buttonStyle(.plain)
+        .modifier(NativeOrLegacyGlassCircle(tint: tint, isInSystemToolbar: false))
         .accessibilityLabel(accessibilityLabel)
     }
 }
@@ -236,15 +220,10 @@ struct AltreFontiButton: View {
         Button(action: action) {
             Text("Altre fonti")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
-                .background(Color.white.opacity(0.12), in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
-                }
         }
-        .buttonStyle(.plain)
+        .modifier(NativeOrLegacyGlassNeutralCapsule())
     }
 }
 
