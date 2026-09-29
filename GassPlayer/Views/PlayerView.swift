@@ -1349,3 +1349,60 @@ struct ContentUnavailableViewCompat: View {
         }
     }
 }
+
+
+// MARK: - Resume confirmation overlay
+
+struct ResumeConfirmationOverlay: View {
+    let time: TimeInterval
+    let formattedTime: String
+    let onResume: () -> Void
+    let onRestart: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+
+            GlassCard(cornerRadius: 26, padding: 20) {
+                VStack(spacing: 18) {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .padding(.top, 4)
+
+                    VStack(spacing: 6) {
+                        Text("Riprendi la visione?")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                        Text("Ti eri fermato a \(formattedTime)")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                    .multilineTextAlignment(.center)
+
+                    VStack(spacing: 10) {
+                        Button(action: onResume) {
+                            Text("Riprendi da \(formattedTime)")
+                                .font(.system(size: 15, weight: .semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 13)
+                        }
+                        .modifier(NativeOrLegacyGlassNeutralCapsule())
+
+                        Button(action: onRestart) {
+                            Text("Ricomincia da capo")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.75))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 13)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(maxWidth: 320)
+            .padding(.horizontal, 36)
+        }
+    }
+}
