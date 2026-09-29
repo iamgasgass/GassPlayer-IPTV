@@ -95,6 +95,71 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// Secondi. Positivo = video ritardato rispetto all'audio.
         var videoDelay: Double = 0
         var videoGravity: VideoGravityMode = .fit
+
+        /// Valori di fabbrica: quelli sopra, indipendentemente da cosa è
+        /// salvato in `UserDefaults`. Usato da "Ripristina impostazioni
+        /// predefinite del player" in Impostazioni → Riproduzione.
+        static let factoryDefault = PlaybackPreferences()
+
+        /// Preferenze da usare per OGNI player appena aperto: quelle
+        /// impostate in Impostazioni → Riproduzione (o modificate
+        /// dall'ultima volta nel pannello avanzato del player stesso),
+        /// con fallback ai valori di fabbrica se non ancora salvate.
+        static func loadFromDefaults() -> PlaybackPreferences {
+            PlayerEngineDefaultsStore.load()
+        }
+    }
+
+    /// Persistenza delle preferenze del motore su `UserDefaults`, condivisa
+    /// tra il pannello "Impostazioni" (voci aggiuntive in Riproduzione) e il
+    /// pannello avanzato dentro al player stesso: modificarne una in un
+    /// posto si riflette subito nell'altro, ed entrambi determinano le
+    /// preferenze di un nuovo player appena aperto.
+    enum PlayerEngineDefaultsStore {
+        private enum Key {
+            static let forwardBuffer = "gassplayer.player.preferredForwardBufferDuration"
+            static let maxBuffer = "gassplayer.player.maxBufferDuration"
+            static let hardwareDecode = "gassplayer.player.hardwareDecode"
+            static let accurateSeek = "gassplayer.player.isAccurateSeek"
+            static let autoDeInterlace = "gassplayer.player.autoDeInterlace"
+            static let videoGravity = "gassplayer.player.videoGravity"
+        }
+
+        static func load() -> PlaybackPreferences {
+            let d = UserDefaults.standard
+            let fallback = PlaybackPreferences.factoryDefault
+            var prefs = fallback
+
+            if let v = d.object(forKey: Key.forwardBuffer) as? Double { prefs.preferredForwardBufferDuration = v }
+            if let v = d.object(forKey: Key.maxBuffer) as? Double { prefs.maxBufferDuration = v }
+            if let v = d.object(forKey: Key.hardwareDecode) as? Bool { prefs.hardwareDecode = v }
+            if let v = d.object(forKey: Key.accurateSeek) as? Bool { prefs.isAccurateSeek = v }
+            if let v = d.object(forKey: Key.autoDeInterlace) as? Bool { prefs.autoDeInterlace = v }
+            if let raw = d.string(forKey: Key.videoGravity), let mode = VideoGravityMode(rawValue: raw) { prefs.videoGravity = mode }
+            // videoDelay NON viene ricordato tra una riproduzione e l'altra
+            // (è specifico del singolo file/fonte: un valore salvato per
+            // sbaglio da un contenuto disallineato romperebbe tutti gli altri).
+
+            return prefs
+        }
+
+        static func save(_ prefs: PlaybackPreferences) {
+            let d = UserDefaults.standard
+            d.set(prefs.preferredForwardBufferDuration, forKey: Key.forwardBuffer)
+            d.set(prefs.maxBufferDuration, forKey: Key.maxBuffer)
+            d.set(prefs.hardwareDecode, forKey: Key.hardwareDecode)
+            d.set(prefs.isAccurateSeek, forKey: Key.accurateSeek)
+            d.set(prefs.autoDeInterlace, forKey: Key.autoDeInterlace)
+            d.set(prefs.videoGravity.rawValue, forKey: Key.videoGravity)
+        }
+
+        /// Cancella tutte le chiavi: la prossima lettura torna ai valori di
+        /// fabbrica. Usato dal tasto di reset in Impostazioni.
+        static func resetToFactoryDefaults() {
+            let d = UserDefaults.standard
+            [Key.forwardBuffer, Key.maxBuffer, Key.hardwareDecode, Key.accurateSeek, Key.autoDeInterlace, Key.videoGravity]
+                .forEach { d.removeObject(forKey: $0) }
+        }
     }
 
     @Published var state: KSPlayerState = .initialized
@@ -106,8 +171,10 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// provider o prova un formato/profilo alternativo.
     @Published private(set) var recoveryStatus: String?
     @Published private(set) var isRecovering = false
-    /// Posizione da cui e' stata ripresa la riproduzione (film/episodi).
-    @Published private(set) var resumedFrom: TimeInterval?
+    /// Posizione da cui si potrebbe riprendere (film/episodi), in attesa
+    /// della scelta dell'utente nell'alert "Riprendi la visione?". Finche'
+    /// non risponde, il layer resta fermo a 0 senza avviare la riproduzione.
+    @Published private(set) var pendingResume: TimeInterval?
     @Published var isPipActive = false {
         didSet { layer.isPipActive = isPipActive }
     }
@@ -172,6 +239,10 @@ final class KSPlaybackController: NSObject, ObservableObject {
     init(url: URL, title: String) {
         var userAgent = PlaybackProfileStore.userAgent(for: url) ?? StreamUserAgents.vlc
         var playURL = url
+        // "Continua a guardare": la posizione salvata non viene piu'
+        // seminata da sola nel motore. Resta "in sospeso" finche' l'utente
+        // non risponde all'alert liquid glass mostrato da PlayerView; fino
+        // ad allora il layer parte da 0 e NON riproduce.
         let start = PlaybackPositionStore.position(for: url)
 
         // Risoluzione recente gia' verificata: parte subito, senza sonde.
@@ -187,21 +258,21 @@ final class KSPlaybackController: NSObject, ObservableObject {
         self.activeUserAgent = userAgent
         self.title = title
         Self.configureGlobalPlayerEngineIfNeeded()
-        // Con la verifica preventiva il layer iniziale e' solo un segnaposto
-        // (niente autoplay): quello vero nasce dopo, sull'URL verificato.
+        let initialPreferences = PlaybackPreferences.loadFromDefaults()
+        self.preferences = initialPreferences
         self.layer = Self.buildLayer(
             for: playURL,
-            preferences: PlaybackPreferences(),
+            preferences: initialPreferences,
             userAgent: userAgent,
-            startTime: start,
-            autoPlay: !needsPreflight
+            startTime: nil,
+            autoPlay: !needsPreflight && start == nil
         )
         super.init()
         layer.delegate = self
-        resumedFrom = start
+        pendingResume = start
         triedKeys = [Self.key(playURL, userAgent)]
         if needsPreflight {
-            beginPreflight(startTime: start)
+            beginPreflight()
         } else {
             startWatchdog()
         }
@@ -220,22 +291,24 @@ final class KSPlaybackController: NSObject, ObservableObject {
 
     /// Sceglie come avviare `requested`: cache -> subito; VOD -> verifica
     /// preventiva; altrimenti (Live, URL generici) -> avvio diretto.
+    /// L'eventuale posizione salvata e' gestita a parte da `pendingResume`.
     private func launch(requested: URL, startTime: TimeInterval?) {
         let userAgent = PlaybackProfileStore.userAgent(for: requested) ?? StreamUserAgents.vlc
         activeURL = requested
         activeUserAgent = userAgent
+        let autoPlay = pendingResume == nil
 
         if let cached = ResolutionCache.fresh(for: requested) {
             triedKeys = [Self.key(cached.playURL, cached.userAgent)]
-            startLayer(url: cached.playURL, userAgent: cached.userAgent, startTime: startTime)
+            startLayer(url: cached.playURL, userAgent: cached.userAgent, startTime: startTime, autoPlay: autoPlay)
         } else if Self.needsPreflight(requested) {
-            beginPreflight(startTime: startTime)
+            beginPreflight()
         } else {
-            startLayer(url: requested, userAgent: userAgent, startTime: startTime)
+            startLayer(url: requested, userAgent: userAgent, startTime: startTime, autoPlay: autoPlay)
         }
     }
 
-    private func beginPreflight(startTime: TimeInterval?) {
+    private func beginPreflight() {
         loadGeneration += 1
         let requested = currentURL
         let userAgent = activeUserAgent
@@ -261,34 +334,51 @@ final class KSPlaybackController: NSObject, ObservableObject {
                 try? await Task.sleep(nanoseconds: 150_000_000)
             }
             guard let self, !Task.isCancelled, generation == self.loadGeneration, !self.isStopped else { return }
-            self.finishPreflight(diagnosis, requested: requested, userAgent: userAgent, startTime: startTime)
+            self.finishPreflight(diagnosis, requested: requested, userAgent: userAgent)
         }
     }
 
-    private func finishPreflight(
-        _ diagnosis: StreamDiagnosis,
-        requested: URL,
-        userAgent: String,
-        startTime: TimeInterval?
-    ) {
+    private func finishPreflight(_ diagnosis: StreamDiagnosis, requested: URL, userAgent: String) {
         isRecovering = false
         recoveryStatus = nil
+        // La verifica formati non decide mai se riprendere: decide solo se
+        // avviare subito o restare fermi in attesa della risposta
+        // dell'utente all'alert (pendingResume, se presente).
+        let autoPlay = pendingResume == nil
 
         switch diagnosis {
         case .playable(let resolution):
             triedKeys = [Self.key(resolution.playURL, resolution.userAgent)]
-            startLayer(url: resolution.playURL, userAgent: resolution.userAgent, startTime: startTime)
+            startLayer(url: resolution.playURL, userAgent: resolution.userAgent, startTime: nil, autoPlay: autoPlay)
 
         case .inconclusive(let message):
             // La sonda non basta a decidere: provo comunque col motore video.
             DebugLogger.logAsync(.warning, "KSPlaybackController: verifica inconcludente (\(message)), avvio diretto")
             triedKeys = [Self.key(requested, userAgent)]
-            startLayer(url: requested, userAgent: userAgent, startTime: startTime)
+            startLayer(url: requested, userAgent: userAgent, startTime: nil, autoPlay: autoPlay)
 
         case .unplayable(let message):
             DebugLogger.logAsync(.error, "KSPlaybackController: verifica provider fallita: \(message)")
             lastError = message
         }
+    }
+
+    // MARK: - Alert "Riprendi la visione?"
+
+    /// L'utente ha scelto di riprendere: cerca la posizione salvata.
+    func confirmResume() {
+        guard let time = pendingResume else { return }
+        pendingResume = nil
+        layer.seek(time: time, autoPlay: true) { _ in }
+    }
+
+    /// L'utente ha scelto di ricominciare da capo: si scarta la posizione
+    /// salvata (niente piu' richiesta ai prossimi avvii di questo contenuto).
+    func declineResume() {
+        guard pendingResume != nil else { return }
+        pendingResume = nil
+        PlaybackPositionStore.clear(for: currentURL)
+        layer.play()
     }
 
     // MARK: - Costruzione layer
@@ -375,7 +465,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         target.player.shutdown()
     }
 
-    private func startLayer(url: URL, userAgent: String, startTime: TimeInterval?) {
+    private func startLayer(url: URL, userAgent: String, startTime: TimeInterval?, autoPlay: Bool = true) {
         loadGeneration += 1
         activeURL = url
         activeUserAgent = userAgent
@@ -386,11 +476,14 @@ final class KSPlaybackController: NSObject, ObservableObject {
             for: url,
             preferences: preferences,
             userAgent: userAgent,
-            startTime: startTime
+            startTime: startTime,
+            autoPlay: autoPlay
         )
         layer = newLayer
         newLayer.delegate = self
-        newLayer.play()
+        if autoPlay {
+            newLayer.play()
+        }
         startWatchdog()
     }
 
@@ -435,8 +528,8 @@ final class KSPlaybackController: NSObject, ObservableObject {
         triedKeys = [Self.key(url, activeUserAgent)]
 
         let start = PlaybackPositionStore.position(for: url)
-        resumedFrom = start
-        launch(requested: url, startTime: start)
+        pendingResume = start
+        launch(requested: url, startTime: nil)
     }
 
     /// Ricarica lo stream in uso con le `preferences` aggiornate,
@@ -527,13 +620,17 @@ final class KSPlaybackController: NSObject, ObservableObject {
     func setPreferredForwardBufferDuration(_ value: Double) {
         preferences.preferredForwardBufferDuration = value
         layer.options.preferredForwardBufferDuration = value
+        PlayerEngineDefaultsStore.save(preferences)
     }
 
     func setMaxBufferDuration(_ value: Double) {
         preferences.maxBufferDuration = value
         layer.options.maxBufferDuration = value
+        PlayerEngineDefaultsStore.save(preferences)
     }
 
+    /// Non persistito: è specifico del file/fonte aperta in questo
+    /// momento, non una preferenza generale da riapplicare ovunque.
     func setVideoDelay(_ value: Double) {
         preferences.videoDelay = value
         layer.options.videoDelay = value
@@ -542,21 +639,25 @@ final class KSPlaybackController: NSObject, ObservableObject {
     func setAccurateSeek(_ enabled: Bool) {
         preferences.isAccurateSeek = enabled
         layer.options.isAccurateSeek = enabled
+        PlayerEngineDefaultsStore.save(preferences)
     }
 
     func setVideoGravity(_ mode: VideoGravityMode) {
         preferences.videoGravity = mode
         layer.player.contentMode = mode.contentMode
+        PlayerEngineDefaultsStore.save(preferences)
     }
 
     /// Scelta MANUALE hardware/software (indipendente dal fallback automatico).
     func setHardwareDecode(_ enabled: Bool) {
         preferences.hardwareDecode = enabled
+        PlayerEngineDefaultsStore.save(preferences)
         reload()
     }
 
     func setAutoDeInterlace(_ enabled: Bool) {
         preferences.autoDeInterlace = enabled
+        PlayerEngineDefaultsStore.save(preferences)
         reload()
     }
 

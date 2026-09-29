@@ -6,6 +6,14 @@ import Foundation
 /// resta valida anche se il player passa a un'estensione alternativa
 /// (`.mkv` -> `.mp4`) o cambia user-agent.
 enum PlaybackPositionStore {
+    /// Interruttore "Riprendi la visione" in Impostazioni → Riproduzione.
+    /// Se disattivato: non si legge né si scrive più alcuna posizione, e
+    /// l'alert di ripresa nel player non compare mai (comportamento
+    /// prima solo apparente: il toggle esisteva ma non veniva letto).
+    private static var isEnabled: Bool {
+        (UserDefaults.standard.object(forKey: "gassplayer.playback.resumePlayback") as? Bool) ?? true
+    }
+
     private struct Entry: Codable {
         var time: Double
         var updatedAt: Date
@@ -26,6 +34,7 @@ enum PlaybackPositionStore {
     }
 
     static func position(for url: URL) -> TimeInterval? {
+        guard isEnabled else { return nil }
         guard let key = identity(for: url), let entry = load()[key], entry.time > 5 else { return nil }
         return entry.time
     }
@@ -33,6 +42,7 @@ enum PlaybackPositionStore {
     /// Salva solo se ha senso riprendere: oltre i primi secondi e prima
     /// dei titoli di coda. Se il contenuto e' quasi finito, azzera.
     static func record(time: TimeInterval, duration: TimeInterval, for url: URL) {
+        guard isEnabled else { return }
         guard let key = identity(for: url), duration > 120 else { return }
         var all = load()
         if time > 15 && time < duration - 45 {
