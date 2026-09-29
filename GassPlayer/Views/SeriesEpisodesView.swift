@@ -139,8 +139,7 @@ struct SeriesEpisodesView: View {
                         title: seriesName,
                         logoURL: detail.logoURL,
                         backdropURL: detail.backdropURL,
-                        fallbackImageURLString: fallbackCoverURLString,
-                        onClose: { dismiss() }
+                        fallbackImageURLString: fallbackCoverURLString
                     )
                     .frame(width: geometry.size.width)
                     .modifier(MediaDetailScrollTracker())

@@ -1,5 +1,31 @@
 import SwiftUI
 
+/// Offset verticale del contenuto dentro lo `ScrollView` della scheda
+/// dettaglio, misurato nel coordinate space dedicato `"mediaDetailScroll"`.
+/// `0` = in cima; valori negativi = quanto si è scrollato verso il basso.
+struct MediaDetailScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// Da applicare alla `ScrollView` delle schede dettaglio: espone l'offset
+/// di scroll tramite `MediaDetailScrollOffsetKey`, da leggere con
+/// `.onPreferenceChange`.
+struct MediaDetailScrollTracker: ViewModifier {
+    func body(content: Content) -> some View {
+        content.background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: MediaDetailScrollOffsetKey.self,
+                    value: proxy.frame(in: .named("mediaDetailScroll")).minY
+                )
+            }
+        )
+    }
+}
+
 /// Barra superiore fissa (fuori dallo `ScrollView`) identica al video di
 /// riferimento: all'apertura è trasparente con solo la X in alto a destra;
 /// scrollando verso il basso oltre l'header, uno sfondo Liquid Glass

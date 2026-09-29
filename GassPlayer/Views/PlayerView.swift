@@ -95,25 +95,18 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        playerModalView
-            .statusBarHidden(true)
-    }
-
-    // MARK: - View composition
-    //
-    // SwiftUI's type checker can spend an excessive amount of time solving a
-    // single, very large ViewBuilder expression. Keep each stage small so the
-    // compiler can infer the types independently.
-
-    private var playerBaseView: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // URL e titolo passati direttamente a KSPlayerContainerView so that
-            // channel/episode changes are applied immediately.
+            // FIX CRITICO: URL e Titolo passati direttamente a KSPlayerContainerView.
+            // Quando SwiftUI aggiorna PlayerView per un nuovo canale/episodio,
+            // KSPlayerContainerView.updateUIView esegue IMMEDIATAMENTE e in modo sincrono
+            // il caricamento e l'aggancio del nuovo flusso, eliminando qualsiasi ritardo
+            // di zapping a 1 passo indietro o trasmissione del canale precedente.
             KSPlayerContainerView(url: url, title: title, controller: controller)
                 .ignoresSafeArea()
 
+            // Spinner di buffering centrale pulito durante il caricamento o cambio canale
             if controller.isBuffering {
                 VStack(spacing: 14) {
                     ProgressView()
@@ -134,208 +127,162 @@ struct PlayerView: View {
             GeometryReader { geo in
                 Color.clear
                     .onAppear { containerWidth = geo.size.width }
-                    .onChange(of: geo.size) { newValue in
-                        containerWidth = newValue.width
-                    }
+                    .onChange(of: geo.size) { newValue in containerWidth = newValue.width }
             }
         )
-    }
-
-    private var playerLifecycleView: some View {
-        playerBaseView
-            .onAppear {
-                controller.resumeIfStopped()
-                scheduleAutoHide()
-                if preferredPlaybackSpeed != 1.0 {
-                    currentPlaybackRate = preferredPlaybackSpeed
-                    controller.setPlaybackRate(Float(preferredPlaybackSpeed))
-                }
+        .onAppear {
+            controller.resumeIfStopped()
+            scheduleAutoHide()
+            if preferredPlaybackSpeed != 1.0 {
+                currentPlaybackRate = preferredPlaybackSpeed
+                controller.setPlaybackRate(Float(preferredPlaybackSpeed))
             }
-            .onChange(of: scenePhase) { phase in
-                if phase == .active {
-                    controller.resumeIfStopped()
-                }
-            }
-            .onChange(of: controller.state) { newState in
-                guard newState == .playedToTheEnd else { return }
-                advanceToNextEpisodeIfNeeded()
-            }
-            .task(id: url) {
-                externalPlayers = ExternalPlayer.available(for: url)
-            }
-            .onChange(of: isAnyModalPresented) { presented in
-                if presented {
-                    hideControlsTask?.cancel()
-                } else {
-                    scheduleAutoHide()
-                }
-            }
-            .onDisappear {
-                controller.stop()
+        }
+        .onChange(of: scenePhase) { phase in
+            // Dopo un player esterno (che ha richiesto lo stop del flusso
+            // per liberare la connessione) riapre da dove si era.
+            if phase == .active { controller.resumeIfStopped() }
+        }
+        .onChange(of: controller.state) { newState in
+            guard newState == .playedToTheEnd else { return }
+            advanceToNextEpisodeIfNeeded()
+        }
+        .task(id: url) {
+            externalPlayers = ExternalPlayer.available(for: url)
+        }
+        .onChange(of: isAnyModalPresented) { presented in
+            if presented {
                 hideControlsTask?.cancel()
-                hudHideTask?.cancel()
-                toastTask?.cancel()
-                sleepTimerTask?.cancel()
+            } else {
+                scheduleAutoHide()
             }
-    }
+        }
+        .onDisappear {
+            // stop(), non pause(): chiude davvero la connessione col
+            // provider (altrimenti resta uno slot occupato) e salva la
+            // posizione per la ripresa.
+            controller.stop()
+            hideControlsTask?.cancel()
+            hudHideTask?.cancel()
+            toastTask?.cancel()
+            sleepTimerTask?.cancel()
+        }
+        .simultaneousGesture(dragGesture)
+        .onTapGesture(count: 2, coordinateSpace: .local) { location in
+            handleDoubleTap(at: location)
+        }
+        .onTapGesture {
+            handleSingleTap()
+        }
+        .overlay {
+            if showBrightnessHUD { hudOverlay(icon: "sun.max.fill", value: brightnessOverlay) }
+        }
+        .overlay {
+            if showVolumeHUD { hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay) }
+        }
+        .overlay {
+            if let toastMessage {
+                toastOverlay(toastMessage)
+            }
+        }
+        .overlay {
+            if isLocked {
+                lockedOverlay
+            } else if let errorMessage = controller.lastError {
+                playbackErrorBanner(errorMessage)
+            } else {
+                unifiedControlSurface
+                    .opacity(showControls ? 1 : 0)
+                    .allowsHitTesting(showControls)
+                    .animation(.easeInOut(duration: 0.2), value: showControls)
 
-    private var playerInteractionView: some View {
-        playerLifecycleView
-            .simultaneousGesture(dragGesture)
-            .onTapGesture(count: 2, coordinateSpace: .local) { location in
-                handleDoubleTap(at: location)
-            }
-            .onTapGesture {
-                handleSingleTap()
-            }
-    }
-
-    private var playerOverlayView: some View {
-        playerInteractionView
-            .overlay {
-                if showBrightnessHUD {
-                    hudOverlay(icon: "sun.max.fill", value: brightnessOverlay)
+                if !isLocked, let onNext, autoplayNextEpisode, showNextEpisodeButton {
+                    nextEpisodeButton(onNext)
                 }
             }
-            .overlay {
-                if showVolumeHUD {
-                    hudOverlay(icon: "speaker.wave.2.fill", value: volumeOverlay)
-                }
-            }
-            .overlay {
-                if let toastMessage {
-                    toastOverlay(toastMessage)
-                }
-            }
-            .overlay {
-                if isLocked {
-                    lockedOverlay
-                } else if let errorMessage = controller.lastError {
-                    playbackErrorBanner(errorMessage)
-                } else {
-                    unifiedControlSurface
-                        .opacity(showControls ? 1 : 0)
-                        .allowsHitTesting(showControls)
-                        .animation(.easeInOut(duration: 0.2), value: showControls)
-
-                    if !isLocked, let onNext, autoplayNextEpisode, showNextEpisodeButton {
-                        nextEpisodeButton(onNext)
+        }
+        .overlay {
+            if let pendingResume = controller.pendingResume {
+                ResumeConfirmationOverlay(
+                    time: pendingResume,
+                    formattedTime: formatted(pendingResume),
+                    onResume: {
+                        haptic()
+                        controller.confirmResume()
+                    },
+                    onRestart: {
+                        haptic()
+                        controller.declineResume()
                     }
-                }
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
             }
-            .overlay {
-                if let pendingResume = controller.pendingResume {
-                    ResumeConfirmationOverlay(
-                        time: pendingResume,
-                        formattedTime: formatted(pendingResume),
-                        onResume: {
-                            haptic()
-                            controller.confirmResume()
-                        },
-                        onRestart: {
-                            haptic()
-                            controller.declineResume()
-                        }
-                    )
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                }
-            }
-            .animation(
-                .spring(response: 0.32, dampingFraction: 0.86),
-                value: controller.pendingResume != nil
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: controller.pendingResume != nil)
+        .statusBarHidden(true)
+        .sheet(isPresented: $showTrackPicker) {
+            TrackPickerView(
+                controller: controller,
+                selectedAudioTrackName: $selectedAudioTrackName,
+                selectedSubtitleTrackName: $selectedSubtitleTrackName
             )
-    }
-
-    private var playerModalView: some View {
-        playerOverlayView
-            .sheet(isPresented: $showTrackPicker) {
-                TrackPickerView(
-                    controller: controller,
-                    selectedAudioTrackName: $selectedAudioTrackName,
-                    selectedSubtitleTrackName: $selectedSubtitleTrackName
-                )
-            }
-            .sheet(isPresented: $showAdvancedSettings) {
-                AdvancedSettingsView(controller: controller)
-            }
-            .sheet(isPresented: $showQualityPicker) {
-                QualityPickerView(
-                    controller: controller,
-                    selectedTrackName: $selectedVideoTrackName
-                )
-            }
-            .confirmationDialog(
-                "Apri con un altro player",
-                isPresented: $showExternalPlayerMenu,
-                titleVisibility: .visible
-            ) {
-                ForEach(externalPlayers) { player in
-                    Button(player.displayName) {
-                        controller.stop()
-                        UIApplication.shared.open(player.url)
-                    }
+        }
+        .sheet(isPresented: $showAdvancedSettings) {
+            AdvancedSettingsView(controller: controller)
+        }
+        .sheet(isPresented: $showQualityPicker) {
+            QualityPickerView(controller: controller, selectedTrackName: $selectedVideoTrackName)
+        }
+        .confirmationDialog("Apri con un altro player", isPresented: $showExternalPlayerMenu, titleVisibility: .visible) {
+            ForEach(externalPlayers) { player in
+                Button(player.displayName) {
+                    // Libera la connessione: molti provider ne concedono 1-2
+                    // e il player esterno userebbe lo stesso account.
+                    controller.stop()
+                    UIApplication.shared.open(player.url)
                 }
-                Button("Annulla", role: .cancel) {}
             }
-            .confirmationDialog(
-                "Velocità di riproduzione",
-                isPresented: $showSpeedPicker,
-                titleVisibility: .visible
-            ) {
-                ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { rate in
-                    Button(speedLabel(for: rate)) {
-                        controller.setPlaybackRate(Float(rate))
-                        currentPlaybackRate = rate
-                    }
+            Button("Annulla", role: .cancel) {}
+        }
+        .confirmationDialog("Velocità di riproduzione", isPresented: $showSpeedPicker, titleVisibility: .visible) {
+            ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { rate in
+                Button(speedLabel(for: rate)) {
+                    controller.setPlaybackRate(Float(rate))
+                    currentPlaybackRate = rate
                 }
-                Button("Annulla", role: .cancel) {}
             }
-            .confirmationDialog(
-                "Timer di spegnimento",
-                isPresented: $showSleepTimerPicker,
-                titleVisibility: .visible
-            ) {
-                ForEach([15, 30, 45, 60], id: \.self) { minutes in
-                    Button("\(minutes) minuti") {
-                        scheduleSleepTimer(minutes: minutes)
-                    }
+            Button("Annulla", role: .cancel) {}
+        }
+        .confirmationDialog("Timer di spegnimento", isPresented: $showSleepTimerPicker, titleVisibility: .visible) {
+            ForEach([15, 30, 45, 60], id: \.self) { minutes in
+                Button("\(minutes) minuti") { scheduleSleepTimer(minutes: minutes) }
+            }
+            if sleepTimerMinutes != nil {
+                Button("Disattiva timer", role: .destructive) { cancelSleepTimer() }
+            }
+            Button("Annulla", role: .cancel) {}
+        }
+        .confirmationDialog("Rapporto di aspetto", isPresented: $showAspectPicker, titleVisibility: .visible) {
+            ForEach(VideoGravityMode.allCases) { mode in
+                Button(mode == controller.preferences.videoGravity ? "✓ \(mode.label)" : mode.label) {
+                    controller.setVideoGravity(mode)
                 }
-                if sleepTimerMinutes != nil {
-                    Button("Disattiva timer", role: .destructive) {
-                        cancelSleepTimer()
-                    }
+            }
+            Button("Annulla", role: .cancel) {}
+        }
+        .sheet(isPresented: $showChannelHistory) {
+            ChannelHistoryView(
+                items: recentlyWatched.items.filter { $0.kind == "live" },
+                onSelect: { item in
+                    controller.load(url: item.streamURL, title: item.title)
+                    showChannelHistory = false
                 }
-                Button("Annulla", role: .cancel) {}
-            }
-            .confirmationDialog(
-                "Rapporto di aspetto",
-                isPresented: $showAspectPicker,
-                titleVisibility: .visible
-            ) {
-                ForEach(VideoGravityMode.allCases) { mode in
-                    Button(
-                        mode == controller.preferences.videoGravity
-                            ? "✓ \(mode.label)"
-                            : mode.label
-                    ) {
-                        controller.setVideoGravity(mode)
-                    }
-                }
-                Button("Annulla", role: .cancel) {}
-            }
-            .sheet(isPresented: $showChannelHistory) {
-                ChannelHistoryView(
-                    items: recentlyWatched.items.filter { $0.kind == "live" },
-                    onSelect: { item in
-                        controller.load(url: item.streamURL, title: item.title)
-                        showChannelHistory = false
-                    }
-                )
-            }
-            .sheet(isPresented: $showChannelSearch) {
-                GlobalSearchView()
-                    .environmentObject(sourceManager)
-            }
+            )
+        }
+        .sheet(isPresented: $showChannelSearch) {
+            GlobalSearchView()
+                .environmentObject(sourceManager)
+        }
     }
 
     // MARK: - Gestures
@@ -1346,63 +1293,6 @@ struct ContentUnavailableViewCompat: View {
             }
             .multilineTextAlignment(.center)
             .padding()
-        }
-    }
-}
-
-
-// MARK: - Resume confirmation overlay
-
-struct ResumeConfirmationOverlay: View {
-    let time: TimeInterval
-    let formattedTime: String
-    let onResume: () -> Void
-    let onRestart: () -> Void
-
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.55)
-                .ignoresSafeArea()
-
-            GlassCard(cornerRadius: 26, padding: 20) {
-                VStack(spacing: 18) {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 34))
-                        .foregroundStyle(.white.opacity(0.9))
-                        .padding(.top, 4)
-
-                    VStack(spacing: 6) {
-                        Text("Riprendi la visione?")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                        Text("Ti eri fermato a \(formattedTime)")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.white.opacity(0.7))
-                    }
-                    .multilineTextAlignment(.center)
-
-                    VStack(spacing: 10) {
-                        Button(action: onResume) {
-                            Text("Riprendi da \(formattedTime)")
-                                .font(.system(size: 15, weight: .semibold))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 13)
-                        }
-                        .modifier(NativeOrLegacyGlassNeutralCapsule())
-
-                        Button(action: onRestart) {
-                            Text("Ricomincia da capo")
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.75))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 13)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            .frame(maxWidth: 320)
-            .padding(.horizontal, 36)
         }
     }
 }

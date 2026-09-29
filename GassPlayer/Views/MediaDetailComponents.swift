@@ -12,7 +12,6 @@ struct MediaHeroHeader: View {
     let logoURL: URL?
     let backdropURL: URL?
     let fallbackImageURLString: String?
-    let onClose: () -> Void
 
     var body: some View {
         GeometryReader { geo in
@@ -43,17 +42,6 @@ struct MediaHeroHeader: View {
             }
             .frame(width: geo.size.width, height: MediaDetailMetrics.heroHeight)
             .clipped()
-            .overlay(alignment: .topTrailing) {
-                GlassIconButton(
-                    systemImage: "xmark",
-                    tint: .white,
-                    size: 32,
-                    accessibilityLabel: "Chiudi",
-                    action: onClose
-                )
-                .padding(.trailing, 16)
-                .padding(.top, 48)
-            }
         }
         .frame(height: MediaDetailMetrics.heroHeight)
     }
@@ -381,67 +369,5 @@ enum MediaRatingFormatter {
             return String(Int(value))
         }
         return String(format: "%.1f", value)
-    }
-}
-
-
-// MARK: - Shared SwiftUI compatibility helpers
-
-struct NativeOrLegacyGlassCapsule: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.capsule)
-                .tint(.accentColor)
-        } else {
-            content
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .background(Color.accentColor, in: Capsule())
-                .overlay {
-                    Capsule()
-                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
-                }
-        }
-    }
-}
-
-struct NativeOrLegacyGlassNeutralCapsule: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content
-                .buttonStyle(.glass)
-                .buttonBorderShape(.capsule)
-                .foregroundStyle(.white)
-        } else {
-            content
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
-                }
-        }
-    }
-}
-
-struct MediaDetailScrollOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-struct MediaDetailScrollTracker: ViewModifier {
-    func body(content: Content) -> some View {
-        content.background(
-            GeometryReader { proxy in
-                Color.clear.preference(
-                    key: MediaDetailScrollOffsetKey.self,
-                    value: proxy.frame(in: .named("mediaDetailScroll")).minY
-                )
-            }
-        )
     }
 }
