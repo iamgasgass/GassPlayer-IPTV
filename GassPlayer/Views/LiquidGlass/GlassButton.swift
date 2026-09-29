@@ -89,7 +89,34 @@ struct GlassPrimaryButton: View {
     }
 }
 
-private struct NativeOrLegacyGlassCapsule: ViewModifier {
+/// Esposto (non più `private`) per essere riusato anche fuori da questo
+/// file, ad esempio dal tasto "Prossimo Episodio" del player.
+/// Capsula Liquid Glass NEUTRA (nessuna tinta d'accento): riproduce lo
+/// stesso materiale traslucido del tasto "X" del video di riferimento, ma
+/// in forma di pillola invece che di cerchio. Usata per i pulsanti scuri
+/// delle schede dettaglio (Riproduci, Altre fonti) e per "Prossimo
+/// Episodio" nel player — mai `.glassProminent` (colorato), che è
+/// riservato alle azioni primarie di sistema (Salva, Accedi, …).
+struct NativeOrLegacyGlassNeutralCapsule: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
+                .foregroundStyle(.white)
+        } else {
+            content
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
+                }
+        }
+    }
+}
+
+struct NativeOrLegacyGlassCapsule: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
             content
