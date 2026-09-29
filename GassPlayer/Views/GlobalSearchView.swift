@@ -1,22 +1,26 @@
 import SwiftUI
 
 private struct SelectedSeriesResult: Identifiable, Hashable {
-    let id = UUID()
     let credentials: XtreamCredentials
     let seriesId: Int
     let name: String
 
-    static func == (lhs: SelectedSeriesResult, rhs: SelectedSeriesResult) -> Bool { lhs.id == rhs.id }
-    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    /// A differenza di `SelectedPlayable`, qui l'id NON è fisso: aprire una
+    /// serie diversa deve davvero ricreare `SeriesEpisodesView` (nuova
+    /// `seriesId` → nuovo caricamento episodi), non aggiornarla sul posto.
+    var id: Int { seriesId }
 }
 
 private struct SelectedPlayable: Identifiable, Hashable {
-    let id = UUID()
-    let url: URL
-    let title: String
-
-    static func == (lhs: SelectedPlayable, rhs: SelectedPlayable) -> Bool { lhs.id == rhs.id }
-    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    /// FISSO (non `UUID()` generato ad ogni tap): finché l'id non cambia,
+    /// `.fullScreenCover(item:)` non chiude e riapre la schermata, la
+    /// aggiorna sul posto passando il nuovo `url`/`title` alla STESSA
+    /// istanza di `PlayerView` — niente più player aperti uno sopra
+    /// l'altro toccando più risultati in sequenza (`GlobalSearchView`
+    /// aggiorna già `PlayerView` a runtime tramite `onChange(of: url)`).
+    let id = "search-player"
+    var url: URL
+    var title: String
 }
 
 private extension XtreamStreamKind {
@@ -249,9 +253,36 @@ struct GlobalSearchView: View {
                 DebugLogger.logAsync(.error, "GlobalSearchView: impossibile costruire l'URL per \(result.title)")
                 return
             }
-            selectedPlayable = SelectedPlayable(url: url, title: result.title)
+            if selectedPlayable != nil {
+                // Player già aperto: stessa identità ("search-player"), quindi
+                // questo NON chiude/riapre la schermata — `PlayerView` riceve
+                // il nuovo url/title e si aggiorna da sola (vedi `onChange(of:
+                // url)` in PlayerView.swift). Mai due player uno sopra l'altro.
+                selectedPlayable?.url = url
+                selectedPlayable?.title = result.title
+            } else if selectedSeries != nil {
+                // Era aperta la scheda di una serie: va chiusa PRIMA di aprire
+                // il player, non contemporaneamente — presentare due
+                // fullScreenCover diversi nello stesso istante è il caso che
+                // causa lo "stacking". Il player si apre al giro successivo.
+                selectedSeries = nil
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 350_000_000) // lascia finire l'animazione di chiusura
+                    selectedPlayable = SelectedPlayable(url: url, title: result.title)
+                }
+            } else {
+                selectedPlayable = SelectedPlayable(url: url, title: result.title)
+            }
         case .series:
-            selectedSeries = SelectedSeriesResult(credentials: result.credentials, seriesId: result.streamId, name: result.title)
+            if selectedPlayable != nil {
+                selectedPlayable = nil
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    selectedSeries = SelectedSeriesResult(credentials: result.credentials, seriesId: result.streamId, name: result.title)
+                }
+            } else {
+                selectedSeries = SelectedSeriesResult(credentials: result.credentials, seriesId: result.streamId, name: result.title)
+            }
         }
     }
 

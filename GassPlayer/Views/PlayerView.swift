@@ -150,6 +150,17 @@ struct PlayerView: View {
         .task(id: url) {
             externalPlayers = ExternalPlayer.available(for: url)
         }
+        // Permette di aggiornare la STESSA schermata player con un nuovo
+        // contenuto (usato da `GlobalSearchView` per non aprire un player
+        // sopra l'altro): dato che `controller` è un `@StateObject`, creato
+        // una sola volta per l'identità della vista, un `url` diverso non
+        // lo ricrea da solo — va inoltrato esplicitamente. Non scatta al
+        // primo apparire (solo sui cambi successivi), quindi non duplica
+        // il caricamento già fatto da `KSPlaybackController.init`.
+        .onChange(of: url) { newURL in
+            hasAdvancedToNextEpisode = false
+            controller.load(url: newURL, title: title)
+        }
         .onChange(of: isAnyModalPresented) { presented in
             if presented {
                 hideControlsTask?.cancel()
@@ -541,13 +552,13 @@ struct PlayerView: View {
 
     // MARK: - Prossimo episodio automatico
 
-    /// Ultimi 30 secondi di un episodio (con `onNext` disponibile e la
+    /// Ultimo minuto di un episodio (con `onNext` disponibile e la
     /// preferenza attiva): mostra il tasto liquid glass "Prossimo Episodio"
     /// in basso a destra, sopra ai controlli normali.
     private var showNextEpisodeButton: Bool {
-        guard controller.duration > 30, controller.currentTime > 0, !hasAdvancedToNextEpisode else { return false }
+        guard controller.duration > 60, controller.currentTime > 0, !hasAdvancedToNextEpisode else { return false }
         let remaining = controller.duration - controller.currentTime
-        return remaining > 0.4 && remaining <= 30
+        return remaining > 0.4 && remaining <= 60
     }
 
     private func nextEpisodeButton(_ onNext: @escaping () -> Void) -> some View {
@@ -574,7 +585,11 @@ struct PlayerView: View {
                 .modifier(NativeOrLegacyGlassNeutralCapsule())
                 .padding(.trailing, 16)
             }
-            .padding(.bottom, 96) // sopra la barra di avanzamento, mai sovrapposto
+            // Sopra tutto lo stack dei controlli inferiori (slider + riga
+            // trasporto + testo tempo): 96pt non bastava e il tasto finiva
+            // sovrapposto allo slider su alcuni dispositivi. 150pt lascia
+            // margine anche in landscape con safe area ridotta.
+            .padding(.bottom, 150)
         }
         .safeAreaPadding()
         .transition(.move(edge: .trailing).combined(with: .opacity))

@@ -313,8 +313,8 @@ struct SeriesEpisodesView: View {
                     .frame(maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .overlay(alignment: .bottom) {
-                        if isResumeEpisode(episode) {
-                            resumeProgressBar
+                        if let fraction = watchFraction(for: episode) {
+                            episodeProgressBar(fraction: fraction)
                         }
                     }
                     .clipped()
@@ -352,18 +352,17 @@ struct SeriesEpisodesView: View {
         .buttonStyle(.plain)
     }
 
-    /// Barra bianca "riprendi da qui" sovrapposta in basso alla miniatura,
-    /// mostrata solo sull'episodio effettivamente registrato in "Continua a
-    /// guardare" (vedi `resumeEpisode`). Il player attuale non riporta la
-    /// posizione esatta di riproduzione all'esterno (nessun secondo/durata
-    /// disponibile fuori da `PlayerView`), quindi qui si mostra solo
-    /// l'indicatore "ripresa disponibile" del video, non una percentuale
-    /// esatta calcolata da un dato che l'app non possiede.
-    private var resumeProgressBar: some View {
+    /// Barra bianca sovrapposta in basso alla miniatura, su OGNI episodio
+    /// già iniziato (non solo l'ultimo aperto): larghezza proporzionale al
+    /// punto esatto in cui si è interrotto, piena se l'episodio è stato
+    /// visto fino in fondo. Dato reale da `PlaybackPositionStore` (lo
+    /// stesso usato dall'alert "Riprendi la visione?" nel player), non un
+    /// placeholder fisso.
+    private func episodeProgressBar(fraction: Double) -> some View {
         GeometryReader { proxy in
             Capsule()
                 .fill(Color.white)
-                .frame(width: proxy.size.width * 0.92, height: 5)
+                .frame(width: max(proxy.size.width * fraction, 3), height: 5)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(height: 5)
@@ -371,8 +370,11 @@ struct SeriesEpisodesView: View {
         .padding(.bottom, 10)
     }
 
-    private func isResumeEpisode(_ episode: XtreamSeriesInfo.Episode) -> Bool {
-        resumeEpisode?.episode.id == episode.id
+    /// `nil` se l'episodio non è mai stato aperto. `1` se visto fino in
+    /// fondo (o fino agli ultimi ~45s). Altrimenti la frazione esatta.
+    private func watchFraction(for episode: XtreamSeriesInfo.Episode) -> Double? {
+        guard let url = episodeStreamURL(for: episode) else { return nil }
+        return PlaybackPositionStore.watchFraction(for: url)
     }
 
     @ViewBuilder

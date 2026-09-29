@@ -811,7 +811,9 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
         case .bufferFinished:
             markStarted()
         case .playedToTheEnd:
-            PlaybackPositionStore.clear(for: currentURL)
+            // Segna come completato (non cancella): la barra sulla
+            // miniatura dell'episodio deve restare piena, non sparire.
+            PlaybackPositionStore.markCompleted(for: currentURL, duration: duration)
         case .error:
             watchdogTask?.cancel()
         default:

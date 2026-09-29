@@ -267,14 +267,14 @@ struct MediaRatingsSection: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(spacing: 5) {
                                     Image(systemName: badge.iconName)
-                                        .font(.system(size: 10))
+                                        .font(.system(size: 11))
                                         .foregroundStyle(badge.iconColor)
                                     Text(badge.label)
-                                        .font(.system(size: 11, weight: .medium))
+                                        .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
                                 }
                                 Text(badge.value)
-                                    .font(.system(size: 14, weight: .bold))
+                                    .font(.system(size: 18, weight: .bold))
                                     .foregroundStyle(.primary)
                             }
                         }
@@ -304,23 +304,23 @@ struct MediaCastSection: View {
                         ForEach(cast) { member in
                             HStack(spacing: 12) {
                                 castPhoto(member)
-                                    .frame(width: 50, height: 50)
+                                    .frame(width: 68, height: 68)
                                     .clipShape(Circle())
 
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(member.name)
-                                        .font(.system(size: 13, weight: .semibold))
+                                        .font(.system(size: 15, weight: .semibold))
                                         .foregroundStyle(.primary)
                                         .lineLimit(1)
 
                                     if let role = member.role, !role.isEmpty {
                                         Text(role)
-                                            .font(.system(size: 11))
+                                            .font(.system(size: 13))
                                             .foregroundStyle(.secondary)
                                             .lineLimit(1)
                                     }
                                 }
-                                .frame(width: 100, alignment: .leading)
+                                .frame(width: 130, alignment: .leading)
                             }
                         }
                     }
