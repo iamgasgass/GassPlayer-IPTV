@@ -9,6 +9,16 @@ private struct SelectedSeriesResult: Identifiable, Hashable {
     /// serie diversa deve davvero ricreare `SeriesEpisodesView` (nuova
     /// `seriesId` → nuovo caricamento episodi), non aggiornarla sul posto.
     var id: Int { seriesId }
+
+    // `XtreamCredentials` non è `Hashable`, quindi la conformità non può
+    // essere sintetizzata: Equatable/Hashable manuali basati su `seriesId`.
+    static func == (lhs: SelectedSeriesResult, rhs: SelectedSeriesResult) -> Bool {
+        lhs.seriesId == rhs.seriesId
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(seriesId)
+    }
 }
 
 private struct SelectedPlayable: Identifiable, Hashable {
@@ -81,12 +91,12 @@ struct GlobalSearchView: View {
                         .frame(maxWidth: .infinity)
                 }
             }
-            .fullScreenCover(item: $selectedPlayable) { playable in
-                AdaptivePlayerView(url: playable.url, title: playable.title)
-            }
-            .fullScreenCover(item: $selectedSeries) { selection in
-                SeriesEpisodesView(credentials: selection.credentials, seriesId: selection.seriesId, seriesName: selection.name)
-            }
+        }
+        .fullScreenCover(item: $selectedPlayable) { playable in
+            AdaptivePlayerView(url: playable.url, title: playable.title)
+        }
+        .fullScreenCover(item: $selectedSeries) { selection in
+            SeriesEpisodesView(credentials: selection.credentials, seriesId: selection.seriesId, seriesName: selection.name)
         }
     }
 
