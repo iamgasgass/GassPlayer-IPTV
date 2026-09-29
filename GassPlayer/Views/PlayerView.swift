@@ -67,6 +67,16 @@ struct PlayerView: View {
 
     @State private var containerWidth: CGFloat = UIScreen.main.bounds.width
     @State private var isLocked = false
+    @State private var hasAdvancedToNextEpisode = false
+
+    @AppStorage("gassplayer.playback.autoplayNextEpisode")
+    private var autoplayNextEpisode = true
+
+    /// Velocità predefinita impostata in Impostazioni → Riproduzione:
+    /// prima veniva salvata ma non era mai applicata a un player appena
+    /// aperto (il selettore "1x / 1.25x / ..." partiva sempre da 1x).
+    @AppStorage("gassplayer.playback.speed")
+    private var preferredPlaybackSpeed = 1.0
     @State private var externalPlayers: [ExternalPlayer] = []
     @State private var airPlayRoutePicker: AVRoutePickerView?
 
@@ -123,8 +133,9 @@ struct PlayerView: View {
         .onAppear {
             controller.resumeIfStopped()
             scheduleAutoHide()
-            if let resumed = controller.resumedFrom, resumed > 0 {
-                showToast("Ripreso da \(formatted(resumed))", duration: 1_800_000_000)
+            if preferredPlaybackSpeed != 1.0 {
+                currentPlaybackRate = preferredPlaybackSpeed
+                controller.setPlaybackRate(Float(preferredPlaybackSpeed))
             }
         }
         .onChange(of: scenePhase) { phase in
@@ -132,10 +143,9 @@ struct PlayerView: View {
             // per liberare la connessione) riapre da dove si era.
             if phase == .active { controller.resumeIfStopped() }
         }
-        .onChange(of: controller.resumedFrom) { resumed in
-            if let resumed, resumed > 0 {
-                showToast("Ripreso da \(formatted(resumed))", duration: 1_800_000_000)
-            }
+        .onChange(of: controller.state) { newState in
+            guard newState == .playedToTheEnd else { return }
+            advanceToNextEpisodeIfNeeded()
         }
         .task(id: url) {
             externalPlayers = ExternalPlayer.available(for: url)
@@ -185,8 +195,30 @@ struct PlayerView: View {
                     .opacity(showControls ? 1 : 0)
                     .allowsHitTesting(showControls)
                     .animation(.easeInOut(duration: 0.2), value: showControls)
+
+                if !isLocked, let onNext, autoplayNextEpisode, showNextEpisodeButton {
+                    nextEpisodeButton(onNext)
+                }
             }
         }
+        .overlay {
+            if let pendingResume = controller.pendingResume {
+                ResumeConfirmationOverlay(
+                    time: pendingResume,
+                    formattedTime: formatted(pendingResume),
+                    onResume: {
+                        haptic()
+                        controller.confirmResume()
+                    },
+                    onRestart: {
+                        haptic()
+                        controller.declineResume()
+                    }
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: controller.pendingResume != nil)
         .statusBarHidden(true)
         .sheet(isPresented: $showTrackPicker) {
             TrackPickerView(
@@ -491,6 +523,56 @@ struct PlayerView: View {
             guard !Task.isCancelled else { return }
             await MainActor.run { showControls = false }
         }
+    }
+
+    // MARK: - Prossimo episodio automatico
+
+    /// Ultimi 30 secondi di un episodio (con `onNext` disponibile e la
+    /// preferenza attiva): mostra il tasto liquid glass "Prossimo Episodio"
+    /// in basso a destra, sopra ai controlli normali.
+    private var showNextEpisodeButton: Bool {
+        guard controller.duration > 30, controller.currentTime > 0, !hasAdvancedToNextEpisode else { return false }
+        let remaining = controller.duration - controller.currentTime
+        return remaining > 0.4 && remaining <= 30
+    }
+
+    private func nextEpisodeButton(_ onNext: @escaping () -> Void) -> some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                Button {
+                    haptic()
+                    hasAdvancedToNextEpisode = true
+                    controller.layer.pause()
+                    onNext()
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("Prossimo Episodio")
+                            .font(.system(size: 14, weight: .semibold))
+                        Image(systemName: "forward.end.fill")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 13)
+                }
+                .modifier(NativeOrLegacyGlassNeutralCapsule())
+                .padding(.trailing, 16)
+            }
+            .padding(.bottom, 96) // sopra la barra di avanzamento, mai sovrapposto
+        }
+        .safeAreaPadding()
+        .transition(.move(edge: .trailing).combined(with: .opacity))
+        .allowsHitTesting(true)
+    }
+
+    /// Chiamato sia dal tasto manuale sia da `.playedToTheEnd`: un solo
+    /// avanzamento per episodio, mai due (tasto + fine naturale in corsa).
+    private func advanceToNextEpisodeIfNeeded() {
+        guard autoplayNextEpisode, let onNext, !hasAdvancedToNextEpisode else { return }
+        hasAdvancedToNextEpisode = true
+        onNext()
     }
 
     private func formatted(_ seconds: Double) -> String {

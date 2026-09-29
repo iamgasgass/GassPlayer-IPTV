@@ -29,6 +29,9 @@ struct SeriesEpisodesView: View {
     @State private var showAlternateSources = false
     @State private var alternateSeriesTarget: AlternateSeriesTarget?
     @State private var downloadId: UUID?
+    /// Offset di scroll per il blur parziale della barra superiore, come
+    /// nel video di riferimento.
+    @State private var scrollOffset: CGFloat = 0
 
     @AppStorage("gassplayer.detail.trailerMuted")
     private var isTrailerMuted = true
@@ -136,10 +139,10 @@ struct SeriesEpisodesView: View {
                         title: seriesName,
                         logoURL: detail.logoURL,
                         backdropURL: detail.backdropURL,
-                        fallbackImageURLString: fallbackCoverURLString,
-                        onClose: { dismiss() }
+                        fallbackImageURLString: fallbackCoverURLString
                     )
                     .frame(width: geometry.size.width)
+                    .modifier(MediaDetailScrollTracker())
 
                     // Blocco centrale
                     VStack(spacing: 16) {
@@ -192,8 +195,17 @@ struct SeriesEpisodesView: View {
                 .frame(width: geometry.size.width)
             }
             .scrollIndicators(.hidden)
+            .coordinateSpace(name: "mediaDetailScroll")
             .ignoresSafeArea(edges: .top)
             .background(Color(uiColor: .systemBackground))
+            .onPreferenceChange(MediaDetailScrollOffsetKey.self) { scrollOffset = $0 }
+            .overlay(alignment: .top) {
+                MediaDetailScrollTopBar(
+                    title: seriesName,
+                    progress: MediaDetailScrollTopBar.progress(forOffset: scrollOffset),
+                    onClose: { dismiss() }
+                )
+            }
         }
     }
 

@@ -48,6 +48,30 @@ struct SettingsView: View {
     @AppStorage("gassplayer.playback.speed")
     private var preferredPlaybackSpeed = 1.0
 
+    // Preferenze del motore di riproduzione (le stesse lette da
+    // `KSPlaybackController.PlaybackPreferences.loadFromDefaults()` e
+    // scritte anche dal pannello avanzato dentro al player: le due
+    // interfacce condividono lo stesso storage, non sono duplicate).
+    @AppStorage("gassplayer.player.preferredForwardBufferDuration")
+    private var playerForwardBuffer = 3.0
+
+    @AppStorage("gassplayer.player.maxBufferDuration")
+    private var playerMaxBuffer = 30.0
+
+    @AppStorage("gassplayer.player.hardwareDecode")
+    private var playerHardwareDecode = true
+
+    @AppStorage("gassplayer.player.isAccurateSeek")
+    private var playerAccurateSeek = false
+
+    @AppStorage("gassplayer.player.autoDeInterlace")
+    private var playerAutoDeInterlace = false
+
+    @AppStorage("gassplayer.player.videoGravity")
+    private var playerVideoGravity = VideoGravityMode.fit.rawValue
+
+    @State private var showResetPlayerPreferencesConfirmation = false
+
     @AppStorage("gassplayer.grid.density")
     private var channelGridDensity = "comfortable"
 
@@ -374,6 +398,122 @@ struct SettingsView: View {
                 )
             }
             .buttonStyle(.plain)
+
+            SettingsDivider()
+
+            SettingsToggleRow(
+                title: "Decodifica hardware",
+                detail: "VideoToolbox quando possibile, più efficiente",
+                symbol: "cpu",
+                tint: .teal,
+                isOn: $playerHardwareDecode
+            )
+
+            SettingsDivider()
+
+            Menu {
+                Picker("Buffer di partenza", selection: $playerForwardBuffer) {
+                    Text("1 secondo").tag(1.0)
+                    Text("3 secondi").tag(3.0)
+                    Text("5 secondi").tag(5.0)
+                    Text("8 secondi").tag(8.0)
+                }
+            } label: {
+                SettingsRow(
+                    title: "Buffer di partenza",
+                    detail: "\(Int(playerForwardBuffer)) s — avvio più rapido con valori bassi",
+                    symbol: "gauge.with.dots.needle.33percent",
+                    tint: .mint,
+                    showsChevron: true
+                )
+            }
+            .buttonStyle(.plain)
+
+            SettingsDivider()
+
+            Menu {
+                Picker("Buffer massimo", selection: $playerMaxBuffer) {
+                    Text("15 secondi").tag(15.0)
+                    Text("30 secondi").tag(30.0)
+                    Text("60 secondi").tag(60.0)
+                    Text("120 secondi").tag(120.0)
+                }
+            } label: {
+                SettingsRow(
+                    title: "Buffer massimo",
+                    detail: "\(Int(playerMaxBuffer)) s — più alto regge meglio le reti instabili",
+                    symbol: "tray.full",
+                    tint: .mint,
+                    showsChevron: true
+                )
+            }
+            .buttonStyle(.plain)
+
+            SettingsDivider()
+
+            SettingsToggleRow(
+                title: "Seek accurato",
+                detail: "Salto al fotogramma esatto (più lento)",
+                symbol: "target",
+                tint: .orange,
+                isOn: $playerAccurateSeek
+            )
+
+            SettingsDivider()
+
+            SettingsToggleRow(
+                title: "Deinterlacciamento automatico",
+                detail: "Per sorgenti interlacciate (vecchie registrazioni TV)",
+                symbol: "square.stack.3d.up.slash",
+                tint: .brown,
+                isOn: $playerAutoDeInterlace
+            )
+
+            SettingsDivider()
+
+            Menu {
+                Picker("Adattamento video", selection: $playerVideoGravity) {
+                    ForEach(VideoGravityMode.allCases) { mode in
+                        Text(mode.label).tag(mode.rawValue)
+                    }
+                }
+            } label: {
+                SettingsRow(
+                    title: "Adattamento video predefinito",
+                    detail: VideoGravityMode(rawValue: playerVideoGravity)?.label ?? "Adatta",
+                    symbol: "rectangle.arrowtriangle.2.inward",
+                    tint: .indigo,
+                    showsChevron: true
+                )
+            }
+            .buttonStyle(.plain)
+
+            SettingsDivider()
+
+            Button(role: .destructive) {
+                showResetPlayerPreferencesConfirmation = true
+            } label: {
+                SettingsRow(
+                    title: "Ripristina impostazioni predefinite del player",
+                    detail: "Buffer, decodifica, seek e adattamento video ai valori di fabbrica",
+                    symbol: "arrow.counterclockwise.circle",
+                    tint: .red,
+                    showsChevron: false
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .confirmationDialog(
+            "Ripristinare le impostazioni predefinite del player?",
+            isPresented: $showResetPlayerPreferencesConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Ripristina", role: .destructive) {
+                resetPlayerEnginePreferences()
+            }
+            Button("Annulla", role: .cancel) {}
+        } message: {
+            Text("Buffer, decodifica hardware, seek accurato, deinterlacciamento e adattamento video torneranno ai valori di fabbrica. Non tocca autoplay, ripresa né velocità, già ripristinabili qui sopra.")
         }
     }
 
@@ -944,6 +1084,20 @@ struct SettingsView: View {
         preferredPlaybackSpeed = 1.0
         channelGridDensity = "comfortable"
         showChannelNumbers = false
+    }
+
+    /// Dedicato alle sole preferenze del motore video (voce a fine sezione
+    /// "Riproduzione"): non tocca autoplay/ripresa/velocità/griglia, che
+    /// hanno già il proprio ripristino in "Backup e ripristino".
+    private func resetPlayerEnginePreferences() {
+        KSPlaybackController.PlayerEngineDefaultsStore.resetToFactoryDefaults()
+        let factory = KSPlaybackController.PlaybackPreferences.factoryDefault
+        playerForwardBuffer = factory.preferredForwardBufferDuration
+        playerMaxBuffer = factory.maxBufferDuration
+        playerHardwareDecode = factory.hardwareDecode
+        playerAccurateSeek = factory.isAccurateSeek
+        playerAutoDeInterlace = factory.autoDeInterlace
+        playerVideoGravity = factory.videoGravity.rawValue
     }
 
     // MARK: - Azioni catalogo

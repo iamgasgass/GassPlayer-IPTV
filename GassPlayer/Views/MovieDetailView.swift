@@ -23,6 +23,10 @@ struct MovieDetailView: View {
     @State private var playbackTarget: MoviePlaybackTarget?
     @State private var showAlternateSources = false
     @State private var downloadId: UUID?
+    /// Offset di scroll per il blur parziale della barra superiore, come
+    /// nel video di riferimento (X sempre visibile, titolo e sfondo Liquid
+    /// Glass che sfumano dentro solo scendendo oltre l'header).
+    @State private var scrollOffset: CGFloat = 0
 
     @AppStorage("gassplayer.detail.trailerMuted")
     private var isTrailerMuted = true
@@ -51,10 +55,10 @@ struct MovieDetailView: View {
                         title: stream.name,
                         logoURL: detail.logoURL,
                         backdropURL: detail.backdropURL,
-                        fallbackImageURLString: stream.streamIcon,
-                        onClose: { dismiss() }
+                        fallbackImageURLString: stream.streamIcon
                     )
                     .frame(width: geometry.size.width)
+                    .modifier(MediaDetailScrollTracker())
 
                     // Blocco informazioni centrali
                     VStack(spacing: 16) {
@@ -102,8 +106,17 @@ struct MovieDetailView: View {
                 .frame(width: geometry.size.width)
             }
             .scrollIndicators(.hidden)
+            .coordinateSpace(name: "mediaDetailScroll")
             .ignoresSafeArea(edges: .top)
             .background(Color(uiColor: .systemBackground))
+            .onPreferenceChange(MediaDetailScrollOffsetKey.self) { scrollOffset = $0 }
+            .overlay(alignment: .top) {
+                MediaDetailScrollTopBar(
+                    title: stream.name,
+                    progress: MediaDetailScrollTopBar.progress(forOffset: scrollOffset),
+                    onClose: { dismiss() }
+                )
+            }
         }
         .task(id: stream.streamId) {
             await loadDetail()

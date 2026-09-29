@@ -19,6 +19,19 @@ private struct SelectedPlayable: Identifiable, Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
+private extension XtreamStreamKind {
+    /// Colore distintivo per riga nei risultati di ricerca (icona +
+    /// alone dietro l'icona). Non nel modello condiviso `XtreamModels.swift`
+    /// per non introdurre un import SwiftUI lì dove non serve altrove.
+    var accentColor: Color {
+        switch self {
+        case .live: return .red
+        case .movie: return .indigo
+        case .series: return .teal
+        }
+    }
+}
+
 struct GlobalSearchView: View {
     @EnvironmentObject var sourceManager: SourceManager
     @StateObject private var history = SearchHistoryStore()
@@ -49,10 +62,21 @@ struct GlobalSearchView: View {
                     searchResultsView
                 }
             }
+            .background(background)
             .navigationTitle("Ricerca globale")
             .searchable(text: $query, prompt: "Cerca in tutte le playlist")
             .onChange(of: query) { _, newValue in scheduleSearch(newValue) }
-            .overlay { if isSearching { ProgressView() } }
+            // Piccolo indicatore discreto in alto durante la ricerca, non
+            // più uno spinner centrale che blocca la vista dei risultati
+            // già presenti (percepito come più fluido, meno "a scatti").
+            .safeAreaInset(edge: .top) {
+                if isSearching {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity)
+                }
+            }
             .fullScreenCover(item: $selectedPlayable) { playable in
                 AdaptivePlayerView(url: playable.url, title: playable.title)
             }
@@ -62,6 +86,20 @@ struct GlobalSearchView: View {
         }
     }
 
+    /// Stesso sfondo sfumato usato in `SettingsView`, per coerenza visiva.
+    private var background: some View {
+        LinearGradient(
+            colors: [
+                Color.accentColor.opacity(0.08),
+                Color(uiColor: .systemBackground),
+                Color.purple.opacity(0.05)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .ignoresSafeArea()
+    }
+
     @ViewBuilder
     private var searchResultsView: some View {
         VStack(spacing: 0) {
@@ -69,29 +107,59 @@ struct GlobalSearchView: View {
             if filteredResults.isEmpty && !isSearching {
                 ContentUnavailableView.search(text: query)
             } else {
-                List(filteredResults) { result in
-                    Button {
-                        open(result)
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(result.title).font(.headline)
-                                Text(result.sourceName).font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: result.kind.systemImage)
-                                .foregroundStyle(.secondary)
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
+                // `LazyVStack` invece di `List`: righe caricate solo quando
+                // visibili (scorrimento più fluido su cataloghi con
+                // migliaia di risultati aggregati da più playlist) e stile
+                // Liquid Glass coerente col resto dell'app.
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(filteredResults) { result in
+                            searchResultRow(result)
                         }
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 24)
                 }
-                .listStyle(.plain)
+                .scrollDismissesKeyboard(.immediately)
             }
         }
+    }
+
+    private func searchResultRow(_ result: SearchResult) -> some View {
+        Button {
+            open(result)
+        } label: {
+            GlassCard(cornerRadius: 16, padding: 14) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle().fill(result.kind.accentColor.opacity(0.18))
+                        Image(systemName: result.kind.systemImage)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(result.kind.accentColor)
+                    }
+                    .frame(width: 38, height: 38)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(result.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(result.sourceName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private var filterChips: some View {
@@ -112,17 +180,27 @@ struct GlobalSearchView: View {
         }
     }
 
+    @ViewBuilder
     private func filterChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.caption)
-                .lineLimit(1)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+        if isSelected {
+            Button(action: action) {
+                chipLabel(title, isSelected: true)
+            }
+            .modifier(NativeOrLegacyGlassCapsule())
+        } else {
+            Button(action: action) {
+                chipLabel(title, isSelected: false)
+            }
+            .modifier(NativeOrLegacyGlassNeutralCapsule())
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .background(isSelected ? Color.accentColor : Color.secondary.opacity(0.15), in: Capsule())
+    }
+
+    private func chipLabel(_ title: String, isSelected: Bool) -> some View {
+        Text(title)
+            .font(.caption.weight(isSelected ? .semibold : .regular))
+            .lineLimit(1)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
     }
 
     @ViewBuilder
@@ -147,6 +225,7 @@ struct GlobalSearchView: View {
                                 Label("Rimuovi", systemImage: "trash")
                             }
                         }
+                        .listRowBackground(Color.clear)
                     }
                 } header: {
                     HStack {
@@ -157,6 +236,8 @@ struct GlobalSearchView: View {
                     }
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
     }
 
