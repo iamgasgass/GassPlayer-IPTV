@@ -418,6 +418,18 @@ struct ChannelGridView: View {
                     categoryChips
                 }
 
+                // "Continua a guardare" come in `HomeView` (con l'immagine
+                // della scheda dettaglio), ma solo con i contenuti di
+                // questa sezione: film in VOD, serie in Serie TV.
+                if kind != .live && !isInitialLoadPending {
+                    ContinueWatchingSection(
+                        kindFilter: kind.rawValue,
+                        horizontalInset: gridHorizontalPadding,
+                        topPadding: 8,
+                        bottomPadding: 16
+                    )
+                }
+
                 if isInitialLoadPending {
                     loadingView
                 } else if case .failed(let message) = xtreamCatalog.state, itemCount == 0 {
@@ -1280,7 +1292,8 @@ private struct ChannelTile: View, Equatable {
                     isSeries: false,
                     fallbackIconURL: stream.streamIcon,
                     width: artworkSize,
-                    height: moviePosterHeight
+                    height: moviePosterHeight,
+                    badgeStyle: .topTrailing
                 )
             } else {
                 AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
@@ -1309,7 +1322,14 @@ private struct ChannelTile: View, Equatable {
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
 
+            // Nei film il voto occupa l'angolo in alto a destra (come nel
+            // riferimento): la stella dei preferiti passa in alto a sinistra.
             favoriteButton
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: .infinity,
+                    alignment: kind == .movie ? .topLeading : .topTrailing
+                )
 
             if let channelNumber {
                 channelNumberBadge(channelNumber)
@@ -1394,7 +1414,8 @@ private struct SeriesTile: View, Equatable {
                     isSeries: true,
                     fallbackIconURL: series.cover,
                     width: artworkWidth,
-                    height: artworkHeight
+                    height: artworkHeight,
+                    badgeStyle: .topTrailing
                 )
                 // Blocca eventuali animazioni implicite generate
                 // internamente da `TMDBEnrichedPoster` (es. transizione

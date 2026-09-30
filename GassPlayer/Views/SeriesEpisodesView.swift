@@ -48,6 +48,27 @@ struct SeriesEpisodesView: View {
         contentManagement.isFavorite(id: favoriteID)
     }
 
+    /// Stessa immagine dell'hero della scheda (backdrop TMDB, poi quello
+    /// Xtream, poi la copertina): salvata in "Continua a guardare" così
+    /// `HomeView` e le altre schede mostrano la stessa immagine.
+    private var heroImageURLString: String? {
+        detail.backdropURL?.absoluteString
+            ?? seriesInfo?.backdropURL?.absoluteString
+            ?? fallbackCoverURLString
+    }
+
+    /// Prefisso degli id di "Continua a guardare" per gli episodi di
+    /// questa serie (stesso formato di `recordRecentlyWatched`).
+    private var recentlyWatchedIDPrefix: String {
+        [
+            credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            credentials.username,
+            "series",
+            String(seriesId),
+            ""
+        ].joined(separator: "|")
+    }
+
     private var downloadProgress: Double? {
         guard let downloadId else { return nil }
         return downloadManager.activeDownloads[downloadId]
@@ -193,8 +214,9 @@ struct SeriesEpisodesView: View {
                     // Sezione Episodi e Stagioni
                     episodesSection(info, containerWidth: geometry.size.width)
                         .padding(.top, 20)
-                        .padding(.bottom, 40)
                         .frame(width: geometry.size.width, alignment: .leading)
+
+                    Color.clear.frame(height: 40)
                 }
                 .frame(width: geometry.size.width)
             }
@@ -563,7 +585,8 @@ struct SeriesEpisodesView: View {
             ].joined(separator: "|"),
             title: "\(seriesName) · \(episode.title)",
             kind: "series",
-            streamURL: url
+            streamURL: url,
+            imageURLString: heroImageURLString
         )
     }
 
@@ -608,5 +631,12 @@ struct SeriesEpisodesView: View {
 
         detail = await MediaDetailLoader.load(seed)
         isLoadingDetail = false
+
+        // Allinea l'immagine di "Continua a guardare" (anche per gli
+        // episodi guardati prima che il campo esistesse) a quella dell'hero.
+        if let image = heroImageURLString {
+            let prefix = recentlyWatchedIDPrefix
+            recentlyWatched.updateImage(image) { $0.id.hasPrefix(prefix) }
+        }
     }
 }
