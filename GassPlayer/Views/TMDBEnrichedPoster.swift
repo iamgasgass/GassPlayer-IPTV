@@ -4,12 +4,6 @@ import SwiftUI
 /// (Xtream spesso fornisce solo un'icona generica, non un poster proprio).
 /// Fallback silenzioso: se manca l'API key o TMDB non trova corrispondenze,
 /// non mostra nulla di rotto, semplicemente l'icona placeholder originale.
-///
-/// Senza sfarfallio: il risultato TMDB e l'immagine vengono letti in modo
-/// sincrono dalle cache alla creazione della cella (vedi `TMDBLookupCache` e
-/// `ImageLoader`), quindi una cella ricreata dalla griglia durante lo scroll
-/// mostra subito il poster definitivo invece di passare dall'icona del
-/// provider al poster TMDB ad ogni ricomparsa.
 struct TMDBEnrichedPoster: View {
     /// Posizione/aspetto del voto. `.classic` è quello storico delle griglie
     /// (basso a destra, giallo); `.topTrailing` è quello delle righe di
@@ -30,27 +24,6 @@ struct TMDBEnrichedPoster: View {
     @State private var result: TMDBSearchResult?
     @State private var didAttemptLookup = false
 
-    init(
-        title: String,
-        isSeries: Bool,
-        fallbackIconURL: String?,
-        width: CGFloat,
-        height: CGFloat,
-        badgeStyle: BadgeStyle = .classic
-    ) {
-        self.title = title
-        self.isSeries = isSeries
-        self.fallbackIconURL = fallbackIconURL
-        self.width = width
-        self.height = height
-        self.badgeStyle = badgeStyle
-
-        // Stato iniziale già definitivo se il titolo è stato risolto in precedenza.
-        if TMDBService.hasAPIKey {
-            _result = State(initialValue: TMDBService.cachedResult(title: title, isSeries: isSeries))
-        }
-    }
-
     private var service: TMDBService { TMDBService.shared }
 
     var body: some View {
@@ -63,25 +36,10 @@ struct TMDBEnrichedPoster: View {
                 ratingBadge(rating)
             }
         }
-        .task(id: title) {
-            guard TMDBService.hasAPIKey else { return }
-
-            // Già risolto (cache): niente rete e niente cambio di stato.
-            if let cached = TMDBService.cachedResult(title: title, isSeries: isSeries) {
-                if result?.id != cached.id { result = cached }
-                return
-            }
-            if TMDBService.isKnownMiss(title: title, isSeries: isSeries) { return }
-
-            // Breve attesa: se la cella esce subito dallo schermo (scroll
-            // veloce) il task viene cancellato e la richiesta non parte.
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            if Task.isCancelled { return }
-
+        .task {
+            guard !didAttemptLookup, TMDBService.hasAPIKey else { return }
             didAttemptLookup = true
-            if let found = try? await service.lookup(title: title, isSeries: isSeries), !Task.isCancelled {
-                result = found
-            }
+            result = try? await service.lookup(title: title, isSeries: isSeries)
         }
     }
 
@@ -107,15 +65,15 @@ struct TMDBEnrichedPoster: View {
         }
     }
 
-    private var frameSize: CGSize { CGSize(width: width, height: height) }
-
-    /// Poster TMDB se disponibile; finché non è pronto (o se manca) resta
-    /// l'immagine del provider, così non compare mai una cella vuota.
     @ViewBuilder
     private var posterImage: some View {
         if let posterURL = result?.posterURL {
-            CachedAsyncImage(url: posterURL, size: frameSize, contentMode: .fill) {
-                placeholderImage
+            AsyncImage(url: posterURL) { phase in
+                if case .success(let image) = phase {
+                    image.resizable().scaledToFill()
+                } else {
+                    placeholderImage
+                }
             }
         } else {
             placeholderImage
@@ -124,13 +82,13 @@ struct TMDBEnrichedPoster: View {
 
     @ViewBuilder
     private var placeholderImage: some View {
-        CachedAsyncImage(
-            url: ImageURLNormalizer.url(from: fallbackIconURL),
-            size: frameSize,
-            contentMode: .fit
-        ) {
-            RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial)
-                .overlay(Image(systemName: isSeries ? "rectangle.stack.fill" : "film").foregroundStyle(.secondary))
+        AsyncImage(url: URL(string: fallbackIconURL ?? "")) { phase in
+            switch phase {
+            case .success(let image): image.resizable().scaledToFit()
+            default:
+                RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial)
+                    .overlay(Image(systemName: isSeries ? "rectangle.stack.fill" : "film").foregroundStyle(.secondary))
+            }
         }
     }
 }

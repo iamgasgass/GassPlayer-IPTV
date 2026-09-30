@@ -134,9 +134,6 @@ extension XtreamStream: Decodable {
         case categoryId = "category_id"
         case streamIcon = "stream_icon"
         case containerExtension = "container_extension"
-        // Nomi alternativi usati da alcuni pannelli per l'icona/poster:
-        // senza questi la voce restava senza immagine pur avendola.
-        case cover, movieImage = "movie_image", logo, icon, poster
     }
 
     init(from decoder: Decoder) throws {
@@ -157,12 +154,9 @@ extension XtreamStream: Decodable {
             .nonEmpty
             ?? "Senza nome"
 
-        // Primo valore utilizzabile tra `stream_icon` e le chiavi alternative,
-        // già normalizzato (spazi, "null", schema mancante, backslash).
-        streamIcon = [CodingKeys.streamIcon, .cover, .movieImage, .logo, .icon, .poster]
-            .lazy
-            .compactMap { ImageURLNormalizer.normalizedString(container.decodeFlexibleString(forKey: $0)) }
-            .first
+        streamIcon = container.decodeFlexibleString(forKey: .streamIcon)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmpty
 
         categoryId = container.decodeFlexibleString(forKey: .categoryId)?
             .trimmingCharacters(in: .whitespacesAndNewlines)

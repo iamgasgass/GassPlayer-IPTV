@@ -22,11 +22,6 @@ struct ContinueWatchingSection: View {
 
     private static let cardWidth: CGFloat = 168
     private static let cardImageHeight: CGFloat = 94
-    /// Dimensione in pixel con cui l'immagine della card viene decodificata.
-    /// Costante (non dipende dalla scala dello schermo) così
-    /// `RecentlyWatchedStore` può scaldare la cache con la stessa chiave e la
-    /// card compare già completa al primo frame.
-    static let imagePixels = 512
 
     private var items: [RecentlyWatchedItem] {
         guard let kindFilter else { return recentlyWatched.items }
@@ -111,18 +106,20 @@ struct ContinueWatchingSection: View {
 
     /// Immagine della scheda dettaglio, ritagliata 168×94 (angoli 11) come
     /// il vecchio riquadro a icona, che resta come segnaposto.
-    ///
-    /// `CachedAsyncImage` legge l'immagine già pronta dalla cache (scaldata
-    /// da `RecentlyWatchedStore` appena l'elemento viene registrato): la card
-    /// mostra subito il poster, senza attendere un nuovo avvio dell'app.
     private func artwork(_ item: RecentlyWatchedItem) -> some View {
-        CachedAsyncImage(
-            url: ImageURLNormalizer.url(from: item.imageURLString),
-            size: CGSize(width: Self.cardWidth, height: Self.cardImageHeight),
-            contentMode: .fill,
-            maxPixel: Self.imagePixels
-        ) {
+        ZStack {
             placeholder(item)
+
+            if let urlString = item.imageURLString, let url = URL(string: urlString) {
+                AsyncImage(url: url) { phase in
+                    if case .success(let image) = phase {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                            .transaction { $0.animation = nil }
+                    }
+                }
+            }
         }
         .frame(width: Self.cardWidth, height: Self.cardImageHeight)
         .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))

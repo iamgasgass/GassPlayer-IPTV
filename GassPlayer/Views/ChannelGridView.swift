@@ -213,7 +213,6 @@ struct ChannelGridView: View {
     @EnvironmentObject private var contentManagement: ContentManagementService
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
     @EnvironmentObject private var recentlyWatched: RecentlyWatchedStore
-    @Environment(\.displayScale) private var displayScale
 
     @AppStorage("gassplayer.grid.density")
     private var channelGridDensity = "comfortable"
@@ -870,7 +869,6 @@ struct ChannelGridView: View {
                     .id(item.seriesId)
                     .onAppear {
                         prefetchSeriesInfoIfNeeded(item)
-                        prefetchSeriesArtworkAhead(of: item)
                     }
                 }
             }
@@ -950,45 +948,6 @@ struct ChannelGridView: View {
                     kind: kind.rawValue
                 )
             }
-        )
-        .onAppear {
-            prefetchStreamArtworkAhead(of: stream)
-        }
-    }
-
-    // MARK: - Prefetch locandine/icone
-
-    /// Quante celle oltre quella che appare vengono scaldate in anticipo.
-    private static let artworkPrefetchAhead = 30
-
-    private func prefetchSeriesArtworkAhead(of item: XtreamSeriesItem) {
-        let series = displayedSeries
-        guard let index = series.firstIndex(where: { $0.seriesId == item.seriesId }),
-              index % 6 == 0 else { return }
-
-        let upcoming = series.dropFirst(index + 1).prefix(Self.artworkPrefetchAhead)
-        ArtworkPrefetcher.prefetch(
-            upcoming.map { ArtworkPrefetcher.Entry(title: $0.name, iconURLString: $0.cover) },
-            isSeries: true,
-            points: CGSize(width: artworkSize, height: seriesPosterHeight),
-            scale: displayScale,
-            resolveTMDB: true
-        )
-    }
-
-    private func prefetchStreamArtworkAhead(of stream: XtreamStream) {
-        let streams = displayedStreams
-        guard let index = streams.firstIndex(where: { $0.streamId == stream.streamId }),
-              index % 6 == 0 else { return }
-
-        let upcoming = streams.dropFirst(index + 1).prefix(Self.artworkPrefetchAhead)
-        let isMovie = kind == .movie
-        ArtworkPrefetcher.prefetch(
-            upcoming.map { ArtworkPrefetcher.Entry(title: $0.name, iconURLString: $0.streamIcon) },
-            isSeries: false,
-            points: CGSize(width: artworkSize, height: isMovie ? moviePosterHeight : artworkSize),
-            scale: displayScale,
-            resolveTMDB: isMovie
         )
     }
 
@@ -1337,21 +1296,27 @@ private struct ChannelTile: View, Equatable {
                     badgeStyle: .topTrailing
                 )
             } else {
-                // `CachedAsyncImage`: cache memoria+disco, URL normalizzati e
-                // nuovi tentativi automatici. Una cella ricreata durante lo
-                // scroll mostra subito l'icona già in cache (nessun
-                // sfarfallio) e le icone non restano più vuote.
-                CachedAsyncImage(
-                    url: ImageURLNormalizer.url(from: stream.streamIcon),
-                    size: CGSize(width: artworkSize, height: artworkSize),
-                    contentMode: .fit
-                ) {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .overlay {
-                            Image(systemName: "tv")
-                                .foregroundStyle(.secondary)
-                        }
+                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            // Disabilita la transizione di fase implicita
+                            // di AsyncImage: senza questo, ogni volta che
+                            // la cella viene riciclata durante lo scroll
+                            // l'immagine "fade-in" viene rianimata da zero,
+                            // producendo lo sfarfallio/glitch percepito.
+                            .transaction { $0.animation = nil }
+
+                    default:
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                            .overlay {
+                                Image(systemName: "tv")
+                                    .foregroundStyle(.secondary)
+                            }
+                    }
                 }
                 .frame(width: artworkSize, height: artworkSize)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))

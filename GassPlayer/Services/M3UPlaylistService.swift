@@ -17,25 +17,19 @@ actor M3UPlaylistService {
         var pendingTvgId: String?
         var pendingTvgType: String?
 
-        // BOM iniziale: senza toglierlo la prima riga "#EXTM3U" non è riconosciuta.
-        let text = content.hasPrefix("\u{FEFF}") ? String(content.dropFirst()) : content
-
-        text.enumerateLines { rawLine, _ in
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            if line.isEmpty { return }
-
+        for rawLine in content.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("#EXTINF") {
-                pendingTitle = Self.extractTitle(from: line)
-                // Il logo può avere nomi diversi a seconda del generatore di playlist.
-                pendingLogo = Self.firstAttribute(["tvg-logo", "tvg_logo", "logo", "tvg-icon"], in: line)
-                pendingGroup = Self.extractAttribute("group-title", from: line)
-                pendingTvgId = Self.extractAttribute("tvg-id", from: line)
-                pendingTvgType = Self.extractAttribute("tvg-type", from: line)
-            } else if !line.hasPrefix("#"), let url = Self.streamURL(from: line) {
-                let title = pendingTitle?.nonEmptyTrimmed ?? url.lastPathComponent
+                pendingTitle = line.components(separatedBy: ",").last
+                pendingLogo = extractAttribute("tvg-logo", from: line)
+                pendingGroup = extractAttribute("group-title", from: line)
+                pendingTvgId = extractAttribute("tvg-id", from: line)
+                pendingTvgType = extractAttribute("tvg-type", from: line)
+            } else if !line.isEmpty, !line.hasPrefix("#"), let url = URL(string: line) {
+                let title = pendingTitle ?? url.lastPathComponent
                 channels.append(M3UChannel(
                     title: title,
-                    logoURL: ImageURLNormalizer.normalizedString(pendingLogo),
+                    logoURL: pendingLogo,
                     groupTitle: pendingGroup,
                     tvgId: pendingTvgId,
                     streamURL: url,
@@ -45,40 +39,6 @@ actor M3UPlaylistService {
             }
         }
         return channels
-    }
-
-    /// URL dello stream: alcune playlist contengono spazi o caratteri non
-    /// ASCII non codificati, per cui `URL(string:)` restituiva `nil` e il
-    /// canale spariva dall'elenco.
-    private static func streamURL(from line: String) -> URL? {
-        if let url = URL(string: line), url.scheme != nil { return url }
-        if let encoded = line.addingPercentEncoding(
-            withAllowedCharacters: CharacterSet.urlQueryAllowed.union(.urlPathAllowed).union(CharacterSet(charactersIn: "%#"))
-        ), let url = URL(string: encoded), url.scheme != nil {
-            return url
-        }
-        return nil
-    }
-
-    /// Titolo = testo dopo l'ULTIMA virgola fuori dalle virgolette (le
-    /// virgole dentro `tvg-name="..."` o nel titolo stesso non lo troncano).
-    private static func extractTitle(from line: String) -> String? {
-        var insideQuotes = false
-        var lastComma: String.Index?
-        for index in line.indices {
-            let character = line[index]
-            if character == "\"" { insideQuotes.toggle() }
-            else if character == "," && !insideQuotes { lastComma = index }
-        }
-        guard let lastComma else { return nil }
-        return String(line[line.index(after: lastComma)...])
-    }
-
-    private static func firstAttribute(_ keys: [String], in line: String) -> String? {
-        for key in keys {
-            if let value = extractAttribute(key, from: line), !value.isEmpty { return value }
-        }
-        return nil
     }
 
     /// Le playlist M3U non hanno un campo "tipo contenuto" standard come
@@ -113,21 +73,10 @@ actor M3UPlaylistService {
         return .live
     }
 
-    private static func extractAttribute(_ key: String, from line: String) -> String? {
-        for quote in ["\"", "'"] {
-            guard let range = line.range(of: "\(key)=\(quote)", options: .caseInsensitive) else { continue }
-            let after = line[range.upperBound...]
-            guard let end = after.firstIndex(of: Character(quote)) else { continue }
-            let value = String(after[..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
-            return value.isEmpty ? nil : value
-        }
-        return nil
-    }
-}
-
-private extension String {
-    var nonEmptyTrimmed: String? {
-        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+    private func extractAttribute(_ key: String, from line: String) -> String? {
+        guard let range = line.range(of: "\(key)=\"") else { return nil }
+        let after = line[range.upperBound...]
+        guard let end = after.firstIndex(of: "\"") else { return nil }
+        return String(after[..<end])
     }
 }

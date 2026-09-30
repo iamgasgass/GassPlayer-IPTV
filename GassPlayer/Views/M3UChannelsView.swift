@@ -85,9 +85,12 @@ private struct GroupIconView: View {
 
     var body: some View {
         Group {
-            if let url = ImageURLNormalizer.url(from: logoURL) {
-                CachedAsyncImage(url: url, size: CGSize(width: 24, height: 24), contentMode: .fit) {
-                    Image(systemName: fallbackSystemImage).foregroundStyle(.secondary)
+            if let logoURL, let url = URL(string: logoURL) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image): image.resizable().scaledToFit()
+                    default: Image(systemName: fallbackSystemImage).foregroundStyle(.secondary)
+                    }
                 }
             } else {
                 Image(systemName: fallbackSystemImage).foregroundStyle(.secondary)
@@ -113,12 +116,13 @@ struct M3UGroupChannelsView: View {
                     selectedChannel = channel
                 } label: {
                     HStack(spacing: 12) {
-                        CachedAsyncImage(
-                            url: ImageURLNormalizer.url(from: channel.logoURL),
-                            size: CGSize(width: 36, height: 36),
-                            contentMode: .fit
-                        ) {
-                            Image(systemName: channel.kind.systemImage).foregroundStyle(.secondary)
+                        AsyncImage(url: URL(string: channel.logoURL ?? "")) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image.resizable().scaledToFit()
+                            default:
+                                Image(systemName: channel.kind.systemImage).foregroundStyle(.secondary)
+                            }
                         }
                         .frame(width: 36, height: 36)
                         .clipShape(RoundedRectangle(cornerRadius: 8))

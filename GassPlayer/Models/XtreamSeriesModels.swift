@@ -12,9 +12,6 @@ extension XtreamSeriesItem: Decodable {
     enum CodingKeys: String, CodingKey {
         case seriesId = "series_id", name, cover
         case categoryId = "category_id"
-        // Chiavi alternative per la copertina usate da alcuni pannelli.
-        case streamIcon = "stream_icon", movieImage = "movie_image", poster
-        case backdropPath = "backdrop_path"
     }
 
     /// FIX 2026-09-20: `name` e `cover` usavano `try? container.decode(String.self, forKey:)`,
@@ -36,15 +33,9 @@ extension XtreamSeriesItem: Decodable {
             .nonEmpty
             ?? "Serie senza nome"
 
-        // `cover` o, in mancanza, le chiavi alternative (anche il primo
-        // elemento di `backdrop_path`, che molti pannelli inviano come array).
-        var candidates = [CodingKeys.cover, .streamIcon, .movieImage, .poster]
-            .map { container.decodeFlexibleString(forKey: $0) }
-        candidates.append((try? container.decode([String].self, forKey: .backdropPath))?.first)
-        cover = candidates
-            .lazy
-            .compactMap { ImageURLNormalizer.normalizedString($0) }
-            .first
+        cover = container.decodeFlexibleString(forKey: .cover)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmpty
 
         categoryId = container.decodeFlexibleString(forKey: .categoryId)
     }
