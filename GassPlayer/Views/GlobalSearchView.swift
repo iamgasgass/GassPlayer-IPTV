@@ -1,0 +1,378 @@
+import SwiftUI
+
+private struct SelectedSeriesResult: Identifiable, Hashable {
+    let credentials: XtreamCredentials
+    let seriesId: Int
+    let name: String
+    let coverURLString: String?
+
+    /// A differenza di `SelectedPlayable`, qui l'id NON è fisso: aprire una
+    /// serie diversa deve davvero ricreare `SeriesEpisodesView` (nuova
+    /// `seriesId` → nuovo caricamento episodi), non aggiornarla sul posto.
+    var id: Int { seriesId }
+
+    // `XtreamCredentials` non è `Hashable`, quindi la conformità non può
+    // essere sintetizzata: Equatable/Hashable manuali basati su `seriesId`.
+    static func == (lhs: SelectedSeriesResult, rhs: SelectedSeriesResult) -> Bool {
+        lhs.seriesId == rhs.seriesId
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(seriesId)
+    }
+}
+
+/// Film VOD scelto dai risultati: apre `MovieDetailView` (scheda dettaglio)
+/// invece del player. Stessa logica di `SelectedSeriesResult`: l'id segue
+/// il film, così aprirne uno diverso ricrea davvero la scheda.
+private struct SelectedMovieResult: Identifiable, Hashable {
+    let credentials: XtreamCredentials
+    let stream: XtreamStream
+
+    var id: Int { stream.streamId }
+
+    static func == (lhs: SelectedMovieResult, rhs: SelectedMovieResult) -> Bool {
+        lhs.stream.streamId == rhs.stream.streamId
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(stream.streamId)
+    }
+}
+
+private struct SelectedPlayable: Identifiable, Hashable {
+    /// FISSO (non `UUID()` generato ad ogni tap): finché l'id non cambia,
+    /// `.fullScreenCover(item:)` non chiude e riapre la schermata, la
+    /// aggiorna sul posto passando il nuovo `url`/`title` alla STESSA
+    /// istanza di `PlayerView` — niente più player aperti uno sopra
+    /// l'altro toccando più risultati in sequenza (`GlobalSearchView`
+    /// aggiorna già `PlayerView` a runtime tramite `onChange(of: url)`).
+    let id = "search-player"
+    var url: URL
+    var title: String
+}
+
+private extension XtreamStreamKind {
+    /// Colore distintivo per riga nei risultati di ricerca (icona +
+    /// alone dietro l'icona). Non nel modello condiviso `XtreamModels.swift`
+    /// per non introdurre un import SwiftUI lì dove non serve altrove.
+    var accentColor: Color {
+        switch self {
+        case .live: return .red
+        case .movie: return .indigo
+        case .series: return .teal
+        }
+    }
+}
+
+struct GlobalSearchView: View {
+    @EnvironmentObject var sourceManager: SourceManager
+    @StateObject private var history = SearchHistoryStore()
+
+    @State private var query = ""
+    @State private var results: [SearchResult] = []
+    @State private var isSearching = false
+    @State private var searchTask: Task<Void, Never>?
+    @State private var selectedPlayable: SelectedPlayable?
+    @State private var selectedSeries: SelectedSeriesResult?
+    @State private var selectedMovie: SelectedMovieResult?
+    @State private var selectedKindFilter: XtreamStreamKind?
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var filteredResults: [SearchResult] {
+        guard let selectedKindFilter else { return results }
+        return results.filter { $0.kind == selectedKindFilter }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if trimmedQuery.count < 2 {
+                    recentSearchesView
+                } else {
+                    searchResultsView
+                }
+            }
+            .background(background)
+            .navigationTitle("Ricerca globale")
+            .searchable(text: $query, prompt: "Cerca in tutte le playlist")
+            .onChange(of: query) { _, newValue in scheduleSearch(newValue) }
+            // Piccolo indicatore discreto in alto durante la ricerca, non
+            // più uno spinner centrale che blocca la vista dei risultati
+            // già presenti (percepito come più fluido, meno "a scatti").
+            .safeAreaInset(edge: .top) {
+                if isSearching {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .fullScreenCover(item: $selectedPlayable) { playable in
+            AdaptivePlayerView(url: playable.url, title: playable.title)
+        }
+        .fullScreenCover(item: $selectedSeries) { selection in
+            SeriesEpisodesView(
+                credentials: selection.credentials,
+                seriesId: selection.seriesId,
+                seriesName: selection.name,
+                fallbackCoverURLString: selection.coverURLString
+            )
+        }
+        .fullScreenCover(item: $selectedMovie) { selection in
+            MovieDetailView(credentials: selection.credentials, stream: selection.stream)
+        }
+    }
+
+    /// Stesso sfondo sfumato usato in `SettingsView`, per coerenza visiva.
+    private var background: some View {
+        LinearGradient(
+            colors: [
+                Color.accentColor.opacity(0.08),
+                Color(uiColor: .systemBackground),
+                Color.purple.opacity(0.05)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .ignoresSafeArea()
+    }
+
+    @ViewBuilder
+    private var searchResultsView: some View {
+        VStack(spacing: 0) {
+            filterChips
+            if filteredResults.isEmpty && !isSearching {
+                ContentUnavailableView.search(text: query)
+            } else {
+                // `LazyVStack` invece di `List`: righe caricate solo quando
+                // visibili (scorrimento più fluido su cataloghi con
+                // migliaia di risultati aggregati da più playlist) e stile
+                // Liquid Glass coerente col resto dell'app.
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(filteredResults) { result in
+                            searchResultRow(result)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 24)
+                }
+                .scrollDismissesKeyboard(.immediately)
+            }
+        }
+    }
+
+    private func searchResultRow(_ result: SearchResult) -> some View {
+        Button {
+            open(result)
+        } label: {
+            GlassCard(cornerRadius: 16, padding: 14) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle().fill(result.kind.accentColor.opacity(0.18))
+                        Image(systemName: result.kind.systemImage)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(result.kind.accentColor)
+                    }
+                    .frame(width: 38, height: 38)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(result.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(result.sourceName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var filterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                filterChip(title: "Tutti (\(results.count))", isSelected: selectedKindFilter == nil) {
+                    selectedKindFilter = nil
+                }
+                ForEach(XtreamStreamKind.allCases) { kind in
+                    let count = results.filter { $0.kind == kind }.count
+                    filterChip(title: "\(kind.displayName) (\(count))", isSelected: selectedKindFilter == kind) {
+                        selectedKindFilter = kind
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+        }
+    }
+
+    @ViewBuilder
+    private func filterChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        if isSelected {
+            Button(action: action) {
+                chipLabel(title, isSelected: true)
+            }
+            .modifier(NativeOrLegacyGlassCapsule())
+        } else {
+            Button(action: action) {
+                chipLabel(title, isSelected: false)
+            }
+            .modifier(NativeOrLegacyGlassNeutralCapsule())
+        }
+    }
+
+    private func chipLabel(_ title: String, isSelected: Bool) -> some View {
+        Text(title)
+            .font(.caption.weight(isSelected ? .semibold : .regular))
+            .lineLimit(1)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+    }
+
+    @ViewBuilder
+    private var recentSearchesView: some View {
+        if history.items.isEmpty {
+            ContentUnavailableView(
+                "Cerca nel catalogo",
+                systemImage: "magnifyingglass",
+                description: Text("Inserisci almeno due caratteri per cercare canali, film e serie in tutte le tue sorgenti.")
+            )
+        } else {
+            List {
+                Section {
+                    ForEach(history.items, id: \.self) { item in
+                        Button {
+                            query = item
+                        } label: {
+                            Label(item, systemImage: "clock.arrow.circlepath")
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) { history.remove(item) } label: {
+                                Label("Rimuovi", systemImage: "trash")
+                            }
+                        }
+                        .listRowBackground(Color.clear)
+                    }
+                } header: {
+                    HStack {
+                        Text("Ricerche recenti")
+                        Spacer()
+                        Button("Cancella") { history.clear() }
+                            .font(.caption)
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+        }
+    }
+
+    private func open(_ result: SearchResult) {
+        switch result.kind {
+        case .live:
+            let service = XtreamAPIService(credentials: result.credentials)
+            guard let url = service.streamURL(for: result.streamId, kind: result.kind) else {
+                DebugLogger.logAsync(.error, "GlobalSearchView: impossibile costruire l'URL per \(result.title)")
+                return
+            }
+            if selectedPlayable != nil {
+                // Player già aperto: stessa identità ("search-player"), quindi
+                // questo NON chiude/riapre la schermata — `PlayerView` riceve
+                // il nuovo url/title e si aggiorna da sola (vedi `onChange(of:
+                // url)` in PlayerView.swift). Mai due player uno sopra l'altro.
+                selectedPlayable?.url = url
+                selectedPlayable?.title = result.title
+            } else if selectedSeries != nil || selectedMovie != nil {
+                // Era aperta una scheda dettaglio: va chiusa PRIMA di aprire
+                // il player, non contemporaneamente — presentare due
+                // fullScreenCover diversi nello stesso istante è il caso che
+                // causa lo "stacking". Il player si apre al giro successivo.
+                selectedSeries = nil
+                selectedMovie = nil
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 350_000_000) // lascia finire l'animazione di chiusura
+                    selectedPlayable = SelectedPlayable(url: url, title: result.title)
+                }
+            } else {
+                selectedPlayable = SelectedPlayable(url: url, title: result.title)
+            }
+        case .movie:
+            // VOD: si apre la scheda dettaglio (`MovieDetailView`), da cui
+            // "Riproduci il film" avvia lo streaming. Mai l'avvio diretto.
+            guard let stream = result.stream else {
+                DebugLogger.logAsync(.error, "GlobalSearchView: film senza dati di catalogo per \(result.title)")
+                return
+            }
+            presentDetail {
+                selectedMovie = SelectedMovieResult(credentials: result.credentials, stream: stream)
+            }
+        case .series:
+            presentDetail {
+                selectedSeries = SelectedSeriesResult(
+                    credentials: result.credentials,
+                    seriesId: result.streamId,
+                    name: result.title,
+                    coverURLString: result.coverURLString
+                )
+            }
+        }
+    }
+
+    /// Apre una scheda dettaglio (film o serie). Se un'altra presentazione
+    /// a schermo intero è ancora aperta (player o altra scheda) la chiude
+    /// prima e apre la nuova al giro successivo: due `fullScreenCover`
+    /// contemporanei sono la causa dello "stacking".
+    private func presentDetail(_ show: @escaping () -> Void) {
+        if selectedPlayable != nil || selectedSeries != nil || selectedMovie != nil {
+            selectedPlayable = nil
+            selectedSeries = nil
+            selectedMovie = nil
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                show()
+            }
+        } else {
+            show()
+        }
+    }
+
+    private func scheduleSearch(_ text: String) {
+        searchTask?.cancel()
+        searchTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await runSearch(text)
+        }
+    }
+
+    private func runSearch(_ text: String) async {
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 else {
+            results = []
+            return
+        }
+        isSearching = true
+        let service = GlobalSearchService(configs: sourceManager.sources)
+        let newResults = await service.search(text)
+        guard !Task.isCancelled else { return }
+        results = newResults
+        history.record(text)
+        selectedKindFilter = nil
+        isSearching = false
+    }
+}
