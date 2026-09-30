@@ -408,7 +408,7 @@ actor TMDBService {
 
     /// `true` se per questo titolo si sa già che TMDB non ha corrispondenze.
     nonisolated static func isKnownMiss(title: String, isSeries: Bool) -> Bool {
-        TMDBLookupCache.shared.isMiss(forKey: lookupCacheKey(title: title, isSeries: isSeries))
+        TMDBLookupCache.shared.isMiss(lookupCacheKey(title: title, isSeries: isSeries))
     }
 
     private let requestLimiter = TMDBRequestLimiter()
