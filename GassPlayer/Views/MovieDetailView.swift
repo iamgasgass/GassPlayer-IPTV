@@ -110,22 +110,6 @@ struct MovieDetailView: View {
                         .padding(.top, 18)
                         .frame(width: geometry.size.width, alignment: .leading)
 
-                    // Solo i film già avviati, identica a `HomeView`.
-                    ContinueWatchingSection(
-                        kindFilter: XtreamStreamKind.movie.rawValue,
-                        horizontalInset: 20,
-                        topPadding: 24
-                    )
-                    .frame(width: geometry.size.width, alignment: .leading)
-
-                    // Locandine dei film aggiunti di recente (misure "Comoda").
-                    MediaRelatedPostersSection(
-                        credentials: credentials,
-                        kind: .movie,
-                        excludingId: stream.streamId
-                    )
-                    .frame(width: geometry.size.width, alignment: .leading)
-
                     Color.clear.frame(height: 40)
                 }
                 .frame(width: geometry.size.width)

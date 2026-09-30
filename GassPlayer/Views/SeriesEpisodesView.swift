@@ -216,22 +216,6 @@ struct SeriesEpisodesView: View {
                         .padding(.top, 20)
                         .frame(width: geometry.size.width, alignment: .leading)
 
-                    // Solo le serie già avviate, identica a `HomeView`.
-                    ContinueWatchingSection(
-                        kindFilter: XtreamStreamKind.series.rawValue,
-                        horizontalInset: 20,
-                        topPadding: 24
-                    )
-                    .frame(width: geometry.size.width, alignment: .leading)
-
-                    // Locandine delle serie aggiunte di recente (misure "Comoda").
-                    MediaRelatedPostersSection(
-                        credentials: credentials,
-                        kind: .series,
-                        excludingId: seriesId
-                    )
-                    .frame(width: geometry.size.width, alignment: .leading)
-
                     Color.clear.frame(height: 40)
                 }
                 .frame(width: geometry.size.width)
