@@ -1,6 +1,6 @@
 import Foundation
 
-struct TMDBSearchResult: Decodable {
+struct TMDBSearchResult: Codable {
     let id: Int
     let title: String?
     let name: String?
@@ -202,6 +202,115 @@ enum TMDBError: LocalizedError {
     }
 }
 
+// MARK: - Cache sincrona e persistente delle ricerche
+
+/// Cache dei risultati di `lookup`, leggibile in modo SINCRONO dalle celle.
+///
+/// FIX sfarfallio con chiave TMDB: prima il risultato viveva solo dentro
+/// l'actor, raggiungibile solo in modo asincrono. Ogni cella ricreata dalla
+/// `LazyVGrid` partiva quindi senza risultato (segnaposto/icona del provider)
+/// e solo dopo un giro asincrono passava al poster TMDB: per ogni cella, ad
+/// ogni scroll, si vedeva il cambio. Ora la cella legge qui il risultato già
+/// noto nel `init` e mostra subito il poster finale. La cache è salvata su
+/// disco: dopo un riavvio i poster compaiono senza nuove richieste di rete.
+final class TMDBLookupCache: @unchecked Sendable {
+    static let shared = TMDBLookupCache()
+
+    private struct Snapshot: Codable {
+        var results: [String: TMDBSearchResult] = [:]
+        var order: [String] = []
+        var misses: [String: Date] = [:]
+    }
+
+    private let lock = NSLock()
+    private var snapshot = Snapshot()
+    private var saveScheduled = false
+    private let fileURL: URL
+    private let maxResults = 6000
+    private let missLifetime: TimeInterval = 3 * 24 * 3600
+
+    private init() {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        fileURL = base.appendingPathComponent("GassTMDBLookupCache.json")
+
+        if let data = try? Data(contentsOf: fileURL),
+           var decoded = try? JSONDecoder().decode(Snapshot.self, from: data) {
+            let now = Date()
+            decoded.misses = decoded.misses.filter { now.timeIntervalSince($0.value) < missLifetime }
+            snapshot = decoded
+        }
+    }
+
+    func result(forKey key: String) -> TMDBSearchResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        return snapshot.results[key]
+    }
+
+    func isMiss(_ key: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let date = snapshot.misses[key] else { return false }
+        return Date().timeIntervalSince(date) < missLifetime
+    }
+
+    func store(_ result: TMDBSearchResult, forKey key: String) {
+        lock.lock()
+        if snapshot.results[key] == nil { snapshot.order.append(key) }
+        snapshot.results[key] = result
+        snapshot.misses[key] = nil
+        if snapshot.order.count > maxResults {
+            let overflow = snapshot.order.count - maxResults
+            for old in snapshot.order.prefix(overflow) { snapshot.results[old] = nil }
+            snapshot.order.removeFirst(overflow)
+        }
+        lock.unlock()
+        scheduleSave()
+    }
+
+    func storeMiss(forKey key: String) {
+        lock.lock()
+        snapshot.misses[key] = Date()
+        lock.unlock()
+        scheduleSave()
+    }
+
+    private func scheduleSave() {
+        lock.lock()
+        if saveScheduled { lock.unlock(); return }
+        saveScheduled = true
+        lock.unlock()
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            self.saveScheduled = false
+            let copy = self.snapshot
+            self.lock.unlock()
+            if let data = try? JSONEncoder().encode(copy) {
+                try? data.write(to: self.fileURL, options: .atomic)
+            }
+        }
+    }
+}
+
+/// Limita le ricerche TMDB simultanee (il servizio risponde 429 oltre ~40/s).
+private actor TMDBRequestLimiter {
+    private var running = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private let limit = 4
+
+    func acquire() async {
+        if running < limit { running += 1; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if let next = waiters.popLast() { next.resume() } else { running -= 1 }
+    }
+}
+
 /// Servizio di arricchimento metadata via TMDB (The Movie Database).
 /// Richiede una API key personale gratuita (https://www.themoviedb.org/settings/api),
 /// salvata in UserDefaults sotto la chiave "tmdbAPIKey" (impostabile da Settings).
@@ -215,7 +324,6 @@ actor TMDBService {
     static let shared = TMDBService()
 
     private let session: URLSession
-    private var cache: [String: TMDBSearchResult] = [:]
     /// Cache dei dettagli completi (cast/loghi/external id), separata da
     /// quella di `lookup`: stessa vita dell'istanza condivisa, evita di
     /// rifare `append_to_response` ad ogni riapertura della stessa scheda
@@ -228,7 +336,6 @@ actor TMDBService {
     /// corrispondenza su TMDB veniva ri-interrogato in rete ad ogni singolo
     /// passaggio in vista, inutilmente. Ora anche i "nessun risultato" sono
     /// cachati (con un marcatore) cosi' non si ripete la richiesta a vuoto.
-    private var noResultCache: Set<String> = []
     /// Cache degli episodi per stagione (chiave "tvId::stagione").
     private var seasonCache: [String: [TMDBEpisode]] = [:]
 
@@ -255,29 +362,84 @@ actor TMDBService {
     /// Ora si usano confini di parola (\b) per rimuovere solo le
     /// occorrenze isolate (es. "Movie HD 2024" -> "Movie 2024"), lasciando
     /// intatte le parole che le contengono solo come sottostringa.
-    private func cleanedQuery(from rawTitle: String) -> String {
-        var cleaned = rawTitle
-        for pattern in [#"\(.*?\)"#, #"\[.*?\]"#, #"\{.*?\}"#] {
-            cleaned = cleaned.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+    private static let bracketRegexes: [NSRegularExpression] = [#"\(.*?\)"#, #"\[.*?\]"#, #"\{.*?\}"#]
+        .compactMap { try? NSRegularExpression(pattern: $0) }
+
+    private static let noiseRegexes: [NSRegularExpression] = ["4K", "HD", "FHD", "SD", "HDR", "ITA", "ENG", "SUB", "DUAL", "MULTI"]
+        .compactMap { word in
+            try? NSRegularExpression(
+                pattern: "\\b\(NSRegularExpression.escapedPattern(for: word))\\b",
+                options: [.caseInsensitive]
+            )
         }
-        let noiseWords = ["4K", "HD", "FHD", "SD", "HDR", "ITA", "ENG", "SUB", "DUAL", "MULTI"]
-        for word in noiseWords {
-            let escaped = NSRegularExpression.escapedPattern(for: word)
-            let pattern = "\\b\(escaped)\\b"
-            cleaned = cleaned.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
-        }
-        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    /// Memo titolo grezzo → query pulita: la pulizia usa regex e viene
+    /// richiamata per ogni cella creata, anche solo per leggere la cache.
+    private static let cleanedQueryMemo = NSCache<NSString, NSString>()
+
+    private static func strip(_ regex: NSRegularExpression, from text: String) -> String {
+        regex.stringByReplacingMatches(
+            in: text,
+            range: NSRange(text.startIndex..., in: text),
+            withTemplate: ""
+        )
     }
+
+    nonisolated static func cleanedQuery(from rawTitle: String) -> String {
+        if let memo = cleanedQueryMemo.object(forKey: rawTitle as NSString) { return memo as String }
+
+        var cleaned = rawTitle
+        for regex in bracketRegexes { cleaned = strip(regex, from: cleaned) }
+        for regex in noiseRegexes { cleaned = strip(regex, from: cleaned) }
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        cleanedQueryMemo.setObject(cleaned as NSString, forKey: rawTitle as NSString)
+        return cleaned
+    }
+
+    nonisolated static func lookupCacheKey(title rawTitle: String, isSeries: Bool) -> String {
+        "\(isSeries ? "tv" : "movie")::\(cleanedQuery(from: rawTitle).lowercased())"
+    }
+
+    /// Risultato già noto (memoria o disco), senza rete e senza `await`.
+    nonisolated static func cachedResult(title: String, isSeries: Bool) -> TMDBSearchResult? {
+        TMDBLookupCache.shared.result(forKey: lookupCacheKey(title: title, isSeries: isSeries))
+    }
+
+    /// `true` se per questo titolo si sa già che TMDB non ha corrispondenze.
+    nonisolated static func isKnownMiss(title: String, isSeries: Bool) -> Bool {
+        TMDBLookupCache.shared.isMiss(forKey: lookupCacheKey(title: title, isSeries: isSeries))
+    }
+
+    private let requestLimiter = TMDBRequestLimiter()
+    private var inFlightLookups: [String: Task<TMDBSearchResult, Error>] = [:]
 
     func lookup(title rawTitle: String, isSeries: Bool) async throws -> TMDBSearchResult {
         guard let apiKey = UserDefaults.standard.string(forKey: Self.apiKeyDefaultsKey), !apiKey.isEmpty else {
             throw TMDBError.missingAPIKey
         }
-        let query = cleanedQuery(from: rawTitle)
+        let query = Self.cleanedQuery(from: rawTitle)
         let cacheKey = "\(isSeries ? "tv" : "movie")::\(query.lowercased())"
-        if let cached = cache[cacheKey] { return cached }
-        if noResultCache.contains(cacheKey) { throw TMDBError.noResults }
 
+        if let cached = TMDBLookupCache.shared.result(forKey: cacheKey) { return cached }
+        if TMDBLookupCache.shared.isMiss(cacheKey) { throw TMDBError.noResults }
+        if query.isEmpty { throw TMDBError.noResults }
+
+        // Richieste identiche unificate: una sola chiamata di rete per titolo,
+        // anche se molte celle lo chiedono insieme. La richiesta vive in un
+        // Task separato: lo scroll (che cancella il chiamante) non la annulla,
+        // così il risultato finisce comunque in cache per la prossima volta.
+        if let running = inFlightLookups[cacheKey] { return try await running.value }
+
+        let task = Task<TMDBSearchResult, Error> { [self] in
+            try await performLookup(query: query, isSeries: isSeries, apiKey: apiKey, cacheKey: cacheKey)
+        }
+        inFlightLookups[cacheKey] = task
+        defer { inFlightLookups[cacheKey] = nil }
+        return try await task.value
+    }
+
+    private func performLookup(query: String, isSeries: Bool, apiKey: String, cacheKey: String) async throws -> TMDBSearchResult {
         let endpoint = isSeries ? "search/tv" : "search/movie"
         var components = URLComponents(string: "https://api.themoviedb.org/3/\(endpoint)")!
         components.queryItems = [
@@ -287,20 +449,40 @@ actor TMDBService {
         ]
         guard let url = components.url else { throw TMDBError.noResults }
 
-        do {
-            let (data, _) = try await session.data(from: url)
-            let decoded = try JSONDecoder().decode(TMDBSearchResponse.self, from: data)
-            guard let first = decoded.results.first else {
-                noResultCache.insert(cacheKey)
-                throw TMDBError.noResults
+        await requestLimiter.acquire()
+        defer { Task { await requestLimiter.release() } }
+
+        var lastError: Error = TMDBError.noResults
+        for attempt in 0..<3 {
+            do {
+                let (data, response) = try await session.data(from: url)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 200
+
+                if status == 429 || status >= 500 {
+                    // Troppe richieste / errore temporaneo: attesa e nuovo tentativo.
+                    let retryAfter = (response as? HTTPURLResponse)?
+                        .value(forHTTPHeaderField: "Retry-After")
+                        .flatMap(Double.init) ?? Double(attempt + 1)
+                    lastError = TMDBError.network(URLError(.resourceUnavailable))
+                    try await Task.sleep(nanoseconds: UInt64(min(max(retryAfter, 0.5), 5) * 1_000_000_000))
+                    continue
+                }
+
+                let decoded = try JSONDecoder().decode(TMDBSearchResponse.self, from: data)
+                guard let first = decoded.results.first else {
+                    TMDBLookupCache.shared.storeMiss(forKey: cacheKey)
+                    throw TMDBError.noResults
+                }
+                TMDBLookupCache.shared.store(first, forKey: cacheKey)
+                return first
+            } catch let error as TMDBError {
+                throw error
+            } catch {
+                lastError = TMDBError.network(error)
+                if attempt < 2 { try? await Task.sleep(nanoseconds: 600_000_000) }
             }
-            cache[cacheKey] = first
-            return first
-        } catch let error as TMDBError {
-            throw error
-        } catch {
-            throw TMDBError.network(error)
         }
+        throw lastError
     }
 
     /// Dettaglio completo per un id TMDB già noto (cast, loghi, external
