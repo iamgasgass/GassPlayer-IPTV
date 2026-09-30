@@ -223,17 +223,34 @@ actor TMDBService {
     private var detailsCache: [String: TMDBDetails] = [:]
     /// FIX: le ricerche fallite (nessuna corrispondenza) non venivano mai
     /// memorizzate — solo i successi. Con le celle di LazyVGrid che si
-    /// deallocano/ricreano scorrendo (didAttemptLookup e' uno @State per
-    /// istanza di view, azzerato ad ogni ricomparsa), un titolo senza
+    /// deallocano/ricreano scorrendo, un titolo senza
     /// corrispondenza su TMDB veniva ri-interrogato in rete ad ogni singolo
     /// passaggio in vista, inutilmente. Ora anche i "nessun risultato" sono
     /// cachati (con un marcatore) cosi' non si ripete la richiesta a vuoto.
     private var noResultCache: Set<String> = []
+    /// Deduplica delle ricerche simultanee: durante l'apertura/scroll di una
+    /// griglia lo stesso titolo puo' entrare in piu' istanze di cella.
+    /// Tutte aspettano una sola richiesta HTTP.
+    private var lookupInFlight: [String: Task<TMDBSearchResult, Error>] = [:]
     /// Cache degli episodi per stagione (chiave "tvId::stagione").
     private var seasonCache: [String: [TMDBEpisode]] = [:]
 
-    init(session: URLSession = .shared) {
-        self.session = session
+    init(session: URLSession? = nil) {
+        if let session {
+            self.session = session
+        } else {
+            let configuration = URLSessionConfiguration.default
+            configuration.requestCachePolicy = .returnCacheDataElseLoad
+            configuration.urlCache = URLCache(
+                memoryCapacity: 8 * 1024 * 1024,
+                diskCapacity: 32 * 1024 * 1024,
+                diskPath: "gassplayer.tmdb"
+            )
+            configuration.httpMaximumConnectionsPerHost = 6
+            configuration.timeoutIntervalForRequest = 12
+            configuration.timeoutIntervalForResource = 20
+            self.session = URLSession(configuration: configuration)
+        }
     }
 
     nonisolated static var hasAPIKey: Bool {
@@ -273,10 +290,16 @@ actor TMDBService {
         guard let apiKey = UserDefaults.standard.string(forKey: Self.apiKeyDefaultsKey), !apiKey.isEmpty else {
             throw TMDBError.missingAPIKey
         }
+
         let query = cleanedQuery(from: rawTitle)
         let cacheKey = "\(isSeries ? "tv" : "movie")::\(query.lowercased())"
+
         if let cached = cache[cacheKey] { return cached }
         if noResultCache.contains(cacheKey) { throw TMDBError.noResults }
+
+        if let task = lookupInFlight[cacheKey] {
+            return try await task.value
+        }
 
         let endpoint = isSeries ? "search/tv" : "search/movie"
         var components = URLComponents(string: "https://api.themoviedb.org/3/\(endpoint)")!
@@ -287,19 +310,125 @@ actor TMDBService {
         ]
         guard let url = components.url else { throw TMDBError.noResults }
 
-        do {
-            let (data, _) = try await session.data(from: url)
-            let decoded = try JSONDecoder().decode(TMDBSearchResponse.self, from: data)
-            guard let first = decoded.results.first else {
-                noResultCache.insert(cacheKey)
-                throw TMDBError.noResults
+        let session = session
+        let task = Task<TMDBSearchResult, Error> {
+            do {
+                let (data, response) = try await session.data(from: url)
+
+                if let http = response as? HTTPURLResponse,
+                   !(200...299).contains(http.statusCode) {
+                    throw TMDBError.network(URLError(.badServerResponse))
+                }
+
+                let decoded = try JSONDecoder().decode(TMDBSearchResponse.self, from: data)
+                guard !decoded.results.isEmpty else {
+                    throw TMDBError.noResults
+                }
+
+                // Preferisce una corrispondenza esatta e, a parita', un
+                // risultato che abbia davvero una locandina. Questo evita che
+                // il primo risultato TMDB senza `poster_path` lasci la card
+                // con il solo fallback Xtream quando una corrispondenza utile
+                // e' gia' presente nella stessa risposta.
+                let normalizedQuery = query
+                    .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                let best = decoded.results.enumerated().max { lhs, rhs in
+                    func score(_ result: TMDBSearchResult, index: Int) -> Int {
+                        let normalizedTitle = result.displayTitle
+                            .folding(
+                                options: [.diacriticInsensitive, .caseInsensitive],
+                                locale: .current
+                            )
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                        var value = 0
+                        if normalizedTitle == normalizedQuery {
+                            value += 100
+                        }
+                        if result.posterPath != nil {
+                            value += 20
+                        }
+                        if (result.voteAverage ?? 0) > 0 {
+                            value += 1
+                        }
+                        return value - index
+                    }
+
+                    return score(lhs.element, index: lhs.offset)
+                        < score(rhs.element, index: rhs.offset)
+                }!.element
+
+                return best
+            } catch let error as TMDBError {
+                throw error
+            } catch {
+                throw TMDBError.network(error)
             }
-            cache[cacheKey] = first
-            return first
-        } catch let error as TMDBError {
-            throw error
+        }
+
+        lookupInFlight[cacheKey] = task
+
+        do {
+            let result = try await task.value
+            cache[cacheKey] = result
+            lookupInFlight[cacheKey] = nil
+            return result
         } catch {
-            throw TMDBError.network(error)
+            lookupInFlight[cacheKey] = nil
+
+            if case TMDBError.noResults = error {
+                noResultCache.insert(cacheKey)
+            }
+
+            throw error
+        }
+    }
+
+    /// Precarica i metadata per le prime card della sezione senza bloccare
+    /// il rendering. Le richieste sono limitate a piccoli batch e condividono
+    /// la stessa cache/in-flight map di `lookup`, quindi le card che entrano
+    /// subito nella viewport non generano una seconda richiesta.
+    func prefetch(
+        titles: [(title: String, isSeries: Bool)],
+        limit: Int = 72
+    ) async {
+        let items = Array(titles.prefix(limit))
+
+        for start in stride(from: 0, to: items.count, by: 6) {
+            guard !Task.isCancelled else { return }
+
+            let end = min(start + 6, items.count)
+            let batch = Array(items[start..<end])
+
+            var results: [TMDBSearchResult] = []
+            results.reserveCapacity(batch.count)
+
+            await withTaskGroup(of: TMDBSearchResult?.self) { group in
+                for item in batch {
+                    group.addTask { [self] in
+                        try? await self.lookup(
+                            title: item.title,
+                            isSeries: item.isSeries
+                        )
+                    }
+                }
+
+                for await result in group {
+                    if let result {
+                        results.append(result)
+                    }
+                }
+            }
+
+            let posterURLs = results.compactMap(\.posterURL)
+            if !posterURLs.isEmpty {
+                await RemoteImagePipeline.shared.prefetch(
+                    posterURLs,
+                    maxPixelSize: 480
+                )
+            }
         }
     }
 

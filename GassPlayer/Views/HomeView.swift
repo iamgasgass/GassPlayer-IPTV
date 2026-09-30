@@ -64,7 +64,6 @@ struct HomeView: View {
     @State private var showGuidaTV = false
     @State private var showGuidaTVUnavailableAlert = false
     @State private var showManageActiveSource = false
-    @State private var resumeItem: RecentlyWatchedItem?
 
     var body: some View {
         NavigationStack {
@@ -110,9 +109,6 @@ struct HomeView: View {
                         .environmentObject(m3uStore)
                 }
             }
-            .fullScreenCover(item: $resumeItem) { item in
-                AdaptivePlayerView(url: item.streamURL, title: item.title)
-            }
         }
     }
 
@@ -124,7 +120,8 @@ struct HomeView: View {
                 heading
 
                 if !recentlyWatched.items.isEmpty {
-                    continueWatchingSection
+                    // Stessa sezione usata nelle schede dettaglio (qui tutti i tipi).
+                    ContinueWatchingSection()
                 }
 
                 if hasActiveSource {
@@ -152,92 +149,6 @@ struct HomeView: View {
             .padding(.horizontal, 20)
             .padding(.top, 12)
             .padding(.bottom, 32)
-        }
-    }
-
-    // MARK: - Continua a guardare
-
-    private var continueWatchingSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Continua a guardare")
-                    .font(.title3.weight(.semibold))
-                Spacer()
-                Button("Svuota") {
-                    withAnimation(.snappy) { recentlyWatched.clear() }
-                }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-            }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(recentlyWatched.items) { item in
-                        continueWatchingCard(item)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-        }
-    }
-
-    private func continueWatchingCard(_ item: RecentlyWatchedItem) -> some View {
-        Button {
-            resumeItem = item
-        } label: {
-            GlassCard(cornerRadius: 16, padding: 12) {
-                VStack(alignment: .leading, spacing: 10) {
-                    ZStack(alignment: .bottomTrailing) {
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .fill(continueWatchingTint(item).opacity(0.16))
-                            .frame(width: 168, height: 94)
-
-                        Image(systemName: continueWatchingSystemImage(item))
-                            .font(.title2.weight(.semibold))
-                            .foregroundStyle(continueWatchingTint(item))
-                            .frame(width: 168, height: 94)
-
-                        Image(systemName: "play.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(.white, continueWatchingTint(item))
-                            .padding(8)
-                    }
-
-                    Text(item.title)
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(2)
-                        .frame(width: 168, alignment: .leading)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            Button(role: .destructive) {
-                withAnimation(.snappy) { recentlyWatched.remove(item) }
-            } label: {
-                Label("Rimuovi", systemImage: "trash")
-            }
-        }
-        .accessibilityLabel(item.title)
-        .accessibilityHint("Riprendi la riproduzione")
-    }
-
-    private func continueWatchingSystemImage(_ item: RecentlyWatchedItem) -> String {
-        switch item.kind {
-        case XtreamStreamKind.live.rawValue: return "tv.fill"
-        case XtreamStreamKind.movie.rawValue: return "film.fill"
-        case XtreamStreamKind.series.rawValue: return "rectangle.stack.fill"
-        default: return "play.rectangle.fill"
-        }
-    }
-
-    private func continueWatchingTint(_ item: RecentlyWatchedItem) -> Color {
-        switch item.kind {
-        case XtreamStreamKind.live.rawValue: return .red
-        case XtreamStreamKind.movie.rawValue: return .purple
-        case XtreamStreamKind.series.rawValue: return .blue
-        default: return .accentColor
         }
     }
 
