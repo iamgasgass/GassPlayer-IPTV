@@ -40,15 +40,6 @@ struct MovieDetailView: View {
         contentManagement.isFavorite(id: favoriteID)
     }
 
-    /// Stessa immagine dell'hero della scheda (backdrop TMDB, poi quello
-    /// Xtream, poi l'icona del catalogo): salvata in "Continua a guardare"
-    /// così `HomeView` e le altre schede mostrano la stessa immagine.
-    private var heroImageURLString: String? {
-        detail.backdropURL?.absoluteString
-            ?? vodInfo?.backdropURL?.absoluteString
-            ?? stream.streamIcon
-    }
-
     private var downloadProgress: Double? {
         guard let downloadId else { return nil }
         return downloadManager.activeDownloads[downloadId]
@@ -108,9 +99,8 @@ struct MovieDetailView: View {
                     // Sezione Cast con attori e ruoli
                     MediaCastSection(cast: detail.cast)
                         .padding(.top, 18)
+                        .padding(.bottom, 40)
                         .frame(width: geometry.size.width, alignment: .leading)
-
-                    Color.clear.frame(height: 40)
                 }
                 .frame(width: geometry.size.width)
             }
@@ -137,8 +127,7 @@ struct MovieDetailView: View {
                         id: favoriteID,
                         title: stream.name,
                         kind: XtreamStreamKind.movie.rawValue,
-                        streamURL: target.url,
-                        imageURLString: heroImageURLString
+                        streamURL: target.url
                     )
                 }
         }
@@ -230,12 +219,5 @@ struct MovieDetailView: View {
 
         detail = await MediaDetailLoader.load(seed)
         isLoadingDetail = false
-
-        // Allinea l'immagine di "Continua a guardare" (anche per i film
-        // guardati prima che il campo esistesse) a quella dell'hero.
-        if let image = heroImageURLString {
-            let id = favoriteID
-            recentlyWatched.updateImage(image) { $0.id == id }
-        }
     }
 }

@@ -228,12 +228,6 @@ struct ChannelGridView: View {
     @AppStorage("gassplayer.grid.groupUIStyle")
     private var groupUIStyle = "scorrevole"
 
-    /// La chiave TMDB e' osservata anche qui: se l'utente la aggiunge o la
-    /// cambia nelle Impostazioni, la griglia puo' pre-caricare subito le
-    /// locandine senza dover uscire/rientrare nella sezione.
-    @AppStorage(TMDBService.apiKeyDefaultsKey)
-    private var tmdbAPIKey = ""
-
     @State private var selectedCategory: CategorySelection = .all
     @State private var selectedStream: XtreamStream?
     @State private var selectedSeries: XtreamSeriesItem?
@@ -394,24 +388,6 @@ struct ChannelGridView: View {
         )
     }
 
-    /// Identita' usata esclusivamente per il prefetch artwork. Comprende la
-    /// categoria corrente e la presenza della chiave TMDB, ma non cambia
-    /// durante il semplice scroll: il prefetch quindi non viene rilanciato ad
-    /// ogni ricostruzione delle celle.
-    private struct ArtworkPrefetchIdentity: Equatable {
-        let source: SourceIdentity
-        let category: CategorySelection
-        let tmdbAPIKey: String
-    }
-
-    private var artworkPrefetchIdentity: ArtworkPrefetchIdentity {
-        ArtworkPrefetchIdentity(
-            source: sourceIdentity,
-            category: selectedCategory,
-            tmdbAPIKey: tmdbAPIKey
-        )
-    }
-
     private var isInitialLoadPending: Bool {
         guard itemCount == 0 else { return false }
 
@@ -440,18 +416,6 @@ struct ChannelGridView: View {
 
                 if groupUIStyle == "scorrevole" {
                     categoryChips
-                }
-
-                // "Continua a guardare" come in `HomeView` (con l'immagine
-                // della scheda dettaglio), ma solo con i contenuti di
-                // questa sezione: film in VOD, serie in Serie TV.
-                if kind != .live && !isInitialLoadPending {
-                    ContinueWatchingSection(
-                        kindFilter: kind.rawValue,
-                        horizontalInset: gridHorizontalPadding,
-                        topPadding: 8,
-                        bottomPadding: 16
-                    )
                 }
 
                 if isInitialLoadPending {
@@ -487,6 +451,9 @@ struct ChannelGridView: View {
                 // richiede piu' un caricamento: senza questa chiamata la
                 // schermata resta bloccata su "Caricamento playlist…" pur
                 // non effettuando piu' alcuna richiesta di rete.
+                // `loadIfNeeded` e' innocuo da richiamare qui: se il
+                // catalogo e' gia' caricato per questa sorgente torna
+                // immediatamente senza rifare alcuna richiesta.
                 await xtreamCatalog.loadIfNeeded(credentials: credentials)
 
                 rebuildIndexIfNeeded()
@@ -494,14 +461,6 @@ struct ChannelGridView: View {
                 guard kind == .live else { return }
 
                 await loadEPGForVisibleStreams()
-            }
-            // Prefetch separato dal caricamento del catalogo: la UI mostra
-            // subito le card e il lavoro TMDB/artwork continua in background.
-            // La cache condivisa e la deduplica in-flight fanno si' che quando
-            // una card entra nella viewport il risultato sia gia' pronto o
-            // abbia al massimo una singola richiesta ancora in corso.
-            .task(id: artworkPrefetchIdentity) {
-                await prefetchArtworkForCurrentSection()
             }
             .onChange(of: selectedCategory) { _, _ in
                 guard kind == .live else { return }
@@ -896,7 +855,6 @@ struct ChannelGridView: View {
                         selectedSeries = item
                     }
                     .id(item.seriesId)
-                    .equatable()
                     .onAppear {
                         prefetchSeriesInfoIfNeeded(item)
                     }
@@ -979,7 +937,6 @@ struct ChannelGridView: View {
                 )
             }
         )
-        .equatable()
     }
 
     private var loadingView: some View {
@@ -1119,68 +1076,13 @@ struct ChannelGridView: View {
         credentials.favoriteID(kind: kind, streamId: stream.streamId)
     }
 
-    /// Precarica artwork per la porzione iniziale della sezione. Il limite
-    /// evita di trasformare un catalogo con migliaia di titoli in migliaia di
-    /// richieste simultanee, mentre la pipeline condivide cache e richieste
-    /// con le singole card.
-    private func prefetchArtworkForCurrentSection() async {
-        guard !Task.isCancelled else { return }
-
-        let imageURLs: [URL]
-
-        switch kind {
-        case .live:
-            imageURLs = displayedStreams
-                .prefix(96)
-                .compactMap { stream in
-                    guard let raw = stream.streamIcon,
-                          !raw.isEmpty else { return nil }
-                    return URL(string: raw)
-                }
-
-        case .movie:
-            imageURLs = displayedStreams
-                .prefix(72)
-                .compactMap { stream in
-                    guard let raw = stream.streamIcon,
-                          !raw.isEmpty else { return nil }
-                    return URL(string: raw)
-                }
-
-            let titles = Array(displayedStreams.prefix(72)).map {
-                (title: $0.name, isSeries: false)
-            }
-
-            if !titles.isEmpty, !tmdbAPIKey.isEmpty {
-                await TMDBService.shared.prefetch(titles: titles, limit: 72)
-            }
-
-        case .series:
-            imageURLs = displayedSeries
-                .prefix(72)
-                .compactMap { item in
-                    guard let raw = item.cover,
-                          !raw.isEmpty else { return nil }
-                    return URL(string: raw)
-                }
-
-            let titles = Array(displayedSeries.prefix(72)).map {
-                (title: $0.name, isSeries: true)
-            }
-
-            if !titles.isEmpty, !tmdbAPIKey.isEmpty {
-                await TMDBService.shared.prefetch(titles: titles, limit: 72)
-            }
-        }
-
-        guard !imageURLs.isEmpty, !Task.isCancelled else { return }
-
-        await RemoteImagePipeline.shared.prefetch(
-            imageURLs,
-            maxPixelSize: max(128, Int(artworkSize * 3.0))
-        )
-    }
-
+    /// Precarica in background stagioni/episodi di una serie non appena la
+    /// sua card diventa visibile, così quando l'utente la apre davvero i
+    /// dati sono già in cache (`CachedXtreamRepository.seriesInfo`) e
+    /// `SeriesEpisodesView` non deve attendere la rete. Attivo solo se
+    /// l'utente ha abilitato "Precarica dettagli serie" in Impostazioni →
+    /// Catalogo: è una vera ottimizzazione di rete, non un semplice toggle
+    /// decorativo.
     private func prefetchSeriesInfoIfNeeded(_ item: XtreamSeriesItem) {
         guard CatalogSettings.shared.preloadSeries else { return }
 
@@ -1378,41 +1280,36 @@ private struct ChannelTile: View, Equatable {
                     isSeries: false,
                     fallbackIconURL: stream.streamIcon,
                     width: artworkSize,
-                    height: moviePosterHeight,
-                    badgeStyle: .topTrailing
+                    height: moviePosterHeight
                 )
             } else {
-                CachedRemoteImage(
-                    primaryURL: URL(string: stream.streamIcon ?? ""),
-                    fallbackURL: nil,
-                    width: artworkSize,
-                    height: artworkSize,
-                    primaryContentMode: .fit
-                ) {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .overlay {
-                            Image(systemName: "tv.fill")
-                                .font(.system(size: 22, weight: .medium))
-                                .foregroundStyle(.secondary)
-                        }
+                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            // Disabilita la transizione di fase implicita
+                            // di AsyncImage: senza questo, ogni volta che
+                            // la cella viene riciclata durante lo scroll
+                            // l'immagine "fade-in" viene rianimata da zero,
+                            // producendo lo sfarfallio/glitch percepito.
+                            .transaction { $0.animation = nil }
+
+                    default:
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                            .overlay {
+                                Image(systemName: "tv")
+                                    .foregroundStyle(.secondary)
+                            }
+                    }
                 }
-                .clipShape(
-                    RoundedRectangle(
-                        cornerRadius: cornerRadius,
-                        style: .continuous
-                    )
-                )
+                .frame(width: artworkSize, height: artworkSize)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
 
-            // Nei film il voto occupa l'angolo in alto a destra (come nel
-            // riferimento): la stella dei preferiti passa in alto a sinistra.
             favoriteButton
-                .frame(
-                    maxWidth: .infinity,
-                    maxHeight: .infinity,
-                    alignment: kind == .movie ? .topLeading : .topTrailing
-                )
 
             if let channelNumber {
                 channelNumberBadge(channelNumber)
@@ -1497,8 +1394,7 @@ private struct SeriesTile: View, Equatable {
                     isSeries: true,
                     fallbackIconURL: series.cover,
                     width: artworkWidth,
-                    height: artworkHeight,
-                    badgeStyle: .topTrailing
+                    height: artworkHeight
                 )
                 // Blocca eventuali animazioni implicite generate
                 // internamente da `TMDBEnrichedPoster` (es. transizione
