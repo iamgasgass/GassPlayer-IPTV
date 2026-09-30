@@ -197,13 +197,15 @@ struct ChannelGridView: View {
         static let compactRowSpacing: CGFloat = 10
         static let compactHorizontalPadding: CGFloat = 10
 
-        static let comfortableArtworkSize: CGFloat = 100
+        // Dimensioni poster "Comoda" condivise con le righe di locandine
+        // delle schede dettaglio (`PosterRowMetrics`): un solo valore.
+        static let comfortableArtworkSize: CGFloat = PosterRowMetrics.artworkWidth
         static let compactArtworkSize: CGFloat = 84
 
-        static let comfortableMoviePosterHeight: CGFloat = 150
+        static let comfortableMoviePosterHeight: CGFloat = PosterRowMetrics.moviePosterHeight
         static let compactMoviePosterHeight: CGFloat = 126
 
-        static let comfortableSeriesPosterHeight: CGFloat = 140
+        static let comfortableSeriesPosterHeight: CGFloat = PosterRowMetrics.seriesPosterHeight
         static let compactSeriesPosterHeight: CGFloat = 118
     }
 
