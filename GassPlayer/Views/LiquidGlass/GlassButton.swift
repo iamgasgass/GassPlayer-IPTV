@@ -135,3 +135,44 @@ struct NativeOrLegacyGlassCapsule: ViewModifier {
         }
     }
 }
+
+/// Chip capsula Liquid Glass per i selettori a scorrimento (es. gruppi
+/// playlist di `ChannelGridView`, dal menu "…" → "UI Gruppi" → "Scorrevole").
+///
+/// Stesso materiale Liquid Glass reale del tasto "X" delle schede dettaglio
+/// e della pillola gruppo (`GlassMenuPillLabel`): `.glassEffect` interattivo
+/// (riflesso e pressione nativi) in forma di capsula.
+/// - non selezionato → vetro NEUTRO;
+/// - selezionato → vetro con tinta d'accento.
+/// Si usa `.glassEffect` sul bottone (non `.buttonStyle(.glass)`) così il
+/// padding e la tipografia dei chip restano esattamente quelli originali.
+/// Sotto iOS 26 ricade sul precedente `.ultraThinMaterial` + bordo.
+struct NativeOrLegacyGlassChip: ViewModifier {
+    let isSelected: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            let glass: Glass = isSelected
+                ? .regular.tint(.accentColor).interactive()
+                : .regular.interactive()
+
+            content
+                .buttonStyle(.plain)
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .glassEffect(glass, in: Capsule())
+        } else {
+            content
+                .buttonStyle(.plain)
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .background(isSelected ? Color.accentColor : Color.clear, in: Capsule())
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule()
+                        .strokeBorder(
+                            Color.white.opacity(isSelected ? 0.22 : 0.12),
+                            lineWidth: 0.5
+                        )
+                }
+        }
+    }
+}

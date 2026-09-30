@@ -4,6 +4,11 @@ struct SearchResult: Identifiable, Hashable {
     let id: String, title: String, sourceName: String
     let kind: XtreamStreamKind, streamId: Int
     let credentials: XtreamCredentials
+    /// Film VOD originale del catalogo: serve per aprire la scheda dettaglio
+    /// (`MovieDetailView`) invece di avviare direttamente lo streaming.
+    var stream: XtreamStream? = nil
+    /// Copertina della serie (fallback per l'hero di `SeriesEpisodesView`).
+    var coverURLString: String? = nil
     static func == (l: SearchResult, r: SearchResult) -> Bool { l.id == r.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
@@ -38,7 +43,8 @@ actor GlobalSearchService {
                                         sourceName: config.name,
                                         kind: kind,
                                         streamId: $0.streamId,
-                                        credentials: creds
+                                        credentials: creds,
+                                        stream: kind == .movie ? $0 : nil
                                     )
                                 }
                         }
@@ -55,7 +61,8 @@ actor GlobalSearchService {
                                     sourceName: config.name,
                                     kind: .series,
                                     streamId: $0.seriesId,
-                                    credentials: creds
+                                    credentials: creds,
+                                    coverURLString: $0.cover
                                 )
                             }
                     }

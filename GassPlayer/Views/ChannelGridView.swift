@@ -955,7 +955,9 @@ struct ChannelGridView: View {
     /// impostato su "Scorrevole" dal menu "…".
     private var categoryChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            // `LazyHStack`: con centinaia di gruppi solo i chip visibili
+            // creano il proprio vetro Liquid Glass (render molto più leggero).
+            LazyHStack(spacing: 8) {
                 categoryButton(
                     title: "Tutti",
                     icon: "square.grid.2x2",
@@ -1020,17 +1022,9 @@ struct ChannelGridView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .background(isSelected ? Color.accentColor : Color.clear, in: Capsule())
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay {
-            Capsule()
-                .strokeBorder(
-                    Color.white.opacity(isSelected ? 0.22 : 0.12),
-                    lineWidth: 0.5
-                )
-        }
+        // Stesso Liquid Glass del tasto "X" delle schede dettaglio
+        // (vedi `NativeOrLegacyGlassChip`).
+        .modifier(NativeOrLegacyGlassChip(isSelected: isSelected))
         .accessibilityLabel("\(title), \(count) contenuti")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }

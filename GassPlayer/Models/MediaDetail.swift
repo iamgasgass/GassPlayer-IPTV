@@ -42,6 +42,9 @@ struct MediaDetail {
     var cast: [MediaCastMember]
     var ratings: MediaRatings
     var imdbId: String?
+    /// Id TMDB del titolo, quando trovato: serve per recuperare i dettagli
+    /// per-episodio delle serie (trama, immagine, data).
+    var tmdbId: Int? = nil
 
     static let empty = MediaDetail(
         overview: nil,
@@ -137,6 +140,7 @@ enum MediaDetailLoader {
             detail.ratings.tmdbPercent = Int((vote * 10).rounded())
         }
 
+        detail.tmdbId = tmdb.id
         detail.imdbId = tmdb.externalIds?.imdbId?.nonEmpty
 
         guard let imdbId = detail.imdbId else { return detail }

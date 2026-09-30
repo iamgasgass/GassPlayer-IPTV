@@ -226,7 +226,10 @@ extension XtreamSeriesInfo.Episode: Decodable {
     }
 
     private enum InfoKeys: String, CodingKey {
-        case plot
+        case plot, overview
+        // `description` come nome di case confliggerebbe con
+        // `CodingKey.description` (CustomStringConvertible).
+        case descriptionText = "description"
         case movieImage = "movie_image"
         case durationSecs = "duration_secs"
         case releaseDate = "releasedate"
@@ -260,9 +263,13 @@ extension XtreamSeriesInfo.Episode: Decodable {
             .nonEmpty
 
         if let infoContainer = try? container.nestedContainer(keyedBy: InfoKeys.self, forKey: .info) {
-            plot = infoContainer.decodeFlexibleString(forKey: .plot)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .nonEmpty
+            // Alcuni pannelli Xtream chiamano la trama "description" o
+            // "overview" invece di "plot": il primo valore non vuoto vince.
+            plot = [InfoKeys.plot, .descriptionText, .overview]
+                .compactMap { infoContainer.decodeFlexibleString(forKey: $0)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .nonEmpty }
+                .first
 
             if let imageString = infoContainer.decodeFlexibleString(forKey: .movieImage)?.nonEmpty {
                 stillImageURL = URL(string: imageString)
