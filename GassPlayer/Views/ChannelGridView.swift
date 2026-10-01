@@ -116,7 +116,9 @@ import ImageIO
 /// Xtream → poster TMDB) ed era la causa principale dello sfarfallio, oltre
 /// che di poster sbagliati per i titoli omonimi/parziali. TMDB resta usato
 /// solo nelle schede dettaglio (film/serie), dove ora il matching è di
-/// precisione (anno, titolo originale, id Xtream, cast).
+/// precisione (anno, titolo originale, id Xtream, cast). In griglia resta
+/// soltanto il BADGE del voto TMDB (`GridTMDBRatingBadge`, stessa resa della
+/// vecchia `TMDBEnrichedPoster`), che non modifica mai il poster.
 /// 2) IMMAGINI: `AsyncImage` riparte da "placeholder" ogni volta che una
 /// cella della `LazyVGrid` viene riciclata, anche se l'immagine è già in
 /// cache di rete: il flash placeholder → immagine è lo sfarfallio visibile.
@@ -125,6 +127,10 @@ import ImageIO
 /// subito l'immagine al primo frame; i download sono ridimensionati
 /// (ImageIO) fuori dal main thread e annullati quando la cella esce dallo
 /// schermo.
+/// 2b) ICONE/POSTER MANCANTI: `CachedPosterImage` risolve gli URL del
+/// catalogo (percorsi relativi, `//host`, `\\/`, spazi) e `PosterDownloader`
+/// ritenta gli errori transitori, prova http se https fallisce e accetta i
+/// certificati dei server immagini dei provider.
 /// 3) Le tile usano `.equatable()` (la conformità `Equatable` da sola non
 /// viene sfruttata da SwiftUI per via delle closure) e `.animation(nil,
 /// value:)` non mappa più l'intero elenco di serie ad ogni render.
@@ -286,6 +292,12 @@ struct ChannelGridView: View {
     /// (`onTap`) della sorgente precedente.
     private var tileSourceKey: String {
         "\(credentials.host.lowercased())|\(credentials.username)"
+    }
+
+    /// Host del provider, usato per risolvere le icone con percorso
+    /// relativo (`/images/x.png`) restituite da alcuni pannelli Xtream.
+    private var imageBaseHost: String {
+        credentials.host
     }
 
     private var isCompactGrid: Bool {
@@ -895,6 +907,7 @@ struct ChannelGridView: View {
                     SeriesTile(
                         series: item,
                         sourceKey: tileSourceKey,
+                        imageBaseHost: imageBaseHost,
                         artworkWidth: artworkSize,
                         artworkHeight: seriesPosterHeight
                     ) {
@@ -962,6 +975,7 @@ struct ChannelGridView: View {
             stream: stream,
             kind: kind,
             sourceKey: tileSourceKey,
+            imageBaseHost: imageBaseHost,
             channelNumber: channelNumber,
             isCompact: isCompactGrid,
             artworkSize: artworkSize,
@@ -1252,6 +1266,7 @@ private struct ChannelTile: View, Equatable {
     let stream: XtreamStream
     let kind: XtreamStreamKind
     let sourceKey: String
+    let imageBaseHost: String
     let channelNumber: Int?
     let isCompact: Bool
     let artworkSize: CGFloat
@@ -1269,6 +1284,7 @@ private struct ChannelTile: View, Equatable {
         lhs.stream.id == rhs.stream.id &&
         lhs.kind == rhs.kind &&
         lhs.sourceKey == rhs.sourceKey &&
+        lhs.imageBaseHost == rhs.imageBaseHost &&
         lhs.channelNumber == rhs.channelNumber &&
         lhs.isCompact == rhs.isCompact &&
         lhs.artworkSize == rhs.artworkSize &&
@@ -1330,14 +1346,20 @@ private struct ChannelTile: View, Equatable {
             if kind == .movie {
                 CachedPosterImage(
                     urlString: stream.streamIcon,
+                    baseHost: imageBaseHost,
                     width: artworkSize,
                     height: moviePosterHeight,
                     cornerRadius: 12,
                     placeholderSymbol: "film"
                 )
+                // Voto TMDB in alto a destra (solo badge, poster Xtream).
+                .overlay(alignment: .topTrailing) {
+                    GridTMDBRatingBadge(title: stream.name, isSeries: false)
+                }
             } else {
                 CachedPosterImage(
                     urlString: stream.streamIcon,
+                    baseHost: imageBaseHost,
                     width: artworkSize,
                     height: artworkSize,
                     cornerRadius: cornerRadius,
@@ -1406,6 +1428,7 @@ private struct ChannelTile: View, Equatable {
 private struct SeriesTile: View, Equatable {
     let series: XtreamSeriesItem
     let sourceKey: String
+    let imageBaseHost: String
     let artworkWidth: CGFloat
     let artworkHeight: CGFloat
     let onTap: () -> Void
@@ -1425,6 +1448,7 @@ private struct SeriesTile: View, Equatable {
     static func == (lhs: SeriesTile, rhs: SeriesTile) -> Bool {
         lhs.series.seriesId == rhs.series.seriesId &&
         lhs.sourceKey == rhs.sourceKey &&
+        lhs.imageBaseHost == rhs.imageBaseHost &&
         lhs.series.name == rhs.series.name &&
         lhs.series.cover == rhs.series.cover &&
         lhs.artworkWidth == rhs.artworkWidth &&
@@ -1437,11 +1461,16 @@ private struct SeriesTile: View, Equatable {
                 // Solo dati Xtream (`cover`): nessun poster TMDB in griglia.
                 CachedPosterImage(
                     urlString: series.cover,
+                    baseHost: imageBaseHost,
                     width: artworkWidth,
                     height: artworkHeight,
                     cornerRadius: 12,
                     placeholderSymbol: "rectangle.stack.fill"
                 )
+                // Voto TMDB in alto a destra (solo badge, poster Xtream).
+                .overlay(alignment: .topTrailing) {
+                    GridTMDBRatingBadge(title: series.name, isSeries: true)
+                }
 
                 Text(series.name)
                     .font(.caption)
@@ -1456,12 +1485,81 @@ private struct SeriesTile: View, Equatable {
 }
 
 
-// MARK: - Immagini poster senza sfarfallio
+// MARK: - Voto TMDB sul poster (solo badge)
 
-/// Cache in memoria condivisa + download ridimensionato delle immagini
-/// della griglia. La lettura dalla cache è sincrona (`NSCache` è
-/// thread-safe), così una cella riciclata può mostrare l'immagine già al
-/// primo frame, senza passare dal placeholder.
+/// Badge del voto TMDB sulle locandine VOD/Serie TV della griglia: stessa
+/// implementazione (ricerca per titolo su `TMDBService.shared`, badge in
+/// alto a destra bianco su fondo scuro) della vecchia `TMDBEnrichedPoster`
+/// con `badgeStyle: .topTrailing`. A differenza di allora NON tocca il
+/// poster: l'immagine resta sempre quella Xtream, quindi la comparsa del
+/// voto non può far "saltare" la cella durante lo scroll. Il voto già
+/// ottenuto viene riletto in modo sincrono all'`init` (cella riciclata =
+/// badge subito presente, nessun pop-in).
+private struct GridTMDBRatingBadge: View {
+    let title: String
+    let isSeries: Bool
+
+    @State private var rating: Double?
+    @State private var didAttemptLookup = false
+
+    private static let known: NSCache<NSString, NSNumber> = {
+        let cache = NSCache<NSString, NSNumber>()
+        cache.countLimit = 5000
+        return cache
+    }()
+
+    init(title: String, isSeries: Bool) {
+        self.title = title
+        self.isSeries = isSeries
+
+        if let cached = Self.known.object(forKey: Self.key(title: title, isSeries: isSeries)) {
+            _rating = State(initialValue: cached.doubleValue > 0 ? cached.doubleValue : nil)
+            _didAttemptLookup = State(initialValue: true)
+        }
+    }
+
+    private static func key(title: String, isSeries: Bool) -> NSString {
+        "\(isSeries ? "tv" : "movie")::\(title)" as NSString
+    }
+
+    var body: some View {
+        Group {
+            if let rating, rating > 0 {
+                Text(String(format: "%.1f", rating))
+                    .font(.system(size: 10, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .padding(5)
+            }
+        }
+        .transaction { $0.animation = nil }
+        .task {
+            guard !didAttemptLookup, TMDBService.hasAPIKey else { return }
+            didAttemptLookup = true
+
+            let result = try? await TMDBService.shared.lookup(title: title, isSeries: isSeries)
+
+            // Task annullato (cella uscita dallo schermo): non memorizzare
+            // un falso "nessun voto", sarà riprovato al prossimo ingresso.
+            guard !Task.isCancelled else {
+                didAttemptLookup = false
+                return
+            }
+
+            let value = result?.voteAverage ?? 0
+            Self.known.setObject(NSNumber(value: value), forKey: Self.key(title: title, isSeries: isSeries))
+            rating = value > 0 ? value : nil
+        }
+    }
+}
+
+// MARK: - Immagini poster/icone Xtream senza sfarfallio
+
+/// Cache in memoria + risoluzione robusta degli URL delle immagini del
+/// catalogo Xtream. La lettura dalla cache è sincrona (`NSCache` è
+/// thread-safe), così una cella riciclata mostra l'immagine al primo frame.
 private enum PosterImageStore {
     static let memory: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
@@ -1470,27 +1568,61 @@ private enum PosterImageStore {
         return cache
     }()
 
-    private static let session: URLSession = {
-        let configuration = URLSessionConfiguration.default
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
-        configuration.timeoutIntervalForRequest = 20
-        configuration.urlCache = URLCache(
-            memoryCapacity: 32 * 1024 * 1024,
-            diskCapacity: 300 * 1024 * 1024
-        )
-        return URLSession(configuration: configuration)
+    /// Lato massimo in pixel dell'immagine decodificata.
+    static let maxPixelSize: CGFloat = 480
+
+    /// Caratteri che NON vanno ri-codificati: `%` incluso, per non
+    /// codificare due volte URL già percent-encoded.
+    private static let urlSafe: CharacterSet = {
+        var set = CharacterSet.alphanumerics
+        set.insert(charactersIn: "!#$&'()*+,/:;=?@[]%-._~")
+        return set
     }()
 
-    /// Lato massimo in pixel dell'immagine decodificata: abbondante per
-    /// tile da ~150 pt a 3x, ma molto più leggero di un poster a piena
-    /// risoluzione decodificato sul main thread.
-    private static let maxPixelSize: CGFloat = 480
+    /// Trasforma il valore grezzo di `stream_icon` / `cover` in un URL
+    /// scaricabile. I pannelli Xtream restituiscono spesso valori che
+    /// `URL(string:)` o `AsyncImage` non sanno usare così come sono:
+    /// - percorsi relativi al server (`/images/x.png`, `images/x.png`);
+    /// - URL "protocol-relative" (`//cdn.host/x.png`);
+    /// - slash escapati (`http:\/\/host\/x.png`) e backslash di Windows;
+    /// - spazi o caratteri non ASCII non codificati (nome file con spazi);
+    /// - segnaposto testuali (`null`, `none`, `n/a`, `0`).
+    static func url(from raw: String?, baseHost: String) -> URL? {
+        guard var text = raw?.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'"))),
+              !text.isEmpty else {
+            return nil
+        }
 
-    static func url(from string: String?) -> URL? {
-        guard let string = string?.trimmingCharacters(in: .whitespacesAndNewlines), !string.isEmpty,
-              let url = URL(string: string),
+        if ["null", "none", "n/a", "nil", "0", "false", "undefined"].contains(text.lowercased()) {
+            return nil
+        }
+
+        text = text.replacingOccurrences(of: "\\/", with: "/")
+        if !text.contains("://") {
+            text = text.replacingOccurrences(of: "\\", with: "/")
+        }
+
+        let base = URLComponents(string: baseHost.trimmingCharacters(in: .whitespacesAndNewlines))
+
+        if text.hasPrefix("//") {
+            text = "\(base?.scheme ?? "http"):\(text)"
+        } else if !text.lowercased().hasPrefix("http://") && !text.lowercased().hasPrefix("https://") {
+            // Relativo al server del provider.
+            guard let scheme = base?.scheme, let host = base?.host else { return nil }
+
+            var origin = "\(scheme)://\(host)"
+            if let port = base?.port { origin += ":\(port)" }
+
+            text = origin + (text.hasPrefix("/") ? "" : "/") + text
+        }
+
+        let url = URL(string: text)
+            ?? text.addingPercentEncoding(withAllowedCharacters: urlSafe).flatMap(URL.init(string:))
+
+        guard let url,
               let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else {
+              scheme == "http" || scheme == "https",
+              url.host?.isEmpty == false else {
             return nil
         }
 
@@ -1501,94 +1633,266 @@ private enum PosterImageStore {
         memory.object(forKey: url as NSURL)
     }
 
-    /// Scarica e decodifica (ridimensionata) l'immagine. Rispetta
-    /// l'annullamento del `Task` chiamante: se la cella esce dallo schermo
-    /// durante lo scroll il download viene interrotto.
-    static func load(_ url: URL) async -> UIImage? {
-        if let cached = cachedImage(for: url) { return cached }
-
-        guard let (data, response) = try? await session.data(from: url),
-              !Task.isCancelled else {
-            return nil
-        }
-
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            return nil
-        }
-
-        guard let image = downsampledImage(from: data) else { return nil }
-
+    static func store(_ image: UIImage, for url: URL) {
         let cost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
         memory.setObject(image, forKey: url as NSURL, cost: cost)
+    }
+}
+
+/// Accetta i certificati non validi (self-signed, scaduti, host diverso)
+/// SOLO per il download delle icone del catalogo: i server immagini dei
+/// provider IPTV li hanno spesso, e `AsyncImage` in quel caso falliva in
+/// silenzio lasciando la cella senza poster.
+private final class PosterSessionDelegate: NSObject, URLSessionDelegate {
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let trust = challenge.protectionSpace.serverTrust {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else {
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+}
+
+/// Download delle immagini con: deduplica delle richieste identiche (molti
+/// canali condividono la stessa icona), annullamento quando nessuna cella
+/// attende più il risultato, nuovi tentativi per errori transitori
+/// (timeout, 429/5xx dovuti alle troppe richieste parallele), fallback
+/// https → http e breve "pausa" sugli URL falliti (mai un fallimento
+/// permanente: la cella riprova al prossimo ingresso in vista).
+private actor PosterDownloader {
+    static let shared = PosterDownloader()
+
+    private struct Entry {
+        let token: UUID
+        let task: Task<UIImage?, Never>
+        var waiters: Int
+    }
+
+    private var entries: [URL: Entry] = [:]
+    private var failures: [URL: Date] = [:]
+    private let failureCooldown: TimeInterval = 15
+
+    private let session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 90
+        configuration.httpMaximumConnectionsPerHost = 6
+        configuration.waitsForConnectivity = false
+        configuration.httpAdditionalHeaders = [
+            "Accept": "image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5",
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        ]
+        configuration.urlCache = URLCache(
+            memoryCapacity: 32 * 1024 * 1024,
+            diskCapacity: 300 * 1024 * 1024
+        )
+        return URLSession(configuration: configuration, delegate: PosterSessionDelegate(), delegateQueue: nil)
+    }()
+
+    func image(for url: URL) async -> UIImage? {
+        if let cached = PosterImageStore.cachedImage(for: url) { return cached }
+
+        if let failedAt = failures[url], Date().timeIntervalSince(failedAt) < failureCooldown {
+            return nil
+        }
+
+        let token: UUID
+        let task: Task<UIImage?, Never>
+
+        if var existing = entries[url] {
+            existing.waiters += 1
+            entries[url] = existing
+            token = existing.token
+            task = existing.task
+        } else {
+            token = UUID()
+            task = Task.detached(priority: .utility) { [session] in
+                await Self.fetch(url, session: session)
+            }
+            entries[url] = Entry(token: token, task: task, waiters: 1)
+        }
+
+        let image = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            Task { await self.release(url, token: token) }
+        }
+
+        // Il chiamante è stato annullato (cella uscita dallo schermo):
+        // `release` ha già aggiornato i contatori.
+        if Task.isCancelled { return nil }
+
+        if entries[url]?.token == token { entries[url] = nil }
+
+        if let image {
+            PosterImageStore.store(image, for: url)
+            failures[url] = nil
+        } else {
+            failures[url] = Date()
+        }
 
         return image
     }
 
-    private static func downsampledImage(from data: Data) -> UIImage? {
+    private func release(_ url: URL, token: UUID) {
+        guard var entry = entries[url], entry.token == token else { return }
+
+        entry.waiters -= 1
+
+        if entry.waiters <= 0 {
+            entry.task.cancel()
+            entries[url] = nil
+        } else {
+            entries[url] = entry
+        }
+    }
+
+    private static func fetch(_ url: URL, session: URLSession) async -> UIImage? {
+        var candidates = [url]
+
+        // Molti server immagini dei provider espongono solo http: se https
+        // fallisce si prova la stessa risorsa in chiaro (ATS già aperto).
+        if url.scheme?.lowercased() == "https",
+           var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.scheme = "http"
+            if let fallback = components.url { candidates.append(fallback) }
+        }
+
+        for candidate in candidates {
+            for attempt in 0..<3 {
+                if Task.isCancelled { return nil }
+
+                switch await download(candidate, session: session) {
+                case .image(let image):
+                    return image
+
+                case .permanentFailure:
+                    break
+
+                case .transientFailure:
+                    if attempt < 2 {
+                        try? await Task.sleep(nanoseconds: UInt64(400_000_000) << UInt64(attempt))
+                        continue
+                    }
+                }
+
+                break
+            }
+        }
+
+        return nil
+    }
+
+    private enum DownloadOutcome {
+        case image(UIImage)
+        case transientFailure
+        case permanentFailure
+    }
+
+    private static func download(_ url: URL, session: URLSession) async -> DownloadOutcome {
+        do {
+            let (data, response) = try await session.data(from: url)
+
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                // Troppe richieste / errori del server: ritentabili.
+                return [408, 425, 429, 500, 502, 503, 504, 509, 512, 520, 521, 522, 524].contains(http.statusCode)
+                    ? .transientFailure
+                    : .permanentFailure
+            }
+
+            guard !data.isEmpty, let image = decode(data) else { return .permanentFailure }
+
+            return .image(image)
+        } catch let error as URLError {
+            switch error.code {
+            case .cancelled:
+                return .permanentFailure
+
+            case .timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost,
+                 .dnsLookupFailed, .cannotFindHost, .resourceUnavailable:
+                return .transientFailure
+
+            default:
+                return .permanentFailure
+            }
+        } catch {
+            return .permanentFailure
+        }
+    }
+
+    /// Decodifica ridimensionata con ImageIO (leggera, fuori dal main
+    /// thread); se ImageIO non la riconosce ripiega su `UIImage(data:)`.
+    private static func decode(_ data: Data) -> UIImage? {
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
 
-        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
-            return nil
+        if let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) {
+            let thumbnailOptions = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: PosterImageStore.maxPixelSize
+            ] as CFDictionary
+
+            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) {
+                return UIImage(cgImage: cgImage)
+            }
         }
 
-        let thumbnailOptions = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
-        ] as CFDictionary
-
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
-            return nil
-        }
-
-        return UIImage(cgImage: cgImage)
+        return UIImage(data: data)
     }
 }
 
 /// Immagine di griglia (poster o logo canale) con comportamento stabile in
-/// scroll: placeholder neutro e leggero, immagine mostrata subito se già in
-/// cache, comparsa SENZA animazione (nessun fade/rianimazione quando la
-/// cella viene riciclata).
+/// scroll: placeholder neutro, immagine mostrata subito se già in cache,
+/// comparsa SENZA animazione.
 private struct CachedPosterImage: View {
     let urlString: String?
+    let baseHost: String
     let width: CGFloat
     let height: CGFloat
     let cornerRadius: CGFloat
     let placeholderSymbol: String
+
+    private let resolvedURL: URL?
 
     @State private var image: UIImage?
     @State private var imageURL: URL?
 
     init(
         urlString: String?,
+        baseHost: String,
         width: CGFloat,
         height: CGFloat,
         cornerRadius: CGFloat,
         placeholderSymbol: String
     ) {
         self.urlString = urlString
+        self.baseHost = baseHost
         self.width = width
         self.height = height
         self.cornerRadius = cornerRadius
         self.placeholderSymbol = placeholderSymbol
 
+        let url = PosterImageStore.url(from: urlString, baseHost: baseHost)
+        resolvedURL = url
+
         // Lettura sincrona della cache già all'init: la cella riciclata
         // parte direttamente con l'immagine, senza frame di placeholder.
-        if let url = PosterImageStore.url(from: urlString),
-           let cached = PosterImageStore.cachedImage(for: url) {
+        if let url, let cached = PosterImageStore.cachedImage(for: url) {
             _image = State(initialValue: cached)
             _imageURL = State(initialValue: url)
         }
     }
 
-    private var currentURL: URL? {
-        PosterImageStore.url(from: urlString)
-    }
-
     var body: some View {
         ZStack {
-            if let image, imageURL == currentURL {
+            if let image, imageURL == resolvedURL {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
@@ -1603,27 +1907,19 @@ private struct CachedPosterImage: View {
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .transaction { $0.animation = nil }
-        .task(id: urlString) {
-            guard let url = currentURL else { return }
+        .task(id: resolvedURL) {
+            guard let url = resolvedURL else { return }
             guard imageURL != url || image == nil else { return }
 
-            if let cached = PosterImageStore.cachedImage(for: url) {
-                apply(cached, for: url)
-                return
+            guard let loaded = await PosterDownloader.shared.image(for: url), !Task.isCancelled else { return }
+
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+
+            withTransaction(transaction) {
+                image = loaded
+                imageURL = url
             }
-
-            guard let loaded = await PosterImageStore.load(url), !Task.isCancelled else { return }
-            apply(loaded, for: url)
-        }
-    }
-
-    private func apply(_ loaded: UIImage, for url: URL) {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-
-        withTransaction(transaction) {
-            image = loaded
-            imageURL = url
         }
     }
 }
