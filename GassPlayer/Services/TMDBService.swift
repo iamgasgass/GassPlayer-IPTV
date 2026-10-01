@@ -159,6 +159,32 @@ struct TMDBDetails: Decodable {
     }
 }
 
+/// Episodio di una stagione (`tv/{id}/season/{n}`): fonte di riserva per
+/// trama, immagine e data quando il provider Xtream non le fornisce.
+struct TMDBEpisode: Decodable, Hashable {
+    let episodeNumber: Int
+    let name: String?
+    let overview: String?
+    let stillPath: String?
+    let airDate: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, overview
+        case episodeNumber = "episode_number"
+        case stillPath = "still_path"
+        case airDate = "air_date"
+    }
+
+    var stillURL: URL? {
+        guard let stillPath, !stillPath.isEmpty else { return nil }
+        return URL(string: "https://image.tmdb.org/t/p/w500\(stillPath)")
+    }
+}
+
+private struct TMDBSeasonResponse: Decodable {
+    let episodes: [TMDBEpisode]
+}
+
 enum TMDBError: LocalizedError {
     case missingAPIKey
     case noResults
@@ -203,6 +229,8 @@ actor TMDBService {
     /// passaggio in vista, inutilmente. Ora anche i "nessun risultato" sono
     /// cachati (con un marcatore) cosi' non si ripete la richiesta a vuoto.
     private var noResultCache: Set<String> = []
+    /// Cache degli episodi per stagione (chiave "tvId::stagione").
+    private var seasonCache: [String: [TMDBEpisode]] = [:]
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -301,6 +329,62 @@ actor TMDBService {
             let decoded = try JSONDecoder().decode(TMDBDetails.self, from: data)
             detailsCache[cacheKey] = decoded
             return decoded
+        } catch let error as TMDBError {
+            throw error
+        } catch {
+            throw TMDBError.network(error)
+        }
+    }
+
+    /// Episodi di una stagione con trama (`overview`), immagine e data.
+    /// Le trame mancanti in italiano vengono completate con la versione
+    /// inglese (TMDB lascia spesso vuoto `overview` in it-IT), così ogni
+    /// episodio ha una descrizione quando ne esiste una in qualunque lingua.
+    func seasonEpisodes(tvId: Int, season: Int) async throws -> [TMDBEpisode] {
+        guard let apiKey = UserDefaults.standard.string(forKey: Self.apiKeyDefaultsKey), !apiKey.isEmpty else {
+            throw TMDBError.missingAPIKey
+        }
+
+        let cacheKey = "\(tvId)::\(season)"
+        if let cached = seasonCache[cacheKey] { return cached }
+
+        func fetch(language: String) async throws -> [TMDBEpisode] {
+            var components = URLComponents(string: "https://api.themoviedb.org/3/tv/\(tvId)/season/\(season)")!
+            components.queryItems = [
+                URLQueryItem(name: "api_key", value: apiKey),
+                URLQueryItem(name: "language", value: language)
+            ]
+            guard let url = components.url else { throw TMDBError.noResults }
+            let (data, _) = try await session.data(from: url)
+            return try JSONDecoder().decode(TMDBSeasonResponse.self, from: data).episodes
+        }
+
+        do {
+            var episodes = try await fetch(language: "it-IT")
+
+            if episodes.contains(where: { ($0.overview ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+               let english = try? await fetch(language: "en-US") {
+                let englishByNumber = Dictionary(
+                    english.map { ($0.episodeNumber, $0) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                episodes = episodes.map { episode in
+                    guard (episode.overview ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                          let fallback = englishByNumber[episode.episodeNumber],
+                          let overview = fallback.overview,
+                          !overview.isEmpty else { return episode }
+                    return TMDBEpisode(
+                        episodeNumber: episode.episodeNumber,
+                        name: episode.name,
+                        overview: overview,
+                        stillPath: episode.stillPath ?? fallback.stillPath,
+                        airDate: episode.airDate ?? fallback.airDate
+                    )
+                }
+            }
+
+            seasonCache[cacheKey] = episodes
+            return episodes
         } catch let error as TMDBError {
             throw error
         } catch {
