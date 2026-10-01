@@ -3,8 +3,8 @@ import SwiftUI
 /// Offset verticale del contenuto dentro lo `ScrollView` della scheda
 /// dettaglio, misurato nel coordinate space dedicato `"mediaDetailScroll"`.
 /// `0` = in cima; valori negativi = quanto si è scrollato verso il basso.
-/// Usato SOLO come fallback su iOS 17 (su iOS 18+ si legge direttamente
-/// `ScrollGeometry`, vedi `MediaDetailTopBarProgressModifier`).
+/// Usato solo come fallback su iOS 17 (da iOS 18 si usa
+/// `onScrollGeometryChange`, che non passa dal ciclo delle preference).
 struct MediaDetailScrollOffsetKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -12,191 +12,191 @@ struct MediaDetailScrollOffsetKey: PreferenceKey {
     }
 }
 
-/// Da applicare all'hero delle schede dettaglio: espone l'offset di scroll
-/// tramite `MediaDetailScrollOffsetKey` (fallback iOS 17). Su iOS 18+ non
-/// emette nulla, così non si paga un `GeometryReader` per ogni frame.
+/// Da applicare all'header dentro lo `ScrollView` (solo fallback iOS 17):
+/// espone l'offset di scroll tramite `MediaDetailScrollOffsetKey`.
 struct MediaDetailScrollTracker: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
-            content
-        } else {
-            content.background(
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: MediaDetailScrollOffsetKey.self,
-                        value: proxy.frame(in: .named("mediaDetailScroll")).minY
-                    )
-                }
-            )
-        }
+        content.background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: MediaDetailScrollOffsetKey.self,
+                    value: proxy.frame(in: .named("mediaDetailScroll")).minY
+                )
+            }
+        )
     }
 }
 
-/// Misura lo scroll della `ScrollView` e lo traduce direttamente nel
-/// progresso 0...1 della barra superiore.
+/// Da applicare allo `ScrollView` delle schede dettaglio: scrive in
+/// `offset` la DISTANZA scrollata (`0` = in cima, cresce scendendo).
 ///
-/// FIX: prima l'offset grezzo finiva in uno `@State` aggiornato ad OGNI
-/// frame di scroll, ridisegnando l'intera scheda (episodi inclusi). Ora
-/// si pubblica solo il progresso già limitato a 0...1: fuori dalla breve
-/// rampa di dissolvenza il valore non cambia e non c'è alcun ridisegno.
-///
-/// - iOS 18+: `onScrollGeometryChange` (offset reale del contenuto,
-///   indipendente da coordinate space e safe area).
-/// - iOS 17: `PreferenceKey` + coordinate space nominato.
-struct MediaDetailTopBarProgressModifier: ViewModifier {
-    @Binding var progress: CGFloat
-    let safeAreaTop: CGFloat
+/// - iOS 18+: `onScrollGeometryChange`, lettura diretta del
+///   `contentOffset` dello scroll view (affidabile, nessun
+///   `GeometryReader` per frame).
+/// - iOS 17: coordinate space + preference del `MediaDetailScrollTracker`.
+struct MediaDetailScrollObserver: ViewModifier {
+    @Binding var offset: CGFloat
 
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
-            // Copia locale: la closure di misura è `@Sendable` e non deve
-            // catturare `self` (contiene un `Binding`, non `Sendable`).
-            let safeAreaTop = self.safeAreaTop
-
             content.onScrollGeometryChange(for: CGFloat.self) { geometry in
-                // `contentOffset.y + contentInsets.top` = 0 a riposo, sia con
-                // sia senza inset di safe area, positivo scrollando in basso.
-                MediaDetailMetrics.topBarProgress(
-                    forScrolledDistance: geometry.contentOffset.y + geometry.contentInsets.top,
-                    safeAreaTop: safeAreaTop
-                )
+                // `+ contentInsets.top` normalizza lo 0 sia che lo scroll
+                // view applichi l'inset della safe area sia che lo ignori.
+                max(geometry.contentOffset.y + geometry.contentInsets.top, 0)
             } action: { _, newValue in
-                progress = newValue
+                if abs(newValue - offset) > 0.5 { offset = newValue }
             }
         } else {
             content
                 .coordinateSpace(name: "mediaDetailScroll")
                 .onPreferenceChange(MediaDetailScrollOffsetKey.self) { minY in
-                    let newValue = MediaDetailMetrics.topBarProgress(
-                        forScrolledDistance: -minY,
-                        safeAreaTop: safeAreaTop
-                    )
-                    if abs(newValue - progress) > 0.001 { progress = newValue }
+                    let scrolled = max(-minY, 0)
+                    if abs(scrolled - offset) > 0.5 { offset = scrolled }
                 }
         }
-    }
-}
-
-extension View {
-    /// Collega lo scroll di una `ScrollView` di scheda dettaglio al
-    /// progresso della `MediaDetailScrollTopBar`.
-    func mediaDetailTopBarProgress(_ progress: Binding<CGFloat>, safeAreaTop: CGFloat) -> some View {
-        modifier(MediaDetailTopBarProgressModifier(progress: progress, safeAreaTop: safeAreaTop))
     }
 }
 
 /// Barra superiore fissa (fuori dallo `ScrollView`) identica al video di
-/// riferimento: all'apertura è trasparente con solo la X in alto a destra;
-/// quando il logo/titolo dell'hero scorre sotto la barra, un blur morbido
-/// e scurito (senza bordo netto in basso) sfuma dentro insieme al titolo
-/// centrato sulla STESSA riga della X, che resta sempre nello stesso punto.
+/// riferimento (effetto "soft scroll edge" di iOS 26):
 ///
-/// Misure calibrate sul video di riferimento (1180×2556 px nativi = 3×):
-/// - cerchio X ⌀ 44pt, margine destro 16pt, bordo superiore = safe area top
-///   (nessun valore fisso: si adatta a Dynamic Island e notch);
-/// - titolo 17pt semibold bianco, centro alla stessa altezza della X;
-/// - blur che sfuma verso il basso fino a ≈26pt sotto la riga della X;
-/// - dissolvenza: parte quando il fondo del logo raggiunge ≈100pt sotto la
-///   safe area e si completa ≈60pt di scroll dopo.
+/// - In cima: trasparente, solo la X Liquid Glass neutra scura in alto a
+///   destra, appoggiata sull'immagine.
+/// - Quando il logo/titolo dell'hero passa sotto la barra: il contenuto
+///   che scorre sotto viene sfocato in modo PROGRESSIVO (blur forte in
+///   alto, che sfuma verso il basso) e scurito, e compare il titolo
+///   centrato sulla STESSA riga della X. La X non si muove mai.
+///
+/// Lo sfondo NON usa `glassEffect` + `opacity` (il vetro non si dissolve
+/// in modo affidabile con l'opacità e restava invisibile): usa materiali
+/// di sistema con maschera a gradiente, che funzionano uguale su iOS 17+.
 struct MediaDetailScrollTopBar: View {
     let title: String
-    /// 0 = in cima (trasparente), 1 = scrollato oltre l'hero (blur pieno).
+    /// 0 = in cima (trasparente), 1 = oltre l'header (blur + titolo pieni).
     let progress: CGFloat
-    /// Altezza della safe area superiore (Dynamic Island / notch).
-    let safeAreaTop: CGFloat
+    /// Altezza della safe area superiore (Dynamic Island / notch), letta
+    /// dalla vista che ospita la barra: niente più valore fisso a 59pt.
+    let topInset: CGFloat
     let onClose: () -> Void
 
+    // Misure calibrate sul video di riferimento (1180×2556 nativi = 3×):
+    // cerchio X ≈ 44pt, centro riga a ≈81pt = inset (59pt) + metà cerchio;
+    // il blur finisce poco sotto la riga (≈100pt) con dissolvenza morbida.
+    private let rowHeight: CGFloat = 44
     private let closeButtonSize: CGFloat = 44
-    private let closeTrailingPadding: CGFloat = 16
-    private let blurTailHeight: CGFloat = 26
+    private let fadeExtra: CGFloat = 8
 
-    private var rowHeight: CGFloat { closeButtonSize }
-    private var backgroundHeight: CGFloat { safeAreaTop + rowHeight + blurTailHeight }
+    private var safeTop: CGFloat { max(topInset, 20) }
+    private var barHeight: CGFloat { safeTop + rowHeight + fadeExtra }
+
+    /// Il titolo compare un attimo dopo l'inizio del blur, come nel video.
+    private var titleOpacity: Double {
+        Double(min(max((progress - 0.35) / 0.65, 0), 1))
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
-            backgroundBlur
-                .frame(height: backgroundHeight)
-                .opacity(progress)
+            progressiveBlurBackground
+                .frame(height: barHeight)
+                .opacity(Double(progress))
                 .allowsHitTesting(false)
 
-            // Titolo: sfuma dentro con lo scroll, centrato sulla riga della X
-            // con margini simmetrici per non sovrapporsi mai al pulsante.
-            Text(title)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, closeButtonSize + closeTrailingPadding * 2)
-                .frame(maxWidth: .infinity)
-                .frame(height: rowHeight)
-                .padding(.top, safeAreaTop)
-                .opacity(progress)
-                .allowsHitTesting(false)
-                .accessibilityHidden(progress < 0.5)
+            HStack(spacing: 0) {
+                Color.clear.frame(width: closeButtonSize + 32, height: rowHeight)
+                Text(title)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity)
+                    .opacity(titleOpacity)
+                Color.clear.frame(width: closeButtonSize + 32, height: rowHeight)
+            }
+            .frame(height: rowHeight)
+            .padding(.top, safeTop)
+            .allowsHitTesting(false)
+            .accessibilityHidden(titleOpacity < 0.5)
 
-            // La X è SEMPRE visibile fin dall'apertura (Liquid Glass) e non
-            // sfuma mai.
             HStack {
-                Spacer()
-                GlassIconButton(systemImage: "xmark", tint: .white, size: closeButtonSize, accessibilityLabel: "Chiudi") {
+                Spacer(minLength: 0)
+                // Tinta `nil`: vetro neutro scuro come nel video (una tinta
+                // bianca renderebbe il cerchio bianco e la X invisibile).
+                GlassIconButton(
+                    systemImage: "xmark",
+                    tint: nil,
+                    size: closeButtonSize,
+                    accessibilityLabel: "Chiudi"
+                ) {
                     onClose()
                 }
-                .padding(.trailing, closeTrailingPadding)
+                .foregroundStyle(.white)
+                .padding(.trailing, 16)
             }
-            .padding(.top, safeAreaTop)
+            .frame(height: rowHeight)
+            .padding(.top, safeTop)
         }
         .frame(maxWidth: .infinity, alignment: .top)
-        .ignoresSafeArea(edges: .top)
+        // Aspetto scuro anche con tema chiaro: il design delle schede
+        // dettaglio è scuro (testi bianchi sull'hero).
+        .environment(\.colorScheme, .dark)
     }
 
-    /// Blur progressivo + scurimento, entrambi mascherati con un gradiente
-    /// verticale: pieno in alto (status bar compresa), morbido verso il
-    /// basso, nessun bordo netto. Sempre in scheme scuro come nel video,
-    /// anche con tema chiaro attivo.
-    private var backgroundBlur: some View {
+    /// Blur progressivo: due strati di materiale con maschere a gradiente
+    /// diverse (sfocatura leggera che arriva più in basso + sfocatura
+    /// forte concentrata in alto) più un velo scuro che sfuma.
+    private var progressiveBlurBackground: some View {
         ZStack {
             Rectangle()
                 .fill(.thinMaterial)
-                .mask(fadeMask)
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0.0),
+                            .init(color: .black, location: 0.55),
+                            .init(color: .clear, location: 1.0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+
+            Rectangle()
+                .fill(.regularMaterial)
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0.0),
+                            .init(color: .black, location: 0.38),
+                            .init(color: .clear, location: 0.82)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
 
             LinearGradient(
                 stops: [
-                    .init(color: .black.opacity(0.55), location: 0.0),
-                    .init(color: .black.opacity(0.42), location: 0.6),
-                    .init(color: .black.opacity(0.0), location: 1.0)
+                    .init(color: .black.opacity(0.42), location: 0.0),
+                    .init(color: .black.opacity(0.26), location: 0.6),
+                    .init(color: .clear, location: 1.0)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
         }
-        .environment(\.colorScheme, .dark)
-    }
-
-    private var fadeMask: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .black, location: 0.0),
-                .init(color: .black, location: 0.62),
-                .init(color: .black.opacity(0.0), location: 1.0)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        .compositingGroup()
     }
 }
 
-extension MediaDetailMetrics {
-    /// Converte la distanza scrollata (positiva verso il basso) in un
-    /// progresso 0...1 per la barra superiore. La dissolvenza parte quando
-    /// il fondo del logo/titolo dell'hero (14pt sopra il bordo inferiore
-    /// dell'hero) arriva a ≈100pt sotto la safe area e finisce dopo ≈60pt
-    /// di scroll, come nel video. Funzione pura e non isolata: richiamabile
-    /// anche dalla closure `@Sendable` di `onScrollGeometryChange`.
-    static func topBarProgress(forScrolledDistance distance: CGFloat, safeAreaTop: CGFloat) -> CGFloat {
-        let logoBottomAtRest = heroHeight - 14
-        let start = logoBottomAtRest - (safeAreaTop + 100)
-        let length: CGFloat = 60
-        return min(max((distance - start) / length, 0), 1)
+extension MediaDetailScrollTopBar {
+    /// Converte la DISTANZA scrollata (0 = in cima) in progresso 0...1.
+    /// Nel video la barra scatta quando il logo dell'hero passa sotto la
+    /// riga della X (meta riga ≈ 230–315pt di scroll): rampa breve
+    /// agganciata all'altezza dell'hero, non lineare dall'inizio.
+    static func progress(forScrolled scrolled: CGFloat) -> CGFloat {
+        let start = MediaDetailMetrics.heroHeight - 110
+        let end = MediaDetailMetrics.heroHeight - 70
+        guard end > start else { return scrolled >= start ? 1 : 0 }
+        return min(max((scrolled - start) / (end - start), 0), 1)
     }
 }

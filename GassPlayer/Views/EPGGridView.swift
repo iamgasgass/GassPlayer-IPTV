@@ -817,23 +817,27 @@ struct EPGGridView: View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(channelColor)
 
-                // `CachedAsyncImage`: cache memoria+disco, URL normalizzati e
-                // nuovi tentativi, come nelle griglie di `ChannelGridView`.
-                let bannerInsetPadding: CGFloat = layoutDensity == .compact ? 8 : 12
-                CachedAsyncImage(
-                    url: ImageURLNormalizer.url(from: stream.streamIcon),
-                    size: CGSize(
-                        width: max(channelBannerWidth - bannerInsetPadding * 2, 1),
-                        height: max(bannerHeight - bannerInsetPadding * 2, 1)
-                    ),
-                    contentMode: .fit
-                ) {
+                if let icon = stream.streamIcon, !icon.isEmpty {
+                    AsyncImage(url: URL(string: icon)) { phase in
+                        if case .success(let image) = phase {
+                            image
+                                .renderingMode(.original)
+                                .resizable()
+                                .scaledToFit()
+                                .padding(layoutDensity == .compact ? 8 : 12)
+                        } else {
+                            Image(systemName: "play.tv.fill")
+                                .renderingMode(.original)
+                                .font(.system(size: layoutDensity == .compact ? 22 : 26))
+                                .foregroundStyle(.white)
+                        }
+                    }
+                } else {
                     Image(systemName: "play.tv.fill")
                         .renderingMode(.original)
                         .font(.system(size: layoutDensity == .compact ? 22 : 26))
                         .foregroundStyle(.white)
                 }
-                .padding(bannerInsetPadding)
 
                 if favorites.isFavorite(stream.streamId) {
                     Image(systemName: "star.fill")

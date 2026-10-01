@@ -23,9 +23,10 @@ struct MovieDetailView: View {
     @State private var playbackTarget: MoviePlaybackTarget?
     @State private var showAlternateSources = false
     @State private var downloadId: UUID?
-    /// Progresso 0...1 della barra superiore (blur + titolo), aggiornato
-    /// dallo scroll solo durante la breve rampa di dissolvenza.
-    @State private var topBarProgress: CGFloat = 0
+    /// Offset di scroll per il blur parziale della barra superiore, come
+    /// nel video di riferimento (X sempre visibile, titolo e sfondo Liquid
+    /// Glass che sfumano dentro solo scendendo oltre l'header).
+    @State private var scrollOffset: CGFloat = 0
 
     @AppStorage("gassplayer.detail.trailerMuted")
     private var isTrailerMuted = true
@@ -38,15 +39,6 @@ struct MovieDetailView: View {
 
     private var isFavorite: Bool {
         contentManagement.isFavorite(id: favoriteID)
-    }
-
-    /// Stessa immagine dell'hero della scheda (backdrop TMDB, poi quello
-    /// Xtream, poi l'icona del catalogo): salvata in "Continua a guardare"
-    /// così `HomeView` e le altre schede mostrano la stessa immagine.
-    private var heroImageURLString: String? {
-        detail.backdropURL?.absoluteString
-            ?? vodInfo?.backdropURL?.absoluteString
-            ?? stream.streamIcon
     }
 
     private var downloadProgress: Double? {
@@ -108,21 +100,20 @@ struct MovieDetailView: View {
                     // Sezione Cast con attori e ruoli
                     MediaCastSection(cast: detail.cast)
                         .padding(.top, 18)
+                        .padding(.bottom, 40)
                         .frame(width: geometry.size.width, alignment: .leading)
-
-                    Color.clear.frame(height: 40)
                 }
                 .frame(width: geometry.size.width)
             }
             .scrollIndicators(.hidden)
-            .mediaDetailTopBarProgress($topBarProgress, safeAreaTop: geometry.safeAreaInsets.top)
+            .modifier(MediaDetailScrollObserver(offset: $scrollOffset))
             .ignoresSafeArea(edges: .top)
             .background(Color(uiColor: .systemBackground))
             .overlay(alignment: .top) {
                 MediaDetailScrollTopBar(
                     title: stream.name,
-                    progress: topBarProgress,
-                    safeAreaTop: geometry.safeAreaInsets.top,
+                    progress: MediaDetailScrollTopBar.progress(forScrolled: scrollOffset),
+                    topInset: geometry.safeAreaInsets.top,
                     onClose: { dismiss() }
                 )
             }
@@ -137,8 +128,7 @@ struct MovieDetailView: View {
                         id: favoriteID,
                         title: stream.name,
                         kind: XtreamStreamKind.movie.rawValue,
-                        streamURL: target.url,
-                        imageURLString: heroImageURLString
+                        streamURL: target.url
                     )
                 }
         }
@@ -230,12 +220,5 @@ struct MovieDetailView: View {
 
         detail = await MediaDetailLoader.load(seed)
         isLoadingDetail = false
-
-        // Allinea l'immagine di "Continua a guardare" (anche per i film
-        // guardati prima che il campo esistesse) a quella dell'hero.
-        if let image = heroImageURLString {
-            let id = favoriteID
-            recentlyWatched.updateImage(image) { $0.id == id }
-        }
     }
 }

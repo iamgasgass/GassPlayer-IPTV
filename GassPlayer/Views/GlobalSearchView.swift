@@ -4,7 +4,7 @@ private struct SelectedSeriesResult: Identifiable, Hashable {
     let credentials: XtreamCredentials
     let seriesId: Int
     let name: String
-    let coverURLString: String?
+    var cover: String? = nil
 
     /// A differenza di `SelectedPlayable`, qui l'id NON è fisso: aprire una
     /// serie diversa deve davvero ricreare `SeriesEpisodesView` (nuova
@@ -22,22 +22,12 @@ private struct SelectedSeriesResult: Identifiable, Hashable {
     }
 }
 
-/// Film VOD scelto dai risultati: apre `MovieDetailView` (scheda dettaglio)
-/// invece del player. Stessa logica di `SelectedSeriesResult`: l'id segue
-/// il film, così aprirne uno diverso ricrea davvero la scheda.
-private struct SelectedMovieResult: Identifiable, Hashable {
+/// Film VOD selezionato dai risultati: apre la scheda dettaglio
+/// (`MovieDetailView`) invece di avviare direttamente lo streaming.
+private struct SelectedMovieResult: Identifiable {
+    let id: String
     let credentials: XtreamCredentials
     let stream: XtreamStream
-
-    var id: Int { stream.streamId }
-
-    static func == (lhs: SelectedMovieResult, rhs: SelectedMovieResult) -> Bool {
-        lhs.stream.streamId == rhs.stream.streamId
-    }
-
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(stream.streamId)
-    }
 }
 
 private struct SelectedPlayable: Identifiable, Hashable {
@@ -120,7 +110,7 @@ struct GlobalSearchView: View {
                 credentials: selection.credentials,
                 seriesId: selection.seriesId,
                 seriesName: selection.name,
-                fallbackCoverURLString: selection.coverURLString
+                fallbackCoverURLString: selection.cover
             )
         }
         .fullScreenCover(item: $selectedMovie) { selection in
@@ -298,57 +288,34 @@ struct GlobalSearchView: View {
                 // url)` in PlayerView.swift). Mai due player uno sopra l'altro.
                 selectedPlayable?.url = url
                 selectedPlayable?.title = result.title
-            } else if selectedSeries != nil || selectedMovie != nil {
-                // Era aperta una scheda dettaglio: va chiusa PRIMA di aprire
-                // il player, non contemporaneamente — presentare due
-                // fullScreenCover diversi nello stesso istante è il caso che
-                // causa lo "stacking". Il player si apre al giro successivo.
-                selectedSeries = nil
-                selectedMovie = nil
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 350_000_000) // lascia finire l'animazione di chiusura
-                    selectedPlayable = SelectedPlayable(url: url, title: result.title)
-                }
             } else {
                 selectedPlayable = SelectedPlayable(url: url, title: result.title)
             }
         case .movie:
-            // VOD: si apre la scheda dettaglio (`MovieDetailView`), da cui
-            // "Riproduci il film" avvia lo streaming. Mai l'avvio diretto.
-            guard let stream = result.stream else {
-                DebugLogger.logAsync(.error, "GlobalSearchView: film senza dati di catalogo per \(result.title)")
-                return
-            }
-            presentDetail {
-                selectedMovie = SelectedMovieResult(credentials: result.credentials, stream: stream)
-            }
-        case .series:
-            presentDetail {
-                selectedSeries = SelectedSeriesResult(
-                    credentials: result.credentials,
-                    seriesId: result.streamId,
+            // VOD: tap → scheda dettaglio (`MovieDetailView`), NON avvio
+            // diretto dello streaming. La riproduzione parte dal tasto
+            // "Riproduci il film" della scheda.
+            guard selectedPlayable == nil, selectedSeries == nil else { return }
+            selectedMovie = SelectedMovieResult(
+                id: result.id,
+                credentials: result.credentials,
+                stream: XtreamStream(
+                    streamId: result.streamId,
                     name: result.title,
-                    coverURLString: result.coverURLString
+                    streamIcon: result.streamIcon,
+                    categoryId: result.categoryId,
+                    containerExtension: result.containerExtension
                 )
-            }
-        }
-    }
-
-    /// Apre una scheda dettaglio (film o serie). Se un'altra presentazione
-    /// a schermo intero è ancora aperta (player o altra scheda) la chiude
-    /// prima e apre la nuova al giro successivo: due `fullScreenCover`
-    /// contemporanei sono la causa dello "stacking".
-    private func presentDetail(_ show: @escaping () -> Void) {
-        if selectedPlayable != nil || selectedSeries != nil || selectedMovie != nil {
-            selectedPlayable = nil
-            selectedSeries = nil
-            selectedMovie = nil
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 350_000_000)
-                show()
-            }
-        } else {
-            show()
+            )
+        case .series:
+            // Serie TV: tap → scheda dettaglio (`SeriesEpisodesView`).
+            guard selectedPlayable == nil, selectedMovie == nil else { return }
+            selectedSeries = SelectedSeriesResult(
+                credentials: result.credentials,
+                seriesId: result.streamId,
+                name: result.title,
+                cover: result.streamIcon
+            )
         }
     }
 
