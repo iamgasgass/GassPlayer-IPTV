@@ -225,7 +225,8 @@ struct MovieDetailView: View {
             castNames: fetchedVODInfo?.castNames ?? [],
             year: fetchedVODInfo?.year,
             runtimeMinutes: fetchedVODInfo?.runtimeMinutes,
-            xtreamRating: fetchedVODInfo?.info?.rating.flatMap { Double($0.replacingOccurrences(of: ",", with: ".")) }
+            xtreamRating: fetchedVODInfo?.info?.rating.flatMap { Double($0.replacingOccurrences(of: ",", with: ".")) },
+            tmdbId: fetchedVODInfo?.info?.tmdbId.flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
         )
 
         detail = await MediaDetailLoader.load(seed)

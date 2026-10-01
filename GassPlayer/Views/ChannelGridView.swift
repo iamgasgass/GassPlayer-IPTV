@@ -1,4 +1,6 @@
 import SwiftUI
+import UIKit
+import ImageIO
 
 /// FIX/OTTIMIZZAZIONE 2026-09-20 (velocità di caricamento/ricaricamento):
 ///
@@ -103,6 +105,29 @@ import SwiftUI
 /// KSPlaybackController` — e quindi il flusso in riproduzione — quella
 /// del canale precedente nonostante titolo e controlli mostrino già il
 /// nuovo canale.
+/// FIX 2026-10-01 (griglia 100% Xtream, scroll senza sfarfallii):
+///
+/// 1) SORGENTE DATI: le tile di Live TV, VOD e Serie TV leggono ORA
+/// esclusivamente dal catalogo Xtream (nome, categoria, `stream_icon` /
+/// `cover`). Prima, con una API key TMDB impostata, ogni tile VOD/Serie
+/// lanciava una ricerca TMDB per titolo (`TMDBEnrichedPoster`) e, a
+/// risposta arrivata, SOSTITUIVA l'immagine Xtream con il poster TMDB:
+/// la cella cambiava contenuto a scroll in corso (placeholder → poster
+/// Xtream → poster TMDB) ed era la causa principale dello sfarfallio, oltre
+/// che di poster sbagliati per i titoli omonimi/parziali. TMDB resta usato
+/// solo nelle schede dettaglio (film/serie), dove ora il matching è di
+/// precisione (anno, titolo originale, id Xtream, cast).
+/// 2) IMMAGINI: `AsyncImage` riparte da "placeholder" ogni volta che una
+/// cella della `LazyVGrid` viene riciclata, anche se l'immagine è già in
+/// cache di rete: il flash placeholder → immagine è lo sfarfallio visibile.
+/// `CachedPosterImage` legge in modo SINCRONO una cache in memoria
+/// (`NSCache`) già nell'`init`, quindi una cella che rientra in vista mostra
+/// subito l'immagine al primo frame; i download sono ridimensionati
+/// (ImageIO) fuori dal main thread e annullati quando la cella esce dallo
+/// schermo.
+/// 3) Le tile usano `.equatable()` (la conformità `Equatable` da sola non
+/// viene sfruttata da SwiftUI per via delle closure) e `.animation(nil,
+/// value:)` non mappa più l'intero elenco di serie ad ogni render.
 struct ChannelGridView: View {
     private enum CategorySelection: Hashable {
         case all
@@ -253,6 +278,14 @@ struct ChannelGridView: View {
 
     private var service: XtreamAPIService {
         XtreamAPIService(credentials: credentials)
+    }
+
+    /// Identità della sorgente per le tile `Equatable`: gli `streamId`
+    /// possono coincidere fra sorgenti diverse, e senza questa chiave una
+    /// tile riusata dopo il cambio sorgente conserverebbe le closure
+    /// (`onTap`) della sorgente precedente.
+    private var tileSourceKey: String {
+        "\(credentials.host.lowercased())|\(credentials.username)"
     }
 
     private var isCompactGrid: Bool {
@@ -861,11 +894,13 @@ struct ChannelGridView: View {
                 ForEach(displayedSeries) { item in
                     SeriesTile(
                         series: item,
+                        sourceKey: tileSourceKey,
                         artworkWidth: artworkSize,
                         artworkHeight: seriesPosterHeight
                     ) {
                         selectedSeries = item
                     }
+                    .equatable()
                     .id(item.seriesId)
                     .onAppear {
                         prefetchSeriesInfoIfNeeded(item)
@@ -883,7 +918,7 @@ struct ChannelGridView: View {
             // refresh del catalogo verso il layout dei poster durante lo
             // scroll: solo il conteggio/ordine degli elementi mostrati fa
             // scattare un ridisegno "silenzioso", senza curve animate.
-            .animation(nil, value: displayedSeries.map(\.seriesId))
+            .animation(nil, value: selectedCategory)
         }
     }
 
@@ -926,6 +961,7 @@ struct ChannelGridView: View {
         ChannelTile(
             stream: stream,
             kind: kind,
+            sourceKey: tileSourceKey,
             channelNumber: channelNumber,
             isCompact: isCompactGrid,
             artworkSize: artworkSize,
@@ -949,6 +985,7 @@ struct ChannelGridView: View {
                 )
             }
         )
+        .equatable()
     }
 
     private var loadingView: some View {
@@ -1214,6 +1251,7 @@ struct ChannelGridView: View {
 private struct ChannelTile: View, Equatable {
     let stream: XtreamStream
     let kind: XtreamStreamKind
+    let sourceKey: String
     let channelNumber: Int?
     let isCompact: Bool
     let artworkSize: CGFloat
@@ -1230,6 +1268,7 @@ private struct ChannelTile: View, Equatable {
     static func == (lhs: ChannelTile, rhs: ChannelTile) -> Bool {
         lhs.stream.id == rhs.stream.id &&
         lhs.kind == rhs.kind &&
+        lhs.sourceKey == rhs.sourceKey &&
         lhs.channelNumber == rhs.channelNumber &&
         lhs.isCompact == rhs.isCompact &&
         lhs.artworkSize == rhs.artworkSize &&
@@ -1286,40 +1325,24 @@ private struct ChannelTile: View, Equatable {
     @ViewBuilder
     private var artwork: some View {
         ZStack(alignment: .topTrailing) {
+            // Solo dati Xtream (`stream_icon`): nessuna sostituzione con
+            // immagini di altre fonti mentre si scorre.
             if kind == .movie {
-                TMDBEnrichedPoster(
-                    title: stream.name,
-                    isSeries: false,
-                    fallbackIconURL: stream.streamIcon,
+                CachedPosterImage(
+                    urlString: stream.streamIcon,
                     width: artworkSize,
                     height: moviePosterHeight,
-                    badgeStyle: .topTrailing
+                    cornerRadius: 12,
+                    placeholderSymbol: "film"
                 )
             } else {
-                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            // Disabilita la transizione di fase implicita
-                            // di AsyncImage: senza questo, ogni volta che
-                            // la cella viene riciclata durante lo scroll
-                            // l'immagine "fade-in" viene rianimata da zero,
-                            // producendo lo sfarfallio/glitch percepito.
-                            .transaction { $0.animation = nil }
-
-                    default:
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(.ultraThinMaterial)
-                            .overlay {
-                                Image(systemName: "tv")
-                                    .foregroundStyle(.secondary)
-                            }
-                    }
-                }
-                .frame(width: artworkSize, height: artworkSize)
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                CachedPosterImage(
+                    urlString: stream.streamIcon,
+                    width: artworkSize,
+                    height: artworkSize,
+                    cornerRadius: cornerRadius,
+                    placeholderSymbol: "tv"
+                )
             }
 
             // Nei film il voto occupa l'angolo in alto a destra (come nel
@@ -1382,6 +1405,7 @@ private struct ChannelTile: View, Equatable {
 
 private struct SeriesTile: View, Equatable {
     let series: XtreamSeriesItem
+    let sourceKey: String
     let artworkWidth: CGFloat
     let artworkHeight: CGFloat
     let onTap: () -> Void
@@ -1400,6 +1424,7 @@ private struct SeriesTile: View, Equatable {
     // ridisegno/animazione spuria.
     static func == (lhs: SeriesTile, rhs: SeriesTile) -> Bool {
         lhs.series.seriesId == rhs.series.seriesId &&
+        lhs.sourceKey == rhs.sourceKey &&
         lhs.series.name == rhs.series.name &&
         lhs.series.cover == rhs.series.cover &&
         lhs.artworkWidth == rhs.artworkWidth &&
@@ -1409,19 +1434,14 @@ private struct SeriesTile: View, Equatable {
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 4) {
-                TMDBEnrichedPoster(
-                    title: series.name,
-                    isSeries: true,
-                    fallbackIconURL: series.cover,
+                // Solo dati Xtream (`cover`): nessun poster TMDB in griglia.
+                CachedPosterImage(
+                    urlString: series.cover,
                     width: artworkWidth,
                     height: artworkHeight,
-                    badgeStyle: .topTrailing
+                    cornerRadius: 12,
+                    placeholderSymbol: "rectangle.stack.fill"
                 )
-                // Blocca eventuali animazioni implicite generate
-                // internamente da `TMDBEnrichedPoster` (es. transizione
-                // placeholder → immagine caricata) quando la cella viene
-                // riciclata dalla griglia durante lo scroll.
-                .transaction { $0.animation = nil }
 
                 Text(series.name)
                     .font(.caption)
@@ -1432,5 +1452,178 @@ private struct SeriesTile: View, Equatable {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(series.name)
+    }
+}
+
+
+// MARK: - Immagini poster senza sfarfallio
+
+/// Cache in memoria condivisa + download ridimensionato delle immagini
+/// della griglia. La lettura dalla cache è sincrona (`NSCache` è
+/// thread-safe), così una cella riciclata può mostrare l'immagine già al
+/// primo frame, senza passare dal placeholder.
+private enum PosterImageStore {
+    static let memory: NSCache<NSURL, UIImage> = {
+        let cache = NSCache<NSURL, UIImage>()
+        cache.countLimit = 800
+        cache.totalCostLimit = 128 * 1024 * 1024
+        return cache
+    }()
+
+    private static let session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.timeoutIntervalForRequest = 20
+        configuration.urlCache = URLCache(
+            memoryCapacity: 32 * 1024 * 1024,
+            diskCapacity: 300 * 1024 * 1024
+        )
+        return URLSession(configuration: configuration)
+    }()
+
+    /// Lato massimo in pixel dell'immagine decodificata: abbondante per
+    /// tile da ~150 pt a 3x, ma molto più leggero di un poster a piena
+    /// risoluzione decodificato sul main thread.
+    private static let maxPixelSize: CGFloat = 480
+
+    static func url(from string: String?) -> URL? {
+        guard let string = string?.trimmingCharacters(in: .whitespacesAndNewlines), !string.isEmpty,
+              let url = URL(string: string),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+
+        return url
+    }
+
+    static func cachedImage(for url: URL) -> UIImage? {
+        memory.object(forKey: url as NSURL)
+    }
+
+    /// Scarica e decodifica (ridimensionata) l'immagine. Rispetta
+    /// l'annullamento del `Task` chiamante: se la cella esce dallo schermo
+    /// durante lo scroll il download viene interrotto.
+    static func load(_ url: URL) async -> UIImage? {
+        if let cached = cachedImage(for: url) { return cached }
+
+        guard let (data, response) = try? await session.data(from: url),
+              !Task.isCancelled else {
+            return nil
+        }
+
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            return nil
+        }
+
+        guard let image = downsampledImage(from: data) else { return nil }
+
+        let cost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
+        memory.setObject(image, forKey: url as NSURL, cost: cost)
+
+        return image
+    }
+
+    private static func downsampledImage(from data: Data) -> UIImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+            return nil
+        }
+
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ] as CFDictionary
+
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
+            return nil
+        }
+
+        return UIImage(cgImage: cgImage)
+    }
+}
+
+/// Immagine di griglia (poster o logo canale) con comportamento stabile in
+/// scroll: placeholder neutro e leggero, immagine mostrata subito se già in
+/// cache, comparsa SENZA animazione (nessun fade/rianimazione quando la
+/// cella viene riciclata).
+private struct CachedPosterImage: View {
+    let urlString: String?
+    let width: CGFloat
+    let height: CGFloat
+    let cornerRadius: CGFloat
+    let placeholderSymbol: String
+
+    @State private var image: UIImage?
+    @State private var imageURL: URL?
+
+    init(
+        urlString: String?,
+        width: CGFloat,
+        height: CGFloat,
+        cornerRadius: CGFloat,
+        placeholderSymbol: String
+    ) {
+        self.urlString = urlString
+        self.width = width
+        self.height = height
+        self.cornerRadius = cornerRadius
+        self.placeholderSymbol = placeholderSymbol
+
+        // Lettura sincrona della cache già all'init: la cella riciclata
+        // parte direttamente con l'immagine, senza frame di placeholder.
+        if let url = PosterImageStore.url(from: urlString),
+           let cached = PosterImageStore.cachedImage(for: url) {
+            _image = State(initialValue: cached)
+            _imageURL = State(initialValue: url)
+        }
+    }
+
+    private var currentURL: URL? {
+        PosterImageStore.url(from: urlString)
+    }
+
+    var body: some View {
+        ZStack {
+            if let image, imageURL == currentURL {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                Color(uiColor: .secondarySystemFill)
+                    .overlay {
+                        Image(systemName: placeholderSymbol)
+                            .foregroundStyle(.secondary)
+                    }
+            }
+        }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .transaction { $0.animation = nil }
+        .task(id: urlString) {
+            guard let url = currentURL else { return }
+            guard imageURL != url || image == nil else { return }
+
+            if let cached = PosterImageStore.cachedImage(for: url) {
+                apply(cached, for: url)
+                return
+            }
+
+            guard let loaded = await PosterImageStore.load(url), !Task.isCancelled else { return }
+            apply(loaded, for: url)
+        }
+    }
+
+    private func apply(_ loaded: UIImage, for url: URL) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+
+        withTransaction(transaction) {
+            image = loaded
+            imageURL = url
+        }
     }
 }

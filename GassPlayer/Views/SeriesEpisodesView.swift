@@ -626,7 +626,8 @@ struct SeriesEpisodesView: View {
             castNames: info.castNames,
             year: info.year,
             runtimeMinutes: nil,
-            xtreamRating: info.details?.rating.flatMap { Double($0.replacingOccurrences(of: ",", with: ".")) }
+            xtreamRating: info.details?.rating.flatMap { Double($0.replacingOccurrences(of: ",", with: ".")) },
+            tmdbId: info.details?.tmdbId.flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
         )
 
         detail = await MediaDetailLoader.load(seed)
