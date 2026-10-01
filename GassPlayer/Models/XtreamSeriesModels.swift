@@ -12,9 +12,6 @@ extension XtreamSeriesItem: Decodable {
     enum CodingKeys: String, CodingKey {
         case seriesId = "series_id", name, cover
         case categoryId = "category_id"
-        // Chiavi alternative per la copertina usate da alcuni pannelli.
-        case streamIcon = "stream_icon", movieImage = "movie_image", poster
-        case backdropPath = "backdrop_path"
     }
 
     /// FIX 2026-09-20: `name` e `cover` usavano `try? container.decode(String.self, forKey:)`,
@@ -36,15 +33,9 @@ extension XtreamSeriesItem: Decodable {
             .nonEmpty
             ?? "Serie senza nome"
 
-        // `cover` o, in mancanza, le chiavi alternative (anche il primo
-        // elemento di `backdrop_path`, che molti pannelli inviano come array).
-        var candidates = [CodingKeys.cover, .streamIcon, .movieImage, .poster]
-            .map { container.decodeFlexibleString(forKey: $0) }
-        candidates.append((try? container.decode([String].self, forKey: .backdropPath))?.first)
-        cover = candidates
-            .lazy
-            .compactMap { ImageURLNormalizer.normalizedString($0) }
-            .first
+        cover = container.decodeFlexibleString(forKey: .cover)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmpty
 
         categoryId = container.decodeFlexibleString(forKey: .categoryId)
     }
@@ -235,10 +226,7 @@ extension XtreamSeriesInfo.Episode: Decodable {
     }
 
     private enum InfoKeys: String, CodingKey {
-        case plot, overview
-        // `description` come nome di case confliggerebbe con
-        // `CodingKey.description` (CustomStringConvertible).
-        case descriptionText = "description"
+        case plot
         case movieImage = "movie_image"
         case durationSecs = "duration_secs"
         case releaseDate = "releasedate"
@@ -272,13 +260,9 @@ extension XtreamSeriesInfo.Episode: Decodable {
             .nonEmpty
 
         if let infoContainer = try? container.nestedContainer(keyedBy: InfoKeys.self, forKey: .info) {
-            // Alcuni pannelli Xtream chiamano la trama "description" o
-            // "overview" invece di "plot": il primo valore non vuoto vince.
-            plot = [InfoKeys.plot, .descriptionText, .overview]
-                .compactMap { infoContainer.decodeFlexibleString(forKey: $0)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .nonEmpty }
-                .first
+            plot = infoContainer.decodeFlexibleString(forKey: .plot)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nonEmpty
 
             if let imageString = infoContainer.decodeFlexibleString(forKey: .movieImage)?.nonEmpty {
                 stillImageURL = URL(string: imageString)
