@@ -9,12 +9,6 @@ struct RecentlyWatchedItem: Codable, Identifiable, Hashable {
     var kind: String
     var streamURL: URL
     var openedAt: Date = Date()
-    /// Immagine della scheda dettaglio (backdrop TMDB o, in mancanza,
-    /// quella del provider): la stessa mostrata nell'hero di
-    /// `MovieDetailView`/`SeriesEpisodesView`. Opzionale: gli elementi
-    /// salvati prima di questo campo si decodificano con `nil` e mostrano
-    /// il segnaposto a icona finché non vengono riaperti.
-    var imageURLString: String? = nil
 }
 
 /// Traccia gli ultimi contenuti aperti in riproduzione per alimentare la
@@ -47,11 +41,7 @@ final class RecentlyWatchedStore: ObservableObject {
 
     /// Registra (o sposta in cima, se già presente) un contenuto appena
     /// aperto in riproduzione.
-    func record(id: String, title: String, kind: String, streamURL: URL, imageURLString: String? = nil) {
-        // Se l'elemento esisteva già e questa chiamata non porta un'immagine,
-        // si conserva quella precedente invece di perderla.
-        let previousImage = items.first { $0.id == id }?.imageURLString
-
+    func record(id: String, title: String, kind: String, streamURL: URL) {
         items.removeAll { $0.id == id }
         items.insert(
             RecentlyWatchedItem(
@@ -59,8 +49,7 @@ final class RecentlyWatchedStore: ObservableObject {
                 title: title,
                 kind: kind,
                 streamURL: streamURL,
-                openedAt: Date(),
-                imageURLString: imageURLString ?? previousImage
+                openedAt: Date()
             ),
             at: 0
         )
@@ -70,7 +59,6 @@ final class RecentlyWatchedStore: ObservableObject {
         }
 
         persist()
-        warmImageCache(for: items.first?.imageURLString)
     }
 
     func remove(_ item: RecentlyWatchedItem) {
@@ -81,38 +69,6 @@ final class RecentlyWatchedStore: ObservableObject {
     func clear() {
         items.removeAll()
         persist()
-    }
-
-    /// Svuota solo gli elementi di un tipo ("live"/"movie"/"series"):
-    /// usato da "Continua a guardare" nelle schede dettaglio, che mostrano
-    /// soltanto i contenuti della propria sezione.
-    func clear(kind: String) {
-        items.removeAll { $0.kind == kind }
-        persist()
-    }
-
-    /// Aggiorna l'immagine degli elementi che corrispondono, senza
-    /// cambiarne l'ordine. Chiamata dalle schede dettaglio appena caricato
-    /// il backdrop, così anche i titoli guardati prima dell'introduzione
-    /// del campo mostrano in `HomeView` la stessa immagine della scheda.
-    func updateImage(_ urlString: String, where matches: (RecentlyWatchedItem) -> Bool) {
-        var changed = false
-        for index in items.indices where matches(items[index]) && items[index].imageURLString != urlString {
-            items[index].imageURLString = urlString
-            changed = true
-        }
-        if changed {
-            persist()
-            warmImageCache(for: urlString)
-        }
-    }
-
-    /// Scarica subito l'immagine della card nella cache condivisa: quando
-    /// `HomeView` o `ChannelGridView` mostrano "Continua a guardare" il
-    /// poster è già pronto e compare al primo frame.
-    private func warmImageCache(for urlString: String?) {
-        guard let url = ImageURLNormalizer.url(from: urlString) else { return }
-        ImageLoader.shared.prefetch([url], maxPixel: ContinueWatchingSection.imagePixels)
     }
 
     private func persist() {
@@ -126,9 +82,5 @@ final class RecentlyWatchedStore: ObservableObject {
             return
         }
         items = decoded
-
-        // Riscalda le immagini delle card già salvate (le prime visibili).
-        let urls = decoded.prefix(12).compactMap { ImageURLNormalizer.url(from: $0.imageURLString) }
-        ImageLoader.shared.prefetch(urls, maxPixel: ContinueWatchingSection.imagePixels)
     }
 }
