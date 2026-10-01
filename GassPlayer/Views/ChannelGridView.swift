@@ -1,5 +1,18 @@
 import SwiftUI
 
+/// FIX 2026-10-01 (scroll senza sfarfallii con API TMDB attiva + dati solo
+/// da Xtream nella griglia):
+///
+/// Con la chiave TMDB impostata, ogni cella VOD/Serie TV mostrava prima
+/// l'icona Xtream, poi (a lookup concluso) il poster TMDB, e a ogni riciclo
+/// della cella (`@State` azzerato) l'intero ciclo ricominciava: era questo lo
+/// sfarfallio. Ora Live TV, VOD e Serie TV leggono TUTTO da Xtream
+/// (`stream_icon` / `cover`) tramite `CachedPosterImage`, con cache in
+/// memoria e senza alcuna richiesta TMDB nelle celle. TMDB resta usato
+/// solo nelle schede dettaglio (`MovieDetailView`, `SeriesEpisodesView`).
+/// Rimossi inoltre `.animation(nil, value: displayedSeries.map(...))`
+/// (una `map` O(n) ad ogni render) e l'`.id` ridondante sulle celle serie.
+///
 /// FIX/OTTIMIZZAZIONE 2026-09-20 (velocità di caricamento/ricaricamento):
 ///
 /// 1) `CatalogIndex` ora precalcola anche il raggruppamento delle Serie TV
@@ -416,6 +429,18 @@ struct ChannelGridView: View {
 
                 if groupUIStyle == "scorrevole" {
                     categoryChips
+                }
+
+                // "Continua a guardare" come in `HomeView` (con l'immagine
+                // della scheda dettaglio), ma solo con i contenuti di
+                // questa sezione: film in VOD, serie in Serie TV.
+                if kind != .live && !isInitialLoadPending {
+                    ContinueWatchingSection(
+                        kindFilter: kind.rawValue,
+                        horizontalInset: gridHorizontalPadding,
+                        topPadding: 8,
+                        bottomPadding: 16
+                    )
                 }
 
                 if isInitialLoadPending {
@@ -854,7 +879,6 @@ struct ChannelGridView: View {
                     ) {
                         selectedSeries = item
                     }
-                    .id(item.seriesId)
                     .onAppear {
                         prefetchSeriesInfoIfNeeded(item)
                     }
@@ -866,12 +890,6 @@ struct ChannelGridView: View {
                 transaction.animation = nil
                 transaction.disablesAnimations = true
             }
-            // Blocca esplicitamente qualunque animazione implicita che
-            // potrebbe propagarsi dal cambio di categoria (chip) o dal
-            // refresh del catalogo verso il layout dei poster durante lo
-            // scroll: solo il conteggio/ordine degli elementi mostrati fa
-            // scattare un ridisegno "silenzioso", senza curve animate.
-            .animation(nil, value: displayedSeries.map(\.seriesId))
         }
     }
 
@@ -955,8 +973,9 @@ struct ChannelGridView: View {
     /// impostato su "Scorrevole" dal menu "…".
     private var categoryChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            glassChipsContainer {
-            HStack(spacing: 8) {
+            // `LazyHStack`: con centinaia di gruppi solo i chip visibili
+            // creano il proprio vetro Liquid Glass (render molto più leggero).
+            LazyHStack(spacing: 8) {
                 categoryButton(
                     title: "Tutti",
                     icon: "square.grid.2x2",
@@ -982,22 +1001,8 @@ struct ChannelGridView: View {
                     )
                 }
             }
-            }
             .padding(.horizontal)
             .padding(.vertical, 8)
-        }
-    }
-
-    /// iOS 26+: raggruppa i chip in un `GlassEffectContainer`, come
-    /// raccomandato da Apple per più elementi Liquid Glass vicini (stesso
-    /// campionamento dello sfondo, rendering più efficiente nello scroll
-    /// orizzontale). Versioni precedenti: contenuto invariato.
-    @ViewBuilder
-    private func glassChipsContainer<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 8) { content() }
-        } else {
-            content()
         }
     }
 
@@ -1035,8 +1040,9 @@ struct ChannelGridView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
         }
-        .buttonStyle(.plain)
-        .modifier(GroupChipGlassStyle(isSelected: isSelected))
+        // Stesso Liquid Glass del tasto "X" delle schede dettaglio
+        // (vedi `NativeOrLegacyGlassChip`).
+        .modifier(NativeOrLegacyGlassChip(isSelected: isSelected))
         .accessibilityLabel("\(title), \(count) contenuti")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
@@ -1286,42 +1292,34 @@ private struct ChannelTile: View, Equatable {
     @ViewBuilder
     private var artwork: some View {
         ZStack(alignment: .topTrailing) {
+            // Tutto da Xtream: nessuna richiesta TMDB nelle celle della
+            // griglia (TMDB resta solo nelle schede dettaglio).
             if kind == .movie {
-                TMDBEnrichedPoster(
-                    title: stream.name,
-                    isSeries: false,
-                    fallbackIconURL: stream.streamIcon,
-                    width: artworkSize,
-                    height: moviePosterHeight
+                CachedPosterImage(
+                    urlString: stream.streamIcon,
+                    size: CGSize(width: artworkSize, height: moviePosterHeight),
+                    contentMode: .fill,
+                    cornerRadius: 12,
+                    placeholderSymbol: "film"
                 )
             } else {
-                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            // Disabilita la transizione di fase implicita
-                            // di AsyncImage: senza questo, ogni volta che
-                            // la cella viene riciclata durante lo scroll
-                            // l'immagine "fade-in" viene rianimata da zero,
-                            // producendo lo sfarfallio/glitch percepito.
-                            .transaction { $0.animation = nil }
-
-                    default:
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(.ultraThinMaterial)
-                            .overlay {
-                                Image(systemName: "tv")
-                                    .foregroundStyle(.secondary)
-                            }
-                    }
-                }
-                .frame(width: artworkSize, height: artworkSize)
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                CachedPosterImage(
+                    urlString: stream.streamIcon,
+                    size: CGSize(width: artworkSize, height: artworkSize),
+                    contentMode: .fit,
+                    cornerRadius: cornerRadius,
+                    placeholderSymbol: "tv"
+                )
             }
 
+            // Nei film il voto occupa l'angolo in alto a destra (come nel
+            // riferimento): la stella dei preferiti passa in alto a sinistra.
             favoriteButton
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: .infinity,
+                    alignment: kind == .movie ? .topLeading : .topTrailing
+                )
 
             if let channelNumber {
                 channelNumberBadge(channelNumber)
@@ -1401,18 +1399,15 @@ private struct SeriesTile: View, Equatable {
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 4) {
-                TMDBEnrichedPoster(
-                    title: series.name,
-                    isSeries: true,
-                    fallbackIconURL: series.cover,
-                    width: artworkWidth,
-                    height: artworkHeight
+                // Copertina letta solo da Xtream (`cover`), con cache in
+                // memoria: niente scambio icona Xtream -> poster TMDB.
+                CachedPosterImage(
+                    urlString: series.cover,
+                    size: CGSize(width: artworkWidth, height: artworkHeight),
+                    contentMode: .fill,
+                    cornerRadius: 12,
+                    placeholderSymbol: "rectangle.stack.fill"
                 )
-                // Blocca eventuali animazioni implicite generate
-                // internamente da `TMDBEnrichedPoster` (es. transizione
-                // placeholder → immagine caricata) quando la cella viene
-                // riciclata dalla griglia durante lo scroll.
-                .transaction { $0.animation = nil }
 
                 Text(series.name)
                     .font(.caption)
@@ -1423,42 +1418,5 @@ private struct SeriesTile: View, Equatable {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(series.name)
-    }
-}
-
-// MARK: - Stile chip gruppi (Liquid Glass della "X" della scheda dettaglio)
-
-/// Chip del selettore gruppi "Scorrevole": stesso materiale Liquid Glass
-/// nativo della "X" delle schede dettaglio (`.glassEffect(.regular.
-/// interactive())`, vetro neutro). Il chip selezionato usa lo stesso
-/// vetro con tinta d'accento. Su iOS < 26 resta il look precedente
-/// (`ultraThinMaterial` + bordo, accento pieno se selezionato).
-private struct GroupChipGlassStyle: ViewModifier {
-    let isSelected: Bool
-
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .contentShape(Capsule())
-                .glassEffect(
-                    isSelected
-                        ? .regular.tint(Color.accentColor).interactive()
-                        : .regular.interactive(),
-                    in: Capsule()
-                )
-        } else {
-            content
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .background(isSelected ? Color.accentColor : Color.clear, in: Capsule())
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay {
-                    Capsule()
-                        .strokeBorder(
-                            Color.white.opacity(isSelected ? 0.22 : 0.12),
-                            lineWidth: 0.5
-                        )
-                }
-        }
     }
 }

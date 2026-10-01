@@ -29,9 +29,13 @@ struct SeriesEpisodesView: View {
     @State private var showAlternateSources = false
     @State private var alternateSeriesTarget: AlternateSeriesTarget?
     @State private var downloadId: UUID?
-    /// Offset di scroll per il blur parziale della barra superiore, come
-    /// nel video di riferimento.
-    @State private var scrollOffset: CGFloat = 0
+    /// Dettagli per-episodio da TMDB (stagione → numero episodio → dati):
+    /// trama, immagine e data di riserva quando il provider Xtream non li
+    /// fornisce. Riempito su richiesta per la stagione selezionata.
+    @State private var tmdbEpisodesBySeason: [Int: [Int: TMDBEpisode]] = [:]
+    /// Progresso 0...1 della barra superiore (blur + titolo), aggiornato
+    /// dallo scroll solo durante la breve rampa di dissolvenza.
+    @State private var topBarProgress: CGFloat = 0
 
     @AppStorage("gassplayer.detail.trailerMuted")
     private var isTrailerMuted = true
@@ -42,6 +46,27 @@ struct SeriesEpisodesView: View {
 
     private var isFavorite: Bool {
         contentManagement.isFavorite(id: favoriteID)
+    }
+
+    /// Stessa immagine dell'hero della scheda (backdrop TMDB, poi quello
+    /// Xtream, poi la copertina): salvata in "Continua a guardare" così
+    /// `HomeView` e le altre schede mostrano la stessa immagine.
+    private var heroImageURLString: String? {
+        detail.backdropURL?.absoluteString
+            ?? seriesInfo?.backdropURL?.absoluteString
+            ?? fallbackCoverURLString
+    }
+
+    /// Prefisso degli id di "Continua a guardare" per gli episodi di
+    /// questa serie (stesso formato di `recordRecentlyWatched`).
+    private var recentlyWatchedIDPrefix: String {
+        [
+            credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            credentials.username,
+            "series",
+            String(seriesId),
+            ""
+        ].joined(separator: "|")
     }
 
     private var downloadProgress: Double? {
@@ -189,24 +214,67 @@ struct SeriesEpisodesView: View {
                     // Sezione Episodi e Stagioni
                     episodesSection(info, containerWidth: geometry.size.width)
                         .padding(.top, 20)
-                        .padding(.bottom, 40)
                         .frame(width: geometry.size.width, alignment: .leading)
+
+                    Color.clear.frame(height: 40)
                 }
                 .frame(width: geometry.size.width)
             }
             .scrollIndicators(.hidden)
-            .modifier(MediaDetailScrollObserver(offset: $scrollOffset))
+            .mediaDetailTopBarProgress($topBarProgress, safeAreaTop: geometry.safeAreaInsets.top)
             .ignoresSafeArea(edges: .top)
             .background(Color(uiColor: .systemBackground))
             .overlay(alignment: .top) {
                 MediaDetailScrollTopBar(
                     title: seriesName,
-                    progress: MediaDetailScrollTopBar.progress(forScrolled: scrollOffset),
-                    topInset: geometry.safeAreaInsets.top,
+                    progress: topBarProgress,
+                    safeAreaTop: geometry.safeAreaInsets.top,
                     onClose: { dismiss() }
                 )
             }
         }
+        .task(id: tmdbEpisodesTaskID) {
+            await loadTMDBEpisodesIfNeeded()
+        }
+    }
+
+    // MARK: - Dettagli episodio (Xtream + riserva TMDB)
+
+    /// Si riavvia quando arriva l'id TMDB (fine di `loadDetail`) o cambia
+    /// la stagione selezionata.
+    private var tmdbEpisodesTaskID: String {
+        "\(detail.tmdbId ?? 0)-\(selectedSeason ?? 0)"
+    }
+
+    private func loadTMDBEpisodesIfNeeded() async {
+        guard let tmdbId = detail.tmdbId,
+              let season = selectedSeason,
+              tmdbEpisodesBySeason[season] == nil,
+              TMDBService.hasAPIKey else { return }
+
+        guard let episodes = try? await TMDBService.shared.seasonEpisodes(tvId: tmdbId, season: season) else { return }
+
+        tmdbEpisodesBySeason[season] = Dictionary(
+            episodes.map { ($0.episodeNumber, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    private func tmdbEpisode(for episode: XtreamSeriesInfo.Episode, season: Int) -> TMDBEpisode? {
+        tmdbEpisodesBySeason[season]?[episode.episodeNum]
+    }
+
+    /// Trama dell'episodio: quella del provider se presente, altrimenti
+    /// quella TMDB. `nil` se nessuna delle due esiste.
+    private func episodePlot(for episode: XtreamSeriesInfo.Episode, season: Int) -> String? {
+        if let plot = episode.plot?.trimmingCharacters(in: .whitespacesAndNewlines), !plot.isEmpty {
+            return plot
+        }
+        if let overview = tmdbEpisode(for: episode, season: season)?.overview?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !overview.isEmpty {
+            return overview
+        }
+        return nil
     }
 
     // MARK: - Riga icone
@@ -308,7 +376,7 @@ struct SeriesEpisodesView: View {
             selectedEpisode = episode
         } label: {
             VStack(alignment: .leading, spacing: 10) {
-                episodeThumbnail(episode)
+                episodeThumbnail(episode, season: season)
                     .aspectRatio(16.0 / 9.0, contentMode: .fill)
                     .frame(maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -319,32 +387,41 @@ struct SeriesEpisodesView: View {
                     }
                     .clipped()
 
-                VStack(alignment: .leading, spacing: 4) {
+                // Blocco testo identico al video: rientrato di 12pt rispetto
+                // alla miniatura, codice grigio, titolo su UNA riga (con
+                // "…" se lungo) e sotto la trama completa in grigio.
+                VStack(alignment: .leading, spacing: 0) {
                     Text(episode.code(seasonFallback: season))
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 14))
                         .foregroundStyle(.secondary)
 
                     Text(episode.title)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.primary)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .padding(.top, 1)
 
-                if let plot = episode.plot, !plot.isEmpty {
-                    Text(plot)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(3)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                    if let plot = episodePlot(for: episode, season: season) {
+                        Text(plot)
+                            .font(.system(size: 15))
+                            .foregroundStyle(.secondary)
+                            .lineSpacing(2)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 4)
+                    }
 
-                if let date = episode.formattedReleaseDate {
-                    Text(date)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.primary.opacity(0.85))
+                    if let date = episode.formattedReleaseDate
+                        ?? tmdbEpisode(for: episode, season: season)?.airDate.flatMap(Self.formattedDate(fromISO:)) {
+                        Text(date)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.primary.opacity(0.85))
+                            .padding(.top, 6)
+                    }
                 }
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -377,9 +454,24 @@ struct SeriesEpisodesView: View {
         return PlaybackPositionStore.watchFraction(for: url)
     }
 
+    /// Data ISO "yyyy-MM-dd" (TMDB) in italiano esteso ("1 febbraio 2006"),
+    /// stesso formato di `XtreamSeriesInfo.Episode.formattedReleaseDate`.
+    private static func formattedDate(fromISO raw: String) -> String? {
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.calendar = Calendar(identifier: .gregorian)
+        parser.dateFormat = "yyyy-MM-dd"
+        guard let date = parser.date(from: raw) else { return nil }
+
+        let display = DateFormatter()
+        display.locale = Locale(identifier: "it_IT")
+        display.dateFormat = "d MMMM yyyy"
+        return display.string(from: date)
+    }
+
     @ViewBuilder
-    private func episodeThumbnail(_ episode: XtreamSeriesInfo.Episode) -> some View {
-        if let url = episode.stillImageURL {
+    private func episodeThumbnail(_ episode: XtreamSeriesInfo.Episode, season: Int) -> some View {
+        if let url = episode.stillImageURL ?? tmdbEpisode(for: episode, season: season)?.stillURL {
             AsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image):
@@ -493,7 +585,8 @@ struct SeriesEpisodesView: View {
             ].joined(separator: "|"),
             title: "\(seriesName) · \(episode.title)",
             kind: "series",
-            streamURL: url
+            streamURL: url,
+            imageURLString: heroImageURLString
         )
     }
 
@@ -538,5 +631,12 @@ struct SeriesEpisodesView: View {
 
         detail = await MediaDetailLoader.load(seed)
         isLoadingDetail = false
+
+        // Allinea l'immagine di "Continua a guardare" (anche per gli
+        // episodi guardati prima che il campo esistesse) a quella dell'hero.
+        if let image = heroImageURLString {
+            let prefix = recentlyWatchedIDPrefix
+            recentlyWatched.updateImage(image) { $0.id.hasPrefix(prefix) }
+        }
     }
 }
