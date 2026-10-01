@@ -82,6 +82,9 @@ struct MediaDetailSeed {
     var year: String?
     var runtimeMinutes: Int?
     var xtreamRating: Double?
+    /// Id TMDB dichiarato dal pannello Xtream (`tmdb_id`), quando presente:
+    /// e' il collegamento piu' affidabile al titolo giusto.
+    var tmdbId: Int? = nil
 }
 
 /// Orchestratore che combina Xtream (base), TMDB (cast con foto, loghi,
@@ -114,7 +117,13 @@ enum MediaDetailLoader {
 
         guard TMDBService.hasAPIKey else { return detail }
 
-        guard let tmdb = try? await TMDBService.shared.fullDetails(title: seed.title, isSeries: seed.isSeries) else {
+        guard let tmdb = try? await TMDBService.shared.fullDetails(
+            title: seed.title,
+            isSeries: seed.isSeries,
+            year: seed.year,
+            tmdbId: seed.tmdbId,
+            castNames: seed.castNames
+        ) else {
             return detail
         }
 
