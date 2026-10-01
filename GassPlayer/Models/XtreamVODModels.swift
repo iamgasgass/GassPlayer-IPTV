@@ -27,6 +27,7 @@ struct XtreamVODInfo: Decodable {
             case releaseDate = "releasedate"
             case durationSecs = "duration_secs"
             case tmdbId = "tmdb_id"
+            case tmdb
         }
 
         init(from decoder: Decoder) throws {
@@ -46,6 +47,7 @@ struct XtreamVODInfo: Decodable {
             durationSecs = container.decodeFlexibleInt(forKey: .durationSecs)
             duration = container.decodeFlexibleString(forKey: .duration)?.nonEmpty
             tmdbId = container.decodeFlexibleString(forKey: .tmdbId)?.nonEmpty
+                ?? container.decodeFlexibleString(forKey: .tmdb)?.nonEmpty
         }
     }
 

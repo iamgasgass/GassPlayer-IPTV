@@ -60,9 +60,14 @@ struct XtreamSeriesInfo: Decodable {
         let rating: String?
         let backdropPath: [String]?
         let youtubeTrailer: String?
+        /// Id TMDB dichiarato dal pannello (`tmdb` o `tmdb_id`, a seconda
+        /// del pannello), usato per agganciare la serie giusta su TMDB.
+        let tmdbId: String?
 
         enum CodingKeys: String, CodingKey {
             case name, cover, plot, cast, director, genre, rating
+            case tmdb
+            case tmdbId = "tmdb_id"
             case releaseDate = "releaseDate"
             case backdropPath = "backdrop_path"
             case youtubeTrailer = "youtube_trailer"
@@ -83,6 +88,8 @@ struct XtreamSeriesInfo: Decodable {
             rating = container.decodeFlexibleString(forKey: .rating)?.nonEmpty
             backdropPath = container.decodeFlexibleStringArray(forKey: .backdropPath)
             youtubeTrailer = container.decodeFlexibleString(forKey: .youtubeTrailer)?.nonEmpty
+            tmdbId = container.decodeFlexibleString(forKey: .tmdbId)?.nonEmpty
+                ?? container.decodeFlexibleString(forKey: .tmdb)?.nonEmpty
         }
     }
 
