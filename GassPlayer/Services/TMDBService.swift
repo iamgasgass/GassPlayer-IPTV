@@ -9,13 +9,22 @@ struct TMDBSearchResult: Decodable {
     let voteAverage: Double?
     let releaseDate: String?
     let firstAirDate: String?
+    /// Campi usati SOLO dal matching di precisione (titolo originale,
+    /// popolarita', numero di voti): non cambiano nulla per i chiamanti.
+    let originalTitle: String?
+    let originalName: String?
+    let popularity: Double?
+    let voteCount: Int?
 
     enum CodingKeys: String, CodingKey {
-        case id, title, name, overview
+        case id, title, name, overview, popularity
         case posterPath = "poster_path"
         case voteAverage = "vote_average"
         case releaseDate = "release_date"
         case firstAirDate = "first_air_date"
+        case originalTitle = "original_title"
+        case originalName = "original_name"
+        case voteCount = "vote_count"
     }
 
     var displayTitle: String { title ?? name ?? "" }
@@ -89,6 +98,10 @@ struct TMDBExternalIDs: Decodable {
 /// evita 3-4 chiamate separate per ogni scheda aperta dall'utente.
 struct TMDBDetails: Decodable {
     let id: Int
+    let title: String?
+    let name: String?
+    let originalTitle: String?
+    let originalName: String?
     let overview: String?
     let genres: [TMDBGenre]?
     /// Presente solo per i film.
@@ -105,7 +118,9 @@ struct TMDBDetails: Decodable {
     let externalIds: TMDBExternalIDs?
 
     enum CodingKeys: String, CodingKey {
-        case id, overview, genres, runtime, credits, images
+        case id, title, name, overview, genres, runtime, credits, images
+        case originalTitle = "original_title"
+        case originalName = "original_name"
         case episodeRunTime = "episode_run_time"
         case voteAverage = "vote_average"
         case backdropPath = "backdrop_path"
@@ -231,6 +246,8 @@ actor TMDBService {
     private var noResultCache: Set<String> = []
     /// Cache degli episodi per stagione (chiave "tvId::stagione").
     private var seasonCache: [String: [TMDBEpisode]] = [:]
+    /// Cache del risultato finale di `fullDetails` (dopo matching e verifica).
+    private var fullDetailsCache: [String: TMDBDetails] = [:]
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -240,67 +257,293 @@ actor TMDBService {
         !(UserDefaults.standard.string(forKey: apiKeyDefaultsKey) ?? "").isEmpty
     }
 
-    /// FIX CRITICO: la versione precedente usava
-    /// `replacingOccurrences(of: word, ...)` senza confini di parola, quindi
-    /// cercava la SOTTOSTRINGA "HD", "SD", "ITA", "ENG", "SUB", "MULTI" ecc.
-    /// ovunque comparisse — anche dentro parole completamente diverse.
-    /// Risultato: titoli come "Suburbicon" (contiene "SUB"), "Vengeance"
-    /// (contiene "ENG"), "Italian Job" (contiene "ITA"), "Multiverse"
-    /// (contiene "MULTI") o "Wednesday" (contiene "SD") venivano storpiati
-    /// prima ancora di essere inviati a TMDB, la ricerca falliva o
-    /// restituiva un match sbagliato, e la card VOD restava con
-    /// l'icona placeholder o un poster errato — esattamente il sintomo "i
-    /// VOD non vengono visualizzati tutti correttamente", per un
-    /// sottoinsieme di titoli che sembrava casuale ma era deterministico.
-    /// Ora si usano confini di parola (\b) per rimuovere solo le
-    /// occorrenze isolate (es. "Movie HD 2024" -> "Movie 2024"), lasciando
-    /// intatte le parole che le contengono solo come sottostringa.
-    private func cleanedQuery(from rawTitle: String) -> String {
-        var cleaned = rawTitle
-        for pattern in [#"\(.*?\)"#, #"\[.*?\]"#, #"\{.*?\}"#] {
-            cleaned = cleaned.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
-        }
-        let noiseWords = ["4K", "HD", "FHD", "SD", "HDR", "ITA", "ENG", "SUB", "DUAL", "MULTI"]
-        for word in noiseWords {
-            let escaped = NSRegularExpression.escapedPattern(for: word)
-            let pattern = "\\b\(escaped)\\b"
-            cleaned = cleaned.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
-        }
-        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    // MARK: - Pulizia titolo e matching di precisione
+
+    /// Titolo del provider scomposto in query pulita + anno (se presente).
+    private struct ParsedTitle {
+        /// Titolo ripulito da tag di qualita'/lingua/prefissi del provider.
+        let query: String
+        /// Anno esplicito `(2001)` / `[2001]`: indizio forte.
+        let year: String?
+        /// Anno "nudo" in coda (`Titolo 2001`): indizio debole, il titolo
+        /// resta intatto perche' potrebbe farne parte (es. "1917").
+        let trailingYear: String?
     }
 
-    func lookup(title rawTitle: String, isSeries: Bool) async throws -> TMDBSearchResult {
-        guard let apiKey = UserDefaults.standard.string(forKey: Self.apiKeyDefaultsKey), !apiKey.isEmpty else {
-            throw TMDBError.missingAPIKey
-        }
-        let query = cleanedQuery(from: rawTitle)
-        let cacheKey = "\(isSeries ? "tv" : "movie")::\(query.lowercased())"
-        if let cached = cache[cacheKey] { return cached }
-        if noResultCache.contains(cacheKey) { throw TMDBError.noResults }
+    private static let noiseWords = [
+        "4K", "UHD", "HD", "FHD", "SD", "HDR", "HDR10", "DV", "ITA", "ENG", "SUB", "SUBITA",
+        "DUAL", "MULTI", "BLURAY", "BDRIP", "WEBRIP", "WEB-DL", "WEBDL", "H264", "H265", "HEVC", "X264", "X265"
+    ]
+    private static let providerPrefixCodes: Set<String> = [
+        "IT", "ITA", "EN", "ENG", "FR", "DE", "ES", "UK", "US", "PT", "NL", "TR", "AR",
+        "MULTI", "SUB", "VOD", "4K", "UHD", "NF", "AMZN", "DSNP", "SKY", "NOW"
+    ]
 
+    /// FIX CRITICO (storico): rimozione dei tag solo come PAROLE intere
+    /// (`\b`), mai come sottostringhe — cosi' "Suburbicon", "Vengeance",
+    /// "Italian Job", "Multiverse" o "Wednesday" non vengono storpiati.
+    ///
+    /// Ora estrae anche l'anno dal titolo del provider (indizio fondamentale
+    /// per distinguere "Blow" (2001) da "Blow Out" (1981)) e toglie i
+    /// prefissi di lingua/provider tipo "IT - ", "|IT|", "[ITA]".
+    private func parseTitle(_ rawTitle: String) -> ParsedTitle {
+        var working = rawTitle
+
+        // Anno esplicito tra parentesi: prima di rimuovere le parentesi.
+        var explicitYear: String?
+        if let range = working.range(of: #"[\(\[]\s*((?:19|20)\d{2})\s*[\)\]]"#, options: .regularExpression) {
+            let match = String(working[range])
+            explicitYear = match.range(of: #"(?:19|20)\d{2}"#, options: .regularExpression).map { String(match[$0]) }
+        }
+
+        // Prefissi provider noti: "IT - Titolo", "|IT| Titolo", "[ITA] Titolo".
+        let prefixPatterns = [
+            #"^\s*[\|\[]\s*([A-Za-z0-9]{2,5})\s*[\|\]]\s*"#,
+            #"^\s*([A-Za-z0-9]{2,5})\s+[-–—]\s+"#
+        ]
+        for pattern in prefixPatterns {
+            if let range = working.range(of: pattern, options: .regularExpression) {
+                let matched = String(working[range])
+                let code = matched.trimmingCharacters(in: CharacterSet(charactersIn: "|[]-–— \t")).uppercased()
+                if Self.providerPrefixCodes.contains(code) {
+                    working.removeSubrange(range)
+                    break
+                }
+            }
+        }
+
+        for pattern in [#"\(.*?\)"#, #"\[.*?\]"#, #"\{.*?\}"#] {
+            working = working.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
+        }
+
+        for word in Self.noiseWords {
+            let escaped = NSRegularExpression.escapedPattern(for: word)
+            working = working.replacingOccurrences(
+                of: "(?<![A-Za-z0-9])\(escaped)(?![A-Za-z0-9])",
+                with: " ",
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+
+        working = working
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "-–—|:._")))
+
+        var trailingYear: String?
+        if let range = working.range(of: #"\s+((?:19|20)\d{2})$"#, options: .regularExpression) {
+            let candidate = String(working[range]).trimmingCharacters(in: .whitespaces)
+            // Solo se resta comunque un titolo vero davanti.
+            if working[..<range.lowerBound].trimmingCharacters(in: .whitespaces).count >= 2 {
+                trailingYear = candidate
+            }
+        }
+
+        return ParsedTitle(query: working, year: explicitYear, trailingYear: trailingYear)
+    }
+
+    /// Normalizzazione per il confronto: minuscolo, senza accenti, solo
+    /// lettere/numeri separati da singoli spazi ("Penélope" -> "penelope",
+    /// "Spider-Man" -> "spider man").
+    private static func normalize(_ text: String) -> String {
+        let folded = text.folding(options: [.diacriticInsensitive, .caseInsensitive, .widthInsensitive], locale: nil)
+        var result = ""
+        result.reserveCapacity(folded.count)
+        var lastWasSpace = true
+        for scalar in folded.unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                result.unicodeScalars.append(scalar)
+                lastWasSpace = false
+            } else if !lastWasSpace {
+                result.append(" ")
+                lastWasSpace = true
+            }
+        }
+        return result.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Somiglianza 0...1 fra due titoli gia' normalizzati: 1 solo se
+    /// identici. Per titoli diversi usa il coefficiente di Dice sui token,
+    /// quindi "blow" vs "blow out" vale ~0.67 (mai un match pieno).
+    private static func titleSimilarity(_ a: String, _ b: String) -> Double {
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        if a == b { return 1 }
+
+        let tokensA = Set(a.split(separator: " ").map(String.init))
+        let tokensB = Set(b.split(separator: " ").map(String.init))
+        guard !tokensA.isEmpty, !tokensB.isEmpty else { return 0 }
+
+        let common = Double(tokensA.intersection(tokensB).count)
+        let dice = 2 * common / Double(tokensA.count + tokensB.count)
+        // Mai 1.0 se non identici, cosi' l'uguaglianza esatta vince sempre.
+        return min(dice, 0.95)
+    }
+
+    private static func yearScore(candidate: String?, hint: String?) -> (score: Double, penalty: Double) {
+        guard let hint, let hintValue = Int(hint) else { return (0.5, 0) }
+        guard let candidate, let candidateValue = Int(candidate) else { return (0.35, 0) }
+
+        switch abs(candidateValue - hintValue) {
+        case 0: return (1, 0)
+        case 1: return (0.7, 0)
+        default: return (0, 0.2)
+        }
+    }
+
+    private struct ScoredCandidate {
+        let result: TMDBSearchResult
+        let titleScore: Double
+        let total: Double
+    }
+
+    /// Soglia minima di somiglianza del titolo: sotto questa, meglio NESSUN
+    /// poster (placeholder Xtream) che il poster di un altro film.
+    private static let minimumTitleScore = 0.6
+    private static let minimumTotalScore = 0.62
+    private static let confidentTotalScore = 0.88
+
+    private func score(_ result: TMDBSearchResult, query: String, yearHint: String?) -> ScoredCandidate {
+        let normalizedQuery = Self.normalize(query)
+        let names = [result.title, result.name, result.originalTitle, result.originalName]
+            .compactMap { $0 }
+            .map(Self.normalize)
+            .filter { !$0.isEmpty }
+
+        let titleScore = names.map { Self.titleSimilarity(normalizedQuery, $0) }.max() ?? 0
+        let year = Self.yearScore(candidate: result.year, hint: yearHint)
+
+        // Peso della "notorieta'": solo spareggio fra omonimi (remake).
+        let votes = Double(result.voteCount ?? 0)
+        let popularity = min(log10(1 + votes) / 4, 1)
+
+        let total = titleScore * 0.7 + year.score * 0.2 + popularity * 0.1 - year.penalty
+        return ScoredCandidate(result: result, titleScore: titleScore, total: total)
+    }
+
+    private func search(query: String, isSeries: Bool, year: String?, apiKey: String) async throws -> [TMDBSearchResult] {
         let endpoint = isSeries ? "search/tv" : "search/movie"
         var components = URLComponents(string: "https://api.themoviedb.org/3/\(endpoint)")!
-        components.queryItems = [
+        var items = [
             URLQueryItem(name: "api_key", value: apiKey),
             URLQueryItem(name: "query", value: query),
-            URLQueryItem(name: "language", value: "it-IT")
+            URLQueryItem(name: "language", value: "it-IT"),
+            URLQueryItem(name: "include_adult", value: "false")
         ]
+        if let year {
+            items.append(URLQueryItem(name: isSeries ? "first_air_date_year" : "year", value: year))
+        }
+        components.queryItems = items
         guard let url = components.url else { throw TMDBError.noResults }
 
         do {
             let (data, _) = try await session.data(from: url)
-            let decoded = try JSONDecoder().decode(TMDBSearchResponse.self, from: data)
-            guard let first = decoded.results.first else {
-                noResultCache.insert(cacheKey)
-                throw TMDBError.noResults
-            }
-            cache[cacheKey] = first
-            return first
-        } catch let error as TMDBError {
-            throw error
+            return try JSONDecoder().decode(TMDBSearchResponse.self, from: data).results
         } catch {
             throw TMDBError.network(error)
         }
+    }
+
+    /// Tentativi di ricerca, dal piu' specifico al piu' permissivo.
+    private func searchAttempts(for parsed: ParsedTitle, yearOverride: String?) -> [(query: String, year: String?)] {
+        let hint = parsed.year ?? yearOverride
+        var attempts: [(String, String?)] = []
+
+        if let hint { attempts.append((parsed.query, hint)) }
+        attempts.append((parsed.query, nil))
+
+        if let trailing = parsed.trailingYear {
+            let withoutYear = parsed.query
+                .replacingOccurrences(of: #"\s+(?:19|20)\d{2}$"#, with: "", options: .regularExpression)
+            attempts.append((withoutYear, hint ?? trailing))
+            attempts.append((withoutYear, nil))
+        }
+
+        // Titoli composti ("Titolo: sottotitolo", "Titolo - sottotitolo"):
+        // ultimo tentativo sulla sola parte principale.
+        for separator in [":", " - "] {
+            if let head = parsed.query.components(separatedBy: separator).first,
+               head.count >= 3, head != parsed.query {
+                attempts.append((head.trimmingCharacters(in: .whitespaces), hint))
+            }
+        }
+
+        var seen = Set<String>()
+        return attempts.filter { seen.insert("\($0.0.lowercased())|\($0.1 ?? "")").inserted }
+    }
+
+    /// Candidati ordinati per punteggio (decrescente), gia' filtrati dalle
+    /// soglie minime.
+    private func rankedCandidates(
+        title rawTitle: String,
+        isSeries: Bool,
+        yearHint: String?,
+        apiKey: String
+    ) async throws -> [ScoredCandidate] {
+        let parsed = parseTitle(rawTitle)
+        guard !parsed.query.isEmpty else { throw TMDBError.noResults }
+
+        var pool: [Int: ScoredCandidate] = [:]
+        var lastNetworkError: TMDBError?
+        var anySuccessfulRequest = false
+
+        for attempt in searchAttempts(for: parsed, yearOverride: yearHint) {
+            let results: [TMDBSearchResult]
+            do {
+                results = try await search(query: attempt.query, isSeries: isSeries, year: attempt.year, apiKey: apiKey)
+                anySuccessfulRequest = true
+            } catch let error as TMDBError {
+                lastNetworkError = error
+                continue
+            }
+
+            let hint = parsed.year ?? yearHint ?? attempt.year ?? parsed.trailingYear
+            for result in results.prefix(10) {
+                let scored = score(result, query: attempt.query, yearHint: hint)
+                if let existing = pool[result.id], existing.total >= scored.total { continue }
+                pool[result.id] = scored
+            }
+
+            let best = pool.values.max { $0.total < $1.total }
+            if let best, best.titleScore >= 1, best.total >= Self.confidentTotalScore { break }
+        }
+
+        if !anySuccessfulRequest, let lastNetworkError { throw lastNetworkError }
+
+        return pool.values
+            .filter { $0.titleScore >= Self.minimumTitleScore && $0.total >= Self.minimumTotalScore }
+            .sorted { $0.total > $1.total }
+    }
+
+    private func cacheKey(isSeries: Bool, title: String, year: String?) -> String {
+        "\(isSeries ? "tv" : "movie")::\(Self.normalize(parseTitle(title).query))::\(year ?? parseTitle(title).year ?? "")"
+    }
+
+    /// Ricerca di precisione di un titolo del provider su TMDB. Se non c'e'
+    /// una corrispondenza sufficientemente sicura lancia `.noResults`:
+    /// mai piu' il primo risultato "a caso" (es. "Blow Out" per "Blow").
+    func lookup(title rawTitle: String, isSeries: Bool, year: String? = nil) async throws -> TMDBSearchResult {
+        guard let apiKey = UserDefaults.standard.string(forKey: Self.apiKeyDefaultsKey), !apiKey.isEmpty else {
+            throw TMDBError.missingAPIKey
+        }
+
+        let key = cacheKey(isSeries: isSeries, title: rawTitle, year: year)
+        if let cached = cache[key] { return cached }
+        if noResultCache.contains(key) { throw TMDBError.noResults }
+
+        let ranked = try await rankedCandidates(title: rawTitle, isSeries: isSeries, yearHint: year, apiKey: apiKey)
+
+        guard let best = ranked.first else {
+            noResultCache.insert(key)
+            throw TMDBError.noResults
+        }
+
+        cache[key] = best.result
+        return best.result
+    }
+
+    private static func castOverlap(_ names: [String], with credits: [TMDBCastMember]) -> Int {
+        let wanted = Set(names.map(normalize).filter { !$0.isEmpty })
+        guard !wanted.isEmpty else { return 0 }
+        return credits.prefix(15).filter { wanted.contains(normalize($0.name)) }.count
     }
 
     /// Dettaglio completo per un id TMDB già noto (cast, loghi, external
@@ -392,10 +635,86 @@ actor TMDBService {
         }
     }
 
-    /// Scorciatoia usata dalle schede dettaglio: cerca il titolo su TMDB e,
-    /// se trovato, ne recupera subito anche il dettaglio completo.
-    func fullDetails(title: String, isSeries: Bool) async throws -> TMDBDetails {
-        let found = try await lookup(title: title, isSeries: isSeries)
-        return try await details(id: found.id, isSeries: isSeries)
+    /// Scorciatoia usata dalle schede dettaglio. Ordine di affidabilita':
+    /// 1. id TMDB fornito dal pannello Xtream (`tmdb_id`), verificato;
+    /// 2. ricerca per titolo + anno con punteggio;
+    /// 3. spareggio fra candidati vicini tramite sovrapposizione del cast
+    ///    (gli attori del provider, es. Johnny Depp / Penelope Cruz).
+    func fullDetails(
+        title: String,
+        isSeries: Bool,
+        year: String? = nil,
+        tmdbId: Int? = nil,
+        castNames: [String] = []
+    ) async throws -> TMDBDetails {
+        guard let apiKey = UserDefaults.standard.string(forKey: Self.apiKeyDefaultsKey), !apiKey.isEmpty else {
+            throw TMDBError.missingAPIKey
+        }
+
+        let key = "full::\(cacheKey(isSeries: isSeries, title: title, year: year))::\(tmdbId ?? 0)"
+        if let cached = fullDetailsCache[key] { return cached }
+
+        var providerIdDetails: TMDBDetails?
+        if let tmdbId, tmdbId > 0, let byId = try? await details(id: tmdbId, isSeries: isSeries) {
+            if isTrustworthy(byId, forTitle: title, castNames: castNames) {
+                fullDetailsCache[key] = byId
+                return byId
+            }
+            providerIdDetails = byId
+        }
+
+        let ranked: [ScoredCandidate]
+        do {
+            ranked = try await rankedCandidates(title: title, isSeries: isSeries, yearHint: year, apiKey: apiKey)
+        } catch {
+            if let providerIdDetails { return providerIdDetails }
+            throw error
+        }
+
+        guard let best = ranked.first else {
+            if let providerIdDetails { return providerIdDetails }
+            throw TMDBError.noResults
+        }
+
+        var chosen = best
+        var chosenDetails: TMDBDetails?
+
+        let nearTies = ranked.filter { best.total - $0.total <= 0.15 }.prefix(3)
+        if !castNames.isEmpty, nearTies.count > 1 {
+            var bestOverlap = -1
+            for candidate in nearTies {
+                guard let candidateDetails = try? await details(id: candidate.result.id, isSeries: isSeries) else { continue }
+                let overlap = Self.castOverlap(castNames, with: candidateDetails.credits?.cast ?? [])
+                if overlap > bestOverlap || (overlap == bestOverlap && candidate.total > chosen.total) {
+                    bestOverlap = overlap
+                    chosen = candidate
+                    chosenDetails = candidateDetails
+                }
+            }
+        }
+
+        let result: TMDBDetails
+        if let chosenDetails {
+            result = chosenDetails
+        } else {
+            result = try await details(id: chosen.result.id, isSeries: isSeries)
+        }
+
+        cache[cacheKey(isSeries: isSeries, title: title, year: year)] = chosen.result
+        fullDetailsCache[key] = result
+        return result
+    }
+
+    /// L'id del pannello e' attendibile se il titolo coincide abbastanza o
+    /// se almeno un attore dichiarato dal provider compare nel cast TMDB.
+    private func isTrustworthy(_ details: TMDBDetails, forTitle rawTitle: String, castNames: [String]) -> Bool {
+        let query = Self.normalize(parseTitle(rawTitle).query)
+        let names = [details.title, details.name, details.originalTitle, details.originalName]
+            .compactMap { $0 }
+            .map(Self.normalize)
+        let similarity = names.map { Self.titleSimilarity(query, $0) }.max() ?? 0
+
+        if similarity >= 0.6 { return true }
+        return Self.castOverlap(castNames, with: details.credits?.cast ?? []) > 0
     }
 }
