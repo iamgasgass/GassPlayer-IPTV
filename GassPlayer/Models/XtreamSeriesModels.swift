@@ -12,6 +12,8 @@ extension XtreamSeriesItem: Decodable {
     enum CodingKeys: String, CodingKey {
         case seriesId = "series_id", name, cover
         case categoryId = "category_id"
+        // Riserva quando `cover` è vuoto: alcuni pannelli danno solo il backdrop.
+        case backdropPath = "backdrop_path"
     }
 
     /// FIX 2026-09-20: `name` e `cover` usavano `try? container.decode(String.self, forKey:)`,
@@ -36,6 +38,7 @@ extension XtreamSeriesItem: Decodable {
         cover = container.decodeFlexibleString(forKey: .cover)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .nonEmpty
+            ?? container.decodeFlexibleStringArray(forKey: .backdropPath)?.first
 
         categoryId = container.decodeFlexibleString(forKey: .categoryId)
     }

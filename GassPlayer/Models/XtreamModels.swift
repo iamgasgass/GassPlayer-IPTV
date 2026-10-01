@@ -134,6 +134,10 @@ extension XtreamStream: Decodable {
         case categoryId = "category_id"
         case streamIcon = "stream_icon"
         case containerExtension = "container_extension"
+        // Alcuni pannelli non valorizzano `stream_icon` ma usano questi.
+        case cover
+        case movieImage = "movie_image"
+        case icon
     }
 
     init(from decoder: Decoder) throws {
@@ -154,9 +158,13 @@ extension XtreamStream: Decodable {
             .nonEmpty
             ?? "Senza nome"
 
-        streamIcon = container.decodeFlexibleString(forKey: .streamIcon)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .nonEmpty
+        streamIcon = [CodingKeys.streamIcon, .movieImage, .cover, .icon]
+            .compactMap {
+                container.decodeFlexibleString(forKey: $0)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .nonEmpty
+            }
+            .first
 
         categoryId = container.decodeFlexibleString(forKey: .categoryId)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
