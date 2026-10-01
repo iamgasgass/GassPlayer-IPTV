@@ -486,6 +486,10 @@ actor TMDBService {
         var anySuccessfulRequest = false
 
         for attempt in searchAttempts(for: parsed, yearOverride: yearHint) {
+            // Cella uscita dallo schermo: interrompe subito, senza
+            // memorizzare un falso "nessun risultato".
+            try Task.checkCancellation()
+
             let results: [TMDBSearchResult]
             do {
                 results = try await search(query: attempt.query, isSeries: isSeries, year: attempt.year, apiKey: apiKey)
@@ -505,6 +509,8 @@ actor TMDBService {
             let best = pool.values.max { $0.total < $1.total }
             if let best, best.titleScore >= 1, best.total >= Self.confidentTotalScore { break }
         }
+
+        try Task.checkCancellation()
 
         if !anySuccessfulRequest, let lastNetworkError { throw lastNetworkError }
 
