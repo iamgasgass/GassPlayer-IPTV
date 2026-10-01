@@ -1,18 +1,5 @@
 import SwiftUI
 
-/// FIX 2026-10-01 (scroll senza sfarfallii con API TMDB attiva + dati solo
-/// da Xtream nella griglia):
-///
-/// Con la chiave TMDB impostata, ogni cella VOD/Serie TV mostrava prima
-/// l'icona Xtream, poi (a lookup concluso) il poster TMDB, e a ogni riciclo
-/// della cella (`@State` azzerato) l'intero ciclo ricominciava: era questo lo
-/// sfarfallio. Ora Live TV, VOD e Serie TV leggono TUTTO da Xtream
-/// (`stream_icon` / `cover`) tramite `CachedPosterImage`, con cache in
-/// memoria e senza alcuna richiesta TMDB nelle celle. TMDB resta usato
-/// solo nelle schede dettaglio (`MovieDetailView`, `SeriesEpisodesView`).
-/// Rimossi inoltre `.animation(nil, value: displayedSeries.map(...))`
-/// (una `map` O(n) ad ogni render) e l'`.id` ridondante sulle celle serie.
-///
 /// FIX/OTTIMIZZAZIONE 2026-09-20 (velocità di caricamento/ricaricamento):
 ///
 /// 1) `CatalogIndex` ora precalcola anche il raggruppamento delle Serie TV
@@ -879,6 +866,7 @@ struct ChannelGridView: View {
                     ) {
                         selectedSeries = item
                     }
+                    .id(item.seriesId)
                     .onAppear {
                         prefetchSeriesInfoIfNeeded(item)
                     }
@@ -890,6 +878,12 @@ struct ChannelGridView: View {
                 transaction.animation = nil
                 transaction.disablesAnimations = true
             }
+            // Blocca esplicitamente qualunque animazione implicita che
+            // potrebbe propagarsi dal cambio di categoria (chip) o dal
+            // refresh del catalogo verso il layout dei poster durante lo
+            // scroll: solo il conteggio/ordine degli elementi mostrati fa
+            // scattare un ridisegno "silenzioso", senza curve animate.
+            .animation(nil, value: displayedSeries.map(\.seriesId))
         }
     }
 
@@ -1292,24 +1286,40 @@ private struct ChannelTile: View, Equatable {
     @ViewBuilder
     private var artwork: some View {
         ZStack(alignment: .topTrailing) {
-            // Tutto da Xtream: nessuna richiesta TMDB nelle celle della
-            // griglia (TMDB resta solo nelle schede dettaglio).
             if kind == .movie {
-                CachedPosterImage(
-                    urlString: stream.streamIcon,
-                    size: CGSize(width: artworkSize, height: moviePosterHeight),
-                    contentMode: .fill,
-                    cornerRadius: 12,
-                    placeholderSymbol: "film"
+                TMDBEnrichedPoster(
+                    title: stream.name,
+                    isSeries: false,
+                    fallbackIconURL: stream.streamIcon,
+                    width: artworkSize,
+                    height: moviePosterHeight,
+                    badgeStyle: .topTrailing
                 )
             } else {
-                CachedPosterImage(
-                    urlString: stream.streamIcon,
-                    size: CGSize(width: artworkSize, height: artworkSize),
-                    contentMode: .fit,
-                    cornerRadius: cornerRadius,
-                    placeholderSymbol: "tv"
-                )
+                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            // Disabilita la transizione di fase implicita
+                            // di AsyncImage: senza questo, ogni volta che
+                            // la cella viene riciclata durante lo scroll
+                            // l'immagine "fade-in" viene rianimata da zero,
+                            // producendo lo sfarfallio/glitch percepito.
+                            .transaction { $0.animation = nil }
+
+                    default:
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                            .overlay {
+                                Image(systemName: "tv")
+                                    .foregroundStyle(.secondary)
+                            }
+                    }
+                }
+                .frame(width: artworkSize, height: artworkSize)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
 
             // Nei film il voto occupa l'angolo in alto a destra (come nel
@@ -1399,15 +1409,19 @@ private struct SeriesTile: View, Equatable {
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 4) {
-                // Copertina letta solo da Xtream (`cover`), con cache in
-                // memoria: niente scambio icona Xtream -> poster TMDB.
-                CachedPosterImage(
-                    urlString: series.cover,
-                    size: CGSize(width: artworkWidth, height: artworkHeight),
-                    contentMode: .fill,
-                    cornerRadius: 12,
-                    placeholderSymbol: "rectangle.stack.fill"
+                TMDBEnrichedPoster(
+                    title: series.name,
+                    isSeries: true,
+                    fallbackIconURL: series.cover,
+                    width: artworkWidth,
+                    height: artworkHeight,
+                    badgeStyle: .topTrailing
                 )
+                // Blocca eventuali animazioni implicite generate
+                // internamente da `TMDBEnrichedPoster` (es. transizione
+                // placeholder → immagine caricata) quando la cella viene
+                // riciclata dalla griglia durante lo scroll.
+                .transaction { $0.animation = nil }
 
                 Text(series.name)
                     .font(.caption)
