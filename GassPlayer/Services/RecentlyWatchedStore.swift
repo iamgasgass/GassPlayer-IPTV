@@ -70,6 +70,7 @@ final class RecentlyWatchedStore: ObservableObject {
         }
 
         persist()
+        warmImageCache(for: items.first?.imageURLString)
     }
 
     func remove(_ item: RecentlyWatchedItem) {
@@ -100,7 +101,18 @@ final class RecentlyWatchedStore: ObservableObject {
             items[index].imageURLString = urlString
             changed = true
         }
-        if changed { persist() }
+        if changed {
+            persist()
+            warmImageCache(for: urlString)
+        }
+    }
+
+    /// Scarica subito l'immagine della card nella cache condivisa: quando
+    /// `HomeView` o `ChannelGridView` mostrano "Continua a guardare" il
+    /// poster è già pronto e compare al primo frame.
+    private func warmImageCache(for urlString: String?) {
+        guard let url = ImageURLNormalizer.url(from: urlString) else { return }
+        ImageLoader.shared.prefetch([url], maxPixel: ContinueWatchingSection.imagePixels)
     }
 
     private func persist() {
@@ -114,5 +126,9 @@ final class RecentlyWatchedStore: ObservableObject {
             return
         }
         items = decoded
+
+        // Riscalda le immagini delle card già salvate (le prime visibili).
+        let urls = decoded.prefix(12).compactMap { ImageURLNormalizer.url(from: $0.imageURLString) }
+        ImageLoader.shared.prefetch(urls, maxPixel: ContinueWatchingSection.imagePixels)
     }
 }

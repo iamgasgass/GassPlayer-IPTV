@@ -450,9 +450,26 @@ actor XtreamAPIService {
 
     // MARK: - Helpers
 
+    /// Un `stream_id` ripetuto viene tenuto UNA sola volta, nella posizione
+    /// della prima occorrenza; se la prima non ha icona ma una successiva sì
+    /// (risposta globale + recupero per categoria), si tiene quella con
+    /// l'icona: prima poteva restare la copia senza immagine.
     private func stableDeduplicated(_ streams: [XtreamStream]) -> [XtreamStream] {
-        var seen = Set<Int>()
-        return streams.filter { seen.insert($0.streamId).inserted }
+        var indexByID: [Int: Int] = [:]
+        var result: [XtreamStream] = []
+        result.reserveCapacity(streams.count)
+
+        for stream in streams {
+            if let existing = indexByID[stream.streamId] {
+                if result[existing].streamIcon == nil, stream.streamIcon != nil {
+                    result[existing] = stream
+                }
+            } else {
+                indexByID[stream.streamId] = result.count
+                result.append(stream)
+            }
+        }
+        return result
     }
 
     private func validate(_ response: URLResponse) throws {

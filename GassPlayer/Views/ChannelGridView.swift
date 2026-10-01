@@ -213,6 +213,7 @@ struct ChannelGridView: View {
     @EnvironmentObject private var contentManagement: ContentManagementService
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
     @EnvironmentObject private var recentlyWatched: RecentlyWatchedStore
+    @Environment(\.displayScale) private var displayScale
 
     @AppStorage("gassplayer.grid.density")
     private var channelGridDensity = "comfortable"
@@ -242,6 +243,19 @@ struct ChannelGridView: View {
     /// programma disponibile (evita retry continui); `.some(program)` =
     /// programma corrente o prossimo disponibile per il tile.
     @State private var epgByStream: [Int: EPGProgram?] = [:]
+
+    /// Posizione di ogni elemento nella lista mostrata, per decidere in O(1)
+    /// da dove far partire il prefetch. Prima ogni `onAppear` di una cella
+    /// faceva un `firstIndex(where:)` sull'intero catalogo (decine di
+    /// migliaia di voci) durante lo scroll. Classe di riferimento in
+    /// `@State`: aggiornarla non provoca ridisegni.
+    private final class PositionCache {
+        var key = ""
+        var positions: [Int: Int] = [:]
+    }
+
+    @State private var streamPositions = PositionCache()
+    @State private var seriesPositions = PositionCache()
 
     @State private var catalogIndex = CatalogIndex(kind: .live, streams: [], series: [], categories: [])
     @State private var indexedSourceIdentity: SourceIdentity?
@@ -866,9 +880,14 @@ struct ChannelGridView: View {
                     ) {
                         selectedSeries = item
                     }
+                    // `.equatable()`: senza, la conformità `Equatable` di
+                    // `SeriesTile` non veniva MAI usata e ogni cambio di
+                    // stato della griglia ridisegnava tutte le celle.
+                    .equatable()
                     .id(item.seriesId)
                     .onAppear {
                         prefetchSeriesInfoIfNeeded(item)
+                        prefetchSeriesArtworkAhead(of: item)
                     }
                 }
             }
@@ -948,6 +967,65 @@ struct ChannelGridView: View {
                     kind: kind.rawValue
                 )
             }
+        )
+        // Vedi nota in `seriesGrid`: abilita davvero il confronto `Equatable`.
+        .equatable()
+        .onAppear {
+            prefetchStreamArtworkAhead(of: stream)
+        }
+    }
+
+    // MARK: - Prefetch locandine/icone
+
+    /// Quante celle oltre quella che appare vengono scaldate in anticipo.
+    private static let artworkPrefetchAhead = 36
+    /// Il prefetch parte ogni N celle (le altre sono già coperte dal giro
+    /// precedente: cache e richieste in corso sono unificate).
+    private static let artworkPrefetchStride = 4
+
+    /// `ids` è un autoclosure: la lista degli id (O(n)) si costruisce SOLO
+    /// quando cambia la lista mostrata, non ad ogni cella che appare.
+    private func position(of id: Int, cache: PositionCache, key: String, ids: @autoclosure () -> [Int]) -> Int? {
+        if cache.key != key {
+            cache.key = key
+            cache.positions = Dictionary(
+                ids().enumerated().map { ($0.element, $0.offset) },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
+        return cache.positions[id]
+    }
+
+    private func prefetchSeriesArtworkAhead(of item: XtreamSeriesItem) {
+        let series = displayedSeries
+        let key = "\(selectedCategory)|\(series.count)|\(series.first?.seriesId ?? -1)|\(series.last?.seriesId ?? -1)"
+        guard let index = position(of: item.seriesId, cache: seriesPositions, key: key, ids: series.map(\.seriesId)),
+              index % Self.artworkPrefetchStride == 0 else { return }
+
+        let upcoming = series.dropFirst(index + 1).prefix(Self.artworkPrefetchAhead)
+        ArtworkPrefetcher.prefetch(
+            upcoming.map { ArtworkPrefetcher.Entry(title: $0.name, iconURLString: $0.cover) },
+            isSeries: true,
+            points: CGSize(width: artworkSize, height: seriesPosterHeight),
+            scale: displayScale,
+            resolveTMDB: true
+        )
+    }
+
+    private func prefetchStreamArtworkAhead(of stream: XtreamStream) {
+        let streams = displayedStreams
+        let key = "\(kind.rawValue)|\(selectedCategory)|\(streams.count)|\(streams.first?.streamId ?? -1)|\(streams.last?.streamId ?? -1)"
+        guard let index = position(of: stream.streamId, cache: streamPositions, key: key, ids: streams.map(\.streamId)),
+              index % Self.artworkPrefetchStride == 0 else { return }
+
+        let upcoming = streams.dropFirst(index + 1).prefix(Self.artworkPrefetchAhead)
+        let isMovie = kind == .movie
+        ArtworkPrefetcher.prefetch(
+            upcoming.map { ArtworkPrefetcher.Entry(title: $0.name, iconURLString: $0.streamIcon) },
+            isSeries: false,
+            points: CGSize(width: artworkSize, height: isMovie ? moviePosterHeight : artworkSize),
+            scale: displayScale,
+            resolveTMDB: isMovie
         )
     }
 
@@ -1296,27 +1374,27 @@ private struct ChannelTile: View, Equatable {
                     badgeStyle: .topTrailing
                 )
             } else {
-                AsyncImage(url: URL(string: stream.streamIcon ?? "")) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            // Disabilita la transizione di fase implicita
-                            // di AsyncImage: senza questo, ogni volta che
-                            // la cella viene riciclata durante lo scroll
-                            // l'immagine "fade-in" viene rianimata da zero,
-                            // producendo lo sfarfallio/glitch percepito.
-                            .transaction { $0.animation = nil }
-
-                    default:
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(.ultraThinMaterial)
-                            .overlay {
-                                Image(systemName: "tv")
-                                    .foregroundStyle(.secondary)
-                            }
-                    }
+                // `CachedAsyncImage`: cache memoria+disco, URL normalizzati e
+                // nuovi tentativi automatici. Una cella ricreata durante lo
+                // scroll mostra subito l'icona già in cache (nessun
+                // sfarfallio) e le icone non restano più vuote.
+                CachedAsyncImage(
+                    url: ImageURLNormalizer.url(from: stream.streamIcon),
+                    size: CGSize(width: artworkSize, height: artworkSize),
+                    contentMode: .fit,
+                    // Nessun URL valido o immagine irraggiungibile: segnaposto
+                    // con iniziali del canale, mai un riquadro vuoto.
+                    fallback: AnyView(
+                        ArtworkPlaceholder(
+                            title: stream.name,
+                            systemImage: "tv",
+                            cornerRadius: cornerRadius
+                        )
+                    )
+                ) {
+                    // Neutro MENTRE carica: niente scambio di segnaposti.
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(.ultraThinMaterial)
                 }
                 .frame(width: artworkSize, height: artworkSize)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
