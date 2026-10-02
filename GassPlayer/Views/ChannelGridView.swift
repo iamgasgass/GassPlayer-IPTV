@@ -404,7 +404,12 @@ struct ChannelGridView: View {
                         minimum: GridMetrics.compactColumnMinimum,
                         maximum: GridMetrics.compactColumnMaximum
                     ),
-                    spacing: GridMetrics.compactColumnSpacing
+                    spacing: GridMetrics.compactColumnSpacing,
+                    // Allineamento in alto: senza, `LazyVGrid` centra
+                    // verticalmente le celle più basse nella riga e un
+                    // titolo su 1 riga fa scendere il poster rispetto a
+                    // quello con titolo su 2 righe.
+                    alignment: .top
                 )
             ]
         }
@@ -415,7 +420,8 @@ struct ChannelGridView: View {
                     minimum: GridMetrics.comfortableColumnMinimum,
                     maximum: GridMetrics.comfortableColumnMaximum
                 ),
-                spacing: GridMetrics.comfortableColumnSpacing
+                spacing: GridMetrics.comfortableColumnSpacing,
+                alignment: .top
             )
         ]
     }
@@ -443,6 +449,21 @@ struct ChannelGridView: View {
     private var seriesPosterHeight: CGFloat {
         if usesLargePosters { return largePosterHeight }
         return isCompactGrid ? GridMetrics.compactSeriesPosterHeight : GridMetrics.comfortableSeriesPosterHeight
+    }
+
+    /// Distanza verticale fra l'elemento sopra la griglia (titolo sezione,
+    /// chip dei gruppi o "Continua a guardare") e il bordo superiore della
+    /// prima fila di poster. In Compatta/Comoda è UGUALE alla distanza fra
+    /// il titolo di un poster e il bordo superiore del poster sotto
+    /// (`gridRowSpacing`); gli elementi sopra non aggiungono margine
+    /// inferiore proprio. In "Poster" resta il comportamento precedente.
+    private var gridTopPadding: CGFloat {
+        usesLargePosters ? 0 : gridRowSpacing
+    }
+
+    /// Margine inferiore degli elementi sopra la griglia (vedi sopra).
+    private func aboveGridBottomPadding(_ legacy: CGFloat) -> CGFloat {
+        usesLargePosters ? legacy : 0
     }
 
     /// Griglia "Poster": larghezza esatta delle colonne fisse e
@@ -581,7 +602,7 @@ struct ChannelGridView: View {
                         kindFilter: kind.rawValue,
                         horizontalInset: 16,
                         topPadding: 8,
-                        bottomPadding: 16
+                        bottomPadding: aboveGridBottomPadding(16)
                     )
                 }
 
@@ -1058,6 +1079,7 @@ struct ChannelGridView: View {
                 }
             })
             .padding(.horizontal, gridHorizontalPadding)
+            .padding(.top, gridTopPadding)
             .padding(.bottom)
             .transaction { transaction in
                 transaction.animation = nil
@@ -1086,6 +1108,7 @@ struct ChannelGridView: View {
                 }
             })
             .padding(.horizontal, gridHorizontalPadding)
+            .padding(.top, gridTopPadding)
             .padding(.bottom)
             .transaction { transaction in
                 transaction.animation = nil
@@ -1098,6 +1121,7 @@ struct ChannelGridView: View {
                 }
             })
             .padding(.horizontal, gridHorizontalPadding)
+            .padding(.top, gridTopPadding)
             .padding(.bottom)
             .transaction { transaction in
                 transaction.animation = nil
@@ -1186,7 +1210,8 @@ struct ChannelGridView: View {
                 }
             }
             .padding(.horizontal)
-            .padding(.vertical, 8)
+            .padding(.top, 8)
+            .padding(.bottom, aboveGridBottomPadding(8))
         }
     }
 

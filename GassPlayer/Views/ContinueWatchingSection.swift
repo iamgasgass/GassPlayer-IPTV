@@ -28,6 +28,10 @@ struct ContinueWatchingSection: View {
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
     @EnvironmentObject private var sourceManager: SourceManager
     @State private var resumeItem: RecentlyWatchedItem?
+    /// Ripresa di un episodio di una serie: il player riceve anche i tasti
+    /// precedente/successivo e il "Prossimo Episodio" (vedi
+    /// `SeriesResumePlayer`).
+    @State private var seriesResume: SeriesResumeRequest?
 
     private enum Metrics {
         static let cardWidth: CGFloat = 288
@@ -113,6 +117,17 @@ struct ContinueWatchingSection: View {
         .fullScreenCover(item: $resumeItem) { item in
             AdaptivePlayerView(url: item.streamURL, title: item.title)
         }
+        .fullScreenCover(item: $seriesResume) { request in
+            SeriesResumePlayer(request: request) { episode, url in
+                recentlyWatched.record(
+                    id: request.episodeID(episode.streamId),
+                    title: "\(request.seriesName) · \(episode.title)",
+                    kind: XtreamStreamKind.series.rawValue,
+                    streamURL: url,
+                    imageURLString: request.item.imageURLString
+                )
+            }
+        }
         // Completa poster e categoria dei contenuti registrati senza (es.
         // guardati prima che questi campi esistessero, o registrati prima
         // che la scheda dettaglio avesse caricato l'immagine): la card
@@ -126,7 +141,7 @@ struct ContinueWatchingSection: View {
 
     private func card(_ item: RecentlyWatchedItem) -> some View {
         Button {
-            resumeItem = item
+            resume(item)
         } label: {
             VStack(alignment: .leading, spacing: Metrics.cardToTextSpacing) {
                 artwork(item)
@@ -199,6 +214,36 @@ struct ContinueWatchingSection: View {
         case XtreamStreamKind.series.rawValue: return "rectangle.stack.fill"
         default: return "play.rectangle.fill"
         }
+    }
+
+    // MARK: - Ripresa
+
+    /// Le serie riaprono il player con il contesto dell'episodio (stagione
+    /// e info serie caricate in background); tutto il resto (film, live)
+    /// riapre direttamente lo stream salvato, come prima.
+    private func resume(_ item: RecentlyWatchedItem) {
+        if item.kind == XtreamStreamKind.series.rawValue,
+           let credentials = sourceManager.activeSource?.xtreamCredentials {
+            let parts = item.id.components(separatedBy: "|")
+            let host = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+            if parts.count >= 5,
+               parts[0] == host,
+               parts[1] == credentials.username,
+               let seriesId = Int(parts[3]) {
+                seriesResume = SeriesResumeRequest(
+                    item: item,
+                    credentials: credentials,
+                    seriesId: seriesId,
+                    seriesName: Self.displayTitle(for: item),
+                    episodeStreamId: parts[4],
+                    idPrefix: parts[0..<4].joined(separator: "|")
+                )
+                return
+            }
+        }
+
+        resumeItem = item
     }
 
     // MARK: - Titolo e identità
@@ -340,5 +385,121 @@ private struct ClearGlassCapsule: ViewModifier {
                     Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
                 }
         }
+    }
+}
+
+
+// MARK: - Ripresa di un episodio con precedente/successivo
+
+/// Dati per riprendere un episodio da "Continua a guardare".
+private struct SeriesResumeRequest: Identifiable {
+    let id = UUID()
+    let item: RecentlyWatchedItem
+    let credentials: XtreamCredentials
+    let seriesId: Int
+    let seriesName: String
+    let episodeStreamId: String
+    /// `host|utente|series|idSerie`.
+    let idPrefix: String
+
+    func episodeID(_ streamId: Int) -> String {
+        idPrefix + "|" + String(streamId)
+    }
+
+    /// Titolo dell'episodio dal titolo registrato "Serie · Episodio".
+    var initialEpisodeTitle: String {
+        let parts = item.title.components(separatedBy: " · ")
+        return parts.count > 1 ? parts.dropFirst().joined(separator: " · ") : item.title
+    }
+}
+
+/// Player di ripresa per le serie: parte SUBITO dallo stream salvato (nessuna
+/// attesa di rete) e, appena le info della serie sono in cache/caricate,
+/// abilita gli stessi comandi di `SeriesEpisodesView`: tasti
+/// precedente/successivo e "Prossimo Episodio" (tasto negli ultimi 60 s e
+/// avanzamento automatico a fine episodio, se attivo in Impostazioni),
+/// navigando gli episodi della stessa stagione.
+private struct SeriesResumePlayer: View {
+    let request: SeriesResumeRequest
+    let record: (XtreamSeriesInfo.Episode, URL) -> Void
+
+    @State private var info: XtreamSeriesInfo?
+    @State private var season: Int?
+    @State private var currentEpisode: XtreamSeriesInfo.Episode?
+    @State private var playingURL: URL
+    @State private var playingTitle: String
+
+    init(request: SeriesResumeRequest, record: @escaping (XtreamSeriesInfo.Episode, URL) -> Void) {
+        self.request = request
+        self.record = record
+        _playingURL = State(initialValue: request.item.streamURL)
+        _playingTitle = State(initialValue: request.initialEpisodeTitle)
+    }
+
+    var body: some View {
+        AdaptivePlayerView(
+            url: playingURL,
+            title: playingTitle,
+            onPrevious: adjacentEpisode(offset: -1).map { target in
+                { select(target) }
+            },
+            onNext: adjacentEpisode(offset: 1).map { target in
+                { select(target) }
+            }
+        )
+        .task {
+            await loadSeriesInfo()
+        }
+        .task(id: currentEpisode?.id) {
+            guard let episode = currentEpisode, let url = streamURL(for: episode) else { return }
+            record(episode, url)
+        }
+    }
+
+    /// Carica le info della serie (cache `CachedXtreamRepository`, spesso
+    /// già calda) senza toccare lo stream in riproduzione: l'URL cambia
+    /// solo quando l'utente passa a un altro episodio.
+    private func loadSeriesInfo() async {
+        guard let loaded = try? await CachedXtreamRepository(credentials: request.credentials)
+            .seriesInfo(seriesId: request.seriesId),
+              !Task.isCancelled else {
+            return
+        }
+
+        for seasonNumber in loaded.sortedSeasonNumbers {
+            if let episode = loaded.episodes(forSeason: seasonNumber)
+                .first(where: { String($0.streamId) == request.episodeStreamId }) {
+                info = loaded
+                season = seasonNumber
+                currentEpisode = episode
+                return
+            }
+        }
+    }
+
+    private func streamURL(for episode: XtreamSeriesInfo.Episode) -> URL? {
+        let ext = episode.containerExtension?.isEmpty == false ? episode.containerExtension! : "mp4"
+        return XtreamAPIService(credentials: request.credentials)
+            .episodeStreamURL(episodeId: episode.streamId, ext: ext)
+    }
+
+    private func adjacentEpisode(offset: Int) -> XtreamSeriesInfo.Episode? {
+        guard let info, let season, let currentEpisode else { return nil }
+
+        let episodes = info.episodes(forSeason: season)
+        guard let index = episodes.firstIndex(where: { $0.id == currentEpisode.id }) else { return nil }
+
+        let target = index + offset
+        guard episodes.indices.contains(target) else { return nil }
+
+        return episodes[target]
+    }
+
+    private func select(_ episode: XtreamSeriesInfo.Episode) {
+        guard let url = streamURL(for: episode) else { return }
+
+        playingURL = url
+        playingTitle = episode.title
+        currentEpisode = episode
     }
 }
