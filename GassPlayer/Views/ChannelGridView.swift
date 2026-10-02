@@ -256,6 +256,17 @@ struct ChannelGridView: View {
         static let comfortableRowSpacing: CGFloat = 16
         static let comfortableHorizontalPadding: CGFloat = 16
 
+        // "Poster" per VOD e Serie TV (menu "…" → "Densità griglia"): misure
+        // della schermata di riferimento (393 pt): 2 colonne da 175,5 pt,
+        // locandine 2:3 alte ~265 pt, 10 pt fra le card, margine laterale
+        // 16 pt, 18 pt fra le righe. Su schermi larghi aumentano le colonne
+        // mantenendo margini e spazi identici.
+        static let posterReferenceWidth: CGFloat = 175.5
+        static let posterAspectRatio: CGFloat = 1.51
+        static let posterColumnSpacing: CGFloat = 10
+        static let posterRowSpacing: CGFloat = 18
+        static let posterHorizontalPadding: CGFloat = 16
+
         // Live TV: ESATTAMENTE come prima, doppia scelta "Comoda" /
         // "Compatta" con le misure originali di entrambe.
         static let liveComfortableColumnMinimum: CGFloat = 110
@@ -349,21 +360,78 @@ struct ChannelGridView: View {
     /// in una riga e ad allinearle a sinistra come nel riferimento.
     @State private var gridContainerWidth: CGFloat = 0
 
-    private var largePosterColumnCount: Int {
-        guard gridContainerWidth > 0 else { return 2 }
-
-        let available = gridContainerWidth - GridMetrics.comfortableHorizontalPadding * 2
-        let gap = GridMetrics.comfortableColumnSpacing
-        let width = GridMetrics.comfortablePosterWidth
-
-        return max(1, Int(((available + gap) / (width + gap)).rounded(.down)))
+    /// "Poster": solo VOD e Serie TV, scelta dal menu "…".
+    private var isPosterGrid: Bool {
+        kind != .live && channelGridDensity == "poster"
     }
 
-    /// Larghezza esatta occupata dalle colonne fisse della "Comoda".
+    private var largePosterColumnCount: Int {
+        if isPosterGrid {
+            guard gridContainerWidth > 0 else { return 2 }
+
+            let usable = gridContainerWidth - 2 * GridMetrics.posterHorizontalPadding
+            let pitch = GridMetrics.posterReferenceWidth + GridMetrics.posterColumnSpacing
+            let count = Int(((usable + GridMetrics.posterColumnSpacing) / pitch).rounded())
+
+            return max(2, count)
+        }
+
+        guard gridContainerWidth > 0 else { return 2 }
+
+        // Quante locandine fisse entrano rispettando almeno la distanza minima
+        // (margine + spazi) fra le card e dai bordi.
+        let minimumGap = GridMetrics.comfortableColumnSpacing
+        let width = GridMetrics.comfortablePosterWidth
+
+        return max(1, Int(((gridContainerWidth - minimumGap) / (width + minimumGap)).rounded(.down)))
+    }
+
+    /// Larghezza della locandina delle modalità grandi: fissa per la
+    /// "Comoda", ricavata dalla larghezza reale per "Poster" (così margini
+    /// e spazi restano esattamente 16 / 10 pt a qualunque larghezza).
+    private var largePosterWidth: CGFloat {
+        guard isPosterGrid else { return GridMetrics.comfortablePosterWidth }
+        guard gridContainerWidth > 0 else { return GridMetrics.posterReferenceWidth }
+
+        let count = CGFloat(largePosterColumnCount)
+        let usable = gridContainerWidth
+            - 2 * GridMetrics.posterHorizontalPadding
+            - (count - 1) * GridMetrics.posterColumnSpacing
+
+        return max(1, (usable / count).rounded(.down))
+    }
+
+    private var largePosterHeight: CGFloat {
+        isPosterGrid
+            ? (largePosterWidth * GridMetrics.posterAspectRatio).rounded()
+            : GridMetrics.comfortablePosterHeight
+    }
+
+    /// Distanza UGUALE fra bordo schermo e prima locandina, fra locandina e
+    /// locandina e fra ultima locandina e bordo destro (solo "Comoda"): lo
+    /// spazio avanzato della riga è distribuito in parti uguali su (n + 1)
+    /// intervalli. In "Poster" i valori sono fissi (16 / 10 pt).
+    private var largePosterGap: CGFloat {
+        guard gridContainerWidth > 0 else { return GridMetrics.comfortableHorizontalPadding }
+
+        let count = CGFloat(largePosterColumnCount)
+        let free = gridContainerWidth - count * GridMetrics.comfortablePosterWidth
+
+        return max(0, free / (count + 1))
+    }
+
+    private var largePosterColumnSpacing: CGFloat {
+        isPosterGrid ? GridMetrics.posterColumnSpacing : largePosterGap
+    }
+
+    private var largePosterEdgeInset: CGFloat {
+        isPosterGrid ? GridMetrics.posterHorizontalPadding : largePosterGap
+    }
+
+    /// Larghezza esatta occupata dalle colonne fisse delle modalità grandi.
     private var largePosterGridWidth: CGFloat {
         let count = CGFloat(largePosterColumnCount)
-        return count * GridMetrics.comfortablePosterWidth
-            + (count - 1) * GridMetrics.comfortableColumnSpacing
+        return count * largePosterWidth + (count - 1) * largePosterColumnSpacing
     }
 
     private var columns: [GridItem] {
@@ -372,8 +440,8 @@ struct ChannelGridView: View {
             // viene poi allineata a sinistra con margine di 16 pt.
             return Array(
                 repeating: GridItem(
-                    .fixed(GridMetrics.comfortablePosterWidth),
-                    spacing: GridMetrics.comfortableColumnSpacing,
+                    .fixed(largePosterWidth),
+                    spacing: largePosterColumnSpacing,
                     alignment: .topLeading
                 ),
                 count: largePosterColumnCount
@@ -404,19 +472,24 @@ struct ChannelGridView: View {
             ]
         }
 
-        // "Compatta" di VOD/Serie TV = vecchia "Comoda".
+        // "Compatta" di VOD/Serie TV = vecchia "Comoda". Celle allineate in
+        // ALTO: con titoli di una o due righe le locandine della stessa
+        // riga restano alla stessa altezza (prima la cella più corta veniva
+        // centrata verticalmente e il poster scendeva).
         return [
             GridItem(
                 .adaptive(
                     minimum: GridMetrics.compactColumnMinimum,
                     maximum: GridMetrics.compactColumnMaximum
                 ),
-                spacing: GridMetrics.compactColumnSpacing
+                spacing: GridMetrics.compactColumnSpacing,
+                alignment: .top
             )
         ]
     }
 
     private var gridRowSpacing: CGFloat {
+        if isPosterGrid { return GridMetrics.posterRowSpacing }
         if usesLargePosters { return GridMetrics.comfortableRowSpacing }
         if kind == .live {
             return isCompactGrid ? GridMetrics.liveCompactRowSpacing : GridMetrics.liveComfortableRowSpacing
@@ -425,7 +498,7 @@ struct ChannelGridView: View {
     }
 
     private var gridHorizontalPadding: CGFloat {
-        if usesLargePosters { return GridMetrics.comfortableHorizontalPadding }
+        if usesLargePosters { return largePosterEdgeInset }
         if kind == .live {
             return isCompactGrid ? GridMetrics.liveCompactHorizontalPadding : GridMetrics.liveComfortableHorizontalPadding
         }
@@ -433,7 +506,7 @@ struct ChannelGridView: View {
     }
 
     private var artworkSize: CGFloat {
-        if usesLargePosters { return GridMetrics.comfortablePosterWidth }
+        if usesLargePosters { return largePosterWidth }
         if kind == .live {
             return isCompactGrid ? GridMetrics.liveCompactArtworkSize : GridMetrics.liveComfortableArtworkSize
         }
@@ -441,11 +514,11 @@ struct ChannelGridView: View {
     }
 
     private var moviePosterHeight: CGFloat {
-        usesLargePosters ? GridMetrics.comfortablePosterHeight : GridMetrics.compactMoviePosterHeight
+        usesLargePosters ? largePosterHeight : GridMetrics.compactMoviePosterHeight
     }
 
     private var seriesPosterHeight: CGFloat {
-        usesLargePosters ? GridMetrics.comfortablePosterHeight : GridMetrics.compactSeriesPosterHeight
+        usesLargePosters ? largePosterHeight : GridMetrics.compactSeriesPosterHeight
     }
 
     /// Griglia "Comoda" di VOD/Serie TV: larghezza esatta delle colonne
@@ -820,6 +893,18 @@ struct ChannelGridView: View {
         }
     }
 
+    /// Selezione mostrata dal selettore densità: la modalità "Poster" esiste
+    /// solo per VOD/Serie TV, quindi in Live TV (stessa chiave condivisa)
+    /// vale come "Comoda", che è ciò che Live mostra davvero.
+    private var densityPickerSelection: Binding<String> {
+        Binding(
+            get: {
+                (kind == .live && channelGridDensity == "poster") ? "comfortable" : channelGridDensity
+            },
+            set: { channelGridDensity = $0 }
+        )
+    }
+
     /// Menu "…" con le opzioni di libreria per questa sezione (Live TV,
     /// VOD o Serie TV): densità griglia, stile dell'interfaccia dei
     /// gruppi e ricarica del catalogo. Sostituisce il precedente pulsante
@@ -829,9 +914,14 @@ struct ChannelGridView: View {
         Menu {
             Section("Libreria") {
                 Menu {
-                    Picker("Densità griglia", selection: $channelGridDensity) {
+                    Picker("Densità griglia", selection: densityPickerSelection) {
                         Text("Compatta").tag("compact")
                         Text("Comoda").tag("comfortable")
+                        // Solo VOD e Serie TV: locandine grandi come nel
+                        // riferimento (vedi `GridMetrics.poster*`).
+                        if kind != .live {
+                            Text("Poster").tag("poster")
+                        }
                     }
                 } label: {
                     Label("Densità griglia", systemImage: "square.grid.3x3")
