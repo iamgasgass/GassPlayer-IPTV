@@ -134,6 +134,25 @@ import ImageIO
 /// 3) Le tile usano `.equatable()` (la conformità `Equatable` da sola non
 /// viene sfruttata da SwiftUI per via delle closure) e `.animation(nil,
 /// value:)` non mappa più l'intero elenco di serie ad ogni render.
+/// Misure del riferimento per la "Comoda" di VOD/Serie TV: stessa
+/// spaziatura delle card di "Continua a guardare" (testo sotto la card a
+/// 5 pt, rientrato di 12 pt, angoli 16 pt).
+private enum LargePosterStyle {
+    static let cornerRadius: CGFloat = 16
+    static let titleSpacing: CGFloat = 5
+    static let titleInset: CGFloat = 12
+    static let titleFont: Font = .system(size: 13.5)
+}
+
+/// Larghezza del contenitore della griglia (vedi `gridContainerWidth`).
+private struct ChannelGridWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct ChannelGridView: View {
     private enum CategorySelection: Hashable {
         case all
@@ -237,14 +256,21 @@ struct ChannelGridView: View {
         static let comfortableRowSpacing: CGFloat = 16
         static let comfortableHorizontalPadding: CGFloat = 16
 
-        // "Comoda" per Live TV: le icone dei canali (quadrate) non hanno
-        // formato locandina, quindi mantengono le misure storiche.
-        static let liveColumnMinimum: CGFloat = 110
-        static let liveColumnMaximum: CGFloat = 140
-        static let liveColumnSpacing: CGFloat = 14
-        static let liveRowSpacing: CGFloat = 16
-        static let liveHorizontalPadding: CGFloat = 16
-        static let liveArtworkSize: CGFloat = 100
+        // Live TV: ESATTAMENTE come prima, doppia scelta "Comoda" /
+        // "Compatta" con le misure originali di entrambe.
+        static let liveComfortableColumnMinimum: CGFloat = 110
+        static let liveComfortableColumnMaximum: CGFloat = 140
+        static let liveComfortableColumnSpacing: CGFloat = 14
+        static let liveComfortableRowSpacing: CGFloat = 16
+        static let liveComfortableHorizontalPadding: CGFloat = 16
+        static let liveComfortableArtworkSize: CGFloat = 100
+
+        static let liveCompactColumnMinimum: CGFloat = 84
+        static let liveCompactColumnMaximum: CGFloat = 110
+        static let liveCompactColumnSpacing: CGFloat = 10
+        static let liveCompactRowSpacing: CGFloat = 10
+        static let liveCompactHorizontalPadding: CGFloat = 10
+        static let liveCompactArtworkSize: CGFloat = 84
     }
 
     let credentials: XtreamCredentials
@@ -318,55 +344,100 @@ struct ChannelGridView: View {
         !isCompactGrid && kind != .live
     }
 
+    /// Larghezza misurata del contenitore della griglia (0 finché non è
+    /// stata misurata): serve a calcolare quante locandine fisse entrano
+    /// in una riga e ad allinearle a sinistra come nel riferimento.
+    @State private var gridContainerWidth: CGFloat = 0
+
+    private var largePosterColumnCount: Int {
+        guard gridContainerWidth > 0 else { return 2 }
+
+        let available = gridContainerWidth - GridMetrics.comfortableHorizontalPadding * 2
+        let gap = GridMetrics.comfortableColumnSpacing
+        let width = GridMetrics.comfortablePosterWidth
+
+        return max(1, Int(((available + gap) / (width + gap)).rounded(.down)))
+    }
+
+    /// Larghezza esatta occupata dalle colonne fisse della "Comoda".
+    private var largePosterGridWidth: CGFloat {
+        let count = CGFloat(largePosterColumnCount)
+        return count * GridMetrics.comfortablePosterWidth
+            + (count - 1) * GridMetrics.comfortableColumnSpacing
+    }
+
     private var columns: [GridItem] {
         if usesLargePosters {
+            // Colonne FISSE (161 pt, 11 pt fra l'una e l'altra): la griglia
+            // viene poi allineata a sinistra con margine di 16 pt.
+            return Array(
+                repeating: GridItem(
+                    .fixed(GridMetrics.comfortablePosterWidth),
+                    spacing: GridMetrics.comfortableColumnSpacing,
+                    alignment: .topLeading
+                ),
+                count: largePosterColumnCount
+            )
+        }
+
+        if kind == .live {
+            if isCompactGrid {
+                return [
+                    GridItem(
+                        .adaptive(
+                            minimum: GridMetrics.liveCompactColumnMinimum,
+                            maximum: GridMetrics.liveCompactColumnMaximum
+                        ),
+                        spacing: GridMetrics.liveCompactColumnSpacing
+                    )
+                ]
+            }
+
             return [
                 GridItem(
                     .adaptive(
-                        minimum: GridMetrics.comfortablePosterWidth,
-                        maximum: GridMetrics.comfortablePosterWidth
+                        minimum: GridMetrics.liveComfortableColumnMinimum,
+                        maximum: GridMetrics.liveComfortableColumnMaximum
                     ),
-                    spacing: GridMetrics.comfortableColumnSpacing
+                    spacing: GridMetrics.liveComfortableColumnSpacing
                 )
             ]
         }
 
-        if isCompactGrid {
-            return [
-                GridItem(
-                    .adaptive(
-                        minimum: GridMetrics.compactColumnMinimum,
-                        maximum: GridMetrics.compactColumnMaximum
-                    ),
-                    spacing: GridMetrics.compactColumnSpacing
-                )
-            ]
-        }
-
+        // "Compatta" di VOD/Serie TV = vecchia "Comoda".
         return [
             GridItem(
                 .adaptive(
-                    minimum: GridMetrics.liveColumnMinimum,
-                    maximum: GridMetrics.liveColumnMaximum
+                    minimum: GridMetrics.compactColumnMinimum,
+                    maximum: GridMetrics.compactColumnMaximum
                 ),
-                spacing: GridMetrics.liveColumnSpacing
+                spacing: GridMetrics.compactColumnSpacing
             )
         ]
     }
 
     private var gridRowSpacing: CGFloat {
         if usesLargePosters { return GridMetrics.comfortableRowSpacing }
-        return isCompactGrid ? GridMetrics.compactRowSpacing : GridMetrics.liveRowSpacing
+        if kind == .live {
+            return isCompactGrid ? GridMetrics.liveCompactRowSpacing : GridMetrics.liveComfortableRowSpacing
+        }
+        return GridMetrics.compactRowSpacing
     }
 
     private var gridHorizontalPadding: CGFloat {
         if usesLargePosters { return GridMetrics.comfortableHorizontalPadding }
-        return isCompactGrid ? GridMetrics.compactHorizontalPadding : GridMetrics.liveHorizontalPadding
+        if kind == .live {
+            return isCompactGrid ? GridMetrics.liveCompactHorizontalPadding : GridMetrics.liveComfortableHorizontalPadding
+        }
+        return GridMetrics.compactHorizontalPadding
     }
 
     private var artworkSize: CGFloat {
         if usesLargePosters { return GridMetrics.comfortablePosterWidth }
-        return isCompactGrid ? GridMetrics.compactArtworkSize : GridMetrics.liveArtworkSize
+        if kind == .live {
+            return isCompactGrid ? GridMetrics.liveCompactArtworkSize : GridMetrics.liveComfortableArtworkSize
+        }
+        return GridMetrics.compactArtworkSize
     }
 
     private var moviePosterHeight: CGFloat {
@@ -375,6 +446,19 @@ struct ChannelGridView: View {
 
     private var seriesPosterHeight: CGFloat {
         usesLargePosters ? GridMetrics.comfortablePosterHeight : GridMetrics.compactSeriesPosterHeight
+    }
+
+    /// Griglia "Comoda" di VOD/Serie TV: larghezza esatta delle colonne
+    /// fisse e allineamento a sinistra; negli altri casi nessun effetto.
+    @ViewBuilder
+    private func largePosterAlignment<Grid: View>(_ grid: Grid) -> some View {
+        if usesLargePosters {
+            grid
+                .frame(width: largePosterGridWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            grid
+        }
     }
 
     private var categories: [XtreamCategory] {
@@ -515,7 +599,16 @@ struct ChannelGridView: View {
                     .padding(.vertical, 32)
                 } else {
                     content
+                        .frame(maxWidth: .infinity)
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(key: ChannelGridWidthKey.self, value: proxy.size.width)
+                            }
+                        }
                 }
+            }
+            .onPreferenceChange(ChannelGridWidthKey.self) { width in
+                if abs(width - gridContainerWidth) > 0.5 { gridContainerWidth = width }
             }
             .navigationTitle(kind.displayName)
             // "Espansibile": la pillola del gruppo occupa lo slot del
@@ -931,14 +1024,15 @@ struct ChannelGridView: View {
             // portata sulla sezione Serie TV. Ora il comportamento è
             // allineato: nessuna animazione implicita sulla transazione
             // di layout della griglia durante lo scroll.
-            LazyVGrid(columns: columns, spacing: gridRowSpacing) {
+            largePosterAlignment(LazyVGrid(columns: columns, spacing: gridRowSpacing) {
                 ForEach(displayedSeries) { item in
                     SeriesTile(
                         series: item,
                         sourceKey: tileSourceKey,
                         imageBaseHost: imageBaseHost,
                         artworkWidth: artworkSize,
-                        artworkHeight: seriesPosterHeight
+                        artworkHeight: seriesPosterHeight,
+                        isLargePoster: usesLargePosters
                     ) {
                         selectedSeries = item
                     }
@@ -948,7 +1042,7 @@ struct ChannelGridView: View {
                         prefetchSeriesInfoIfNeeded(item)
                     }
                 }
-            }
+            })
             .padding(.horizontal, gridHorizontalPadding)
             .padding(.bottom)
             .transaction { transaction in
@@ -972,11 +1066,11 @@ struct ChannelGridView: View {
     @ViewBuilder
     private var streamsGrid: some View {
         if shouldShowChannelNumbers {
-            LazyVGrid(columns: columns, spacing: gridRowSpacing) {
+            largePosterAlignment(LazyVGrid(columns: columns, spacing: gridRowSpacing) {
                 ForEach(Array(displayedStreams.enumerated()), id: \.element.id) { index, stream in
                     channelTile(for: stream, channelNumber: index + 1)
                 }
-            }
+            })
             .padding(.horizontal, gridHorizontalPadding)
             .padding(.bottom)
             .transaction { transaction in
@@ -984,11 +1078,11 @@ struct ChannelGridView: View {
                 transaction.disablesAnimations = true
             }
         } else {
-            LazyVGrid(columns: columns, spacing: gridRowSpacing) {
+            largePosterAlignment(LazyVGrid(columns: columns, spacing: gridRowSpacing) {
                 ForEach(displayedStreams) { stream in
                     channelTile(for: stream, channelNumber: nil)
                 }
-            }
+            })
             .padding(.horizontal, gridHorizontalPadding)
             .padding(.bottom)
             .transaction { transaction in
@@ -1006,9 +1100,10 @@ struct ChannelGridView: View {
             sourceKey: tileSourceKey,
             imageBaseHost: imageBaseHost,
             channelNumber: channelNumber,
-            // Le tile mantengono lo stile testo/stella della vecchia
-            // "Comoda" in entrambe le densità (ora "Compatta" e "Comoda").
-            isCompact: false,
+            // Live TV: stile originale di entrambe le densità. VOD/Serie TV:
+            // stile testo/stella della vecchia "Comoda" in entrambe.
+            isCompact: kind == .live && isCompactGrid,
+            isLargePoster: usesLargePosters,
             artworkSize: artworkSize,
             moviePosterHeight: moviePosterHeight,
             isFavorite: contentManagement.isFavorite(id: favoriteID(for: stream)),
@@ -1300,6 +1395,7 @@ private struct ChannelTile: View, Equatable {
     let imageBaseHost: String
     let channelNumber: Int?
     let isCompact: Bool
+    let isLargePoster: Bool
     let artworkSize: CGFloat
     let moviePosterHeight: CGFloat
     let isFavorite: Bool
@@ -1318,6 +1414,7 @@ private struct ChannelTile: View, Equatable {
         lhs.imageBaseHost == rhs.imageBaseHost &&
         lhs.channelNumber == rhs.channelNumber &&
         lhs.isCompact == rhs.isCompact &&
+        lhs.isLargePoster == rhs.isLargePoster &&
         lhs.artworkSize == rhs.artworkSize &&
         lhs.moviePosterHeight == rhs.moviePosterHeight &&
         lhs.isFavorite == rhs.isFavorite &&
@@ -1345,6 +1442,35 @@ private struct ChannelTile: View, Equatable {
     }
 
     var body: some View {
+        if isLargePoster {
+            largePosterBody
+        } else {
+            standardBody
+        }
+    }
+
+    /// "Comoda" di VOD/Serie TV: testo SOTTO la card, allineato a sinistra
+    /// e rientrato di 12 pt, a 5 pt dal poster (stesse misure del
+    /// riferimento e di "Continua a guardare").
+    private var largePosterBody: some View {
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: LargePosterStyle.titleSpacing) {
+                artwork
+
+                Text(stream.name)
+                    .font(LargePosterStyle.titleFont)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, LargePosterStyle.titleInset)
+                    .frame(width: artworkSize, alignment: .leading)
+            }
+            .frame(width: artworkSize, alignment: .topLeading)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var standardBody: some View {
         Button(action: onTap) {
             VStack(spacing: tileSpacing) {
                 artwork
@@ -1380,7 +1506,7 @@ private struct ChannelTile: View, Equatable {
                     baseHost: imageBaseHost,
                     width: artworkSize,
                     height: moviePosterHeight,
-                    cornerRadius: 12,
+                    cornerRadius: isLargePoster ? LargePosterStyle.cornerRadius : 12,
                     placeholderSymbol: "film"
                 )
                 // Voto TMDB in alto a destra (solo badge, poster Xtream).
@@ -1462,6 +1588,7 @@ private struct SeriesTile: View, Equatable {
     let imageBaseHost: String
     let artworkWidth: CGFloat
     let artworkHeight: CGFloat
+    let isLargePoster: Bool
     let onTap: () -> Void
 
     // Come per `ChannelTile`: `Equatable` sintetizzato sui soli dati
@@ -1483,19 +1610,23 @@ private struct SeriesTile: View, Equatable {
         lhs.series.name == rhs.series.name &&
         lhs.series.cover == rhs.series.cover &&
         lhs.artworkWidth == rhs.artworkWidth &&
-        lhs.artworkHeight == rhs.artworkHeight
+        lhs.artworkHeight == rhs.artworkHeight &&
+        lhs.isLargePoster == rhs.isLargePoster
     }
 
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 4) {
+            VStack(
+                alignment: isLargePoster ? .leading : .center,
+                spacing: isLargePoster ? LargePosterStyle.titleSpacing : 4
+            ) {
                 // Solo dati Xtream (`cover`): nessun poster TMDB in griglia.
                 CachedPosterImage(
                     urlString: series.cover,
                     baseHost: imageBaseHost,
                     width: artworkWidth,
                     height: artworkHeight,
-                    cornerRadius: 12,
+                    cornerRadius: isLargePoster ? LargePosterStyle.cornerRadius : 12,
                     placeholderSymbol: "rectangle.stack.fill"
                 )
                 // Voto TMDB in alto a destra (solo badge, poster Xtream).
@@ -1503,12 +1634,23 @@ private struct SeriesTile: View, Equatable {
                     GridTMDBRatingBadge(title: series.name, isSeries: true)
                 }
 
-                Text(series.name)
-                    .font(.caption)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
+                if isLargePoster {
+                    // "Comoda": testo sotto la card, a sinistra, rientrato.
+                    Text(series.name)
+                        .font(LargePosterStyle.titleFont)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .padding(.horizontal, LargePosterStyle.titleInset)
+                        .frame(width: artworkWidth, alignment: .leading)
+                } else {
+                    Text(series.name)
+                        .font(.caption)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                }
             }
+            .frame(width: isLargePoster ? artworkWidth : nil, alignment: .topLeading)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(series.name)
