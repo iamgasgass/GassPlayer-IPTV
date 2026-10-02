@@ -216,26 +216,35 @@ struct ChannelGridView: View {
     }
 
     private enum GridMetrics {
-        static let comfortableColumnMinimum: CGFloat = 110
-        static let comfortableColumnMaximum: CGFloat = 140
-        static let comfortableColumnSpacing: CGFloat = 14
+        // "Compatta": esattamente le misure della vecchia "Comoda"
+        // (Live TV, VOD e Serie TV). La vecchia "Compatta" è stata sostituita.
+        static let compactColumnMinimum: CGFloat = 110
+        static let compactColumnMaximum: CGFloat = 140
+        static let compactColumnSpacing: CGFloat = 14
+        static let compactRowSpacing: CGFloat = 16
+        static let compactHorizontalPadding: CGFloat = 16
+
+        static let compactArtworkSize: CGFloat = 100
+        static let compactMoviePosterHeight: CGFloat = 150
+        static let compactSeriesPosterHeight: CGFloat = 140
+
+        // "Comoda" per VOD e Serie TV: locandine grandi come nel riferimento
+        // ("Aggiunto di recente"): 161 x 243 pt (2:3), 11 pt fra le card,
+        // margine laterale 16 pt. Con 393 pt di larghezza = 2 locandine per riga.
+        static let comfortablePosterWidth: CGFloat = 161
+        static let comfortablePosterHeight: CGFloat = 243
+        static let comfortableColumnSpacing: CGFloat = 11
         static let comfortableRowSpacing: CGFloat = 16
         static let comfortableHorizontalPadding: CGFloat = 16
 
-        static let compactColumnMinimum: CGFloat = 84
-        static let compactColumnMaximum: CGFloat = 110
-        static let compactColumnSpacing: CGFloat = 10
-        static let compactRowSpacing: CGFloat = 10
-        static let compactHorizontalPadding: CGFloat = 10
-
-        static let comfortableArtworkSize: CGFloat = 100
-        static let compactArtworkSize: CGFloat = 84
-
-        static let comfortableMoviePosterHeight: CGFloat = 150
-        static let compactMoviePosterHeight: CGFloat = 126
-
-        static let comfortableSeriesPosterHeight: CGFloat = 140
-        static let compactSeriesPosterHeight: CGFloat = 118
+        // "Comoda" per Live TV: le icone dei canali (quadrate) non hanno
+        // formato locandina, quindi mantengono le misure storiche.
+        static let liveColumnMinimum: CGFloat = 110
+        static let liveColumnMaximum: CGFloat = 140
+        static let liveColumnSpacing: CGFloat = 14
+        static let liveRowSpacing: CGFloat = 16
+        static let liveHorizontalPadding: CGFloat = 16
+        static let liveArtworkSize: CGFloat = 100
     }
 
     let credentials: XtreamCredentials
@@ -304,7 +313,24 @@ struct ChannelGridView: View {
         channelGridDensity == "compact"
     }
 
+    /// "Comoda" con locandine grandi: solo VOD e Serie TV.
+    private var usesLargePosters: Bool {
+        !isCompactGrid && kind != .live
+    }
+
     private var columns: [GridItem] {
+        if usesLargePosters {
+            return [
+                GridItem(
+                    .adaptive(
+                        minimum: GridMetrics.comfortablePosterWidth,
+                        maximum: GridMetrics.comfortablePosterWidth
+                    ),
+                    spacing: GridMetrics.comfortableColumnSpacing
+                )
+            ]
+        }
+
         if isCompactGrid {
             return [
                 GridItem(
@@ -320,32 +346,35 @@ struct ChannelGridView: View {
         return [
             GridItem(
                 .adaptive(
-                    minimum: GridMetrics.comfortableColumnMinimum,
-                    maximum: GridMetrics.comfortableColumnMaximum
+                    minimum: GridMetrics.liveColumnMinimum,
+                    maximum: GridMetrics.liveColumnMaximum
                 ),
-                spacing: GridMetrics.comfortableColumnSpacing
+                spacing: GridMetrics.liveColumnSpacing
             )
         ]
     }
 
     private var gridRowSpacing: CGFloat {
-        isCompactGrid ? GridMetrics.compactRowSpacing : GridMetrics.comfortableRowSpacing
+        if usesLargePosters { return GridMetrics.comfortableRowSpacing }
+        return isCompactGrid ? GridMetrics.compactRowSpacing : GridMetrics.liveRowSpacing
     }
 
     private var gridHorizontalPadding: CGFloat {
-        isCompactGrid ? GridMetrics.compactHorizontalPadding : GridMetrics.comfortableHorizontalPadding
+        if usesLargePosters { return GridMetrics.comfortableHorizontalPadding }
+        return isCompactGrid ? GridMetrics.compactHorizontalPadding : GridMetrics.liveHorizontalPadding
     }
 
     private var artworkSize: CGFloat {
-        isCompactGrid ? GridMetrics.compactArtworkSize : GridMetrics.comfortableArtworkSize
+        if usesLargePosters { return GridMetrics.comfortablePosterWidth }
+        return isCompactGrid ? GridMetrics.compactArtworkSize : GridMetrics.liveArtworkSize
     }
 
     private var moviePosterHeight: CGFloat {
-        isCompactGrid ? GridMetrics.compactMoviePosterHeight : GridMetrics.comfortableMoviePosterHeight
+        usesLargePosters ? GridMetrics.comfortablePosterHeight : GridMetrics.compactMoviePosterHeight
     }
 
     private var seriesPosterHeight: CGFloat {
-        isCompactGrid ? GridMetrics.compactSeriesPosterHeight : GridMetrics.comfortableSeriesPosterHeight
+        usesLargePosters ? GridMetrics.comfortablePosterHeight : GridMetrics.compactSeriesPosterHeight
     }
 
     private var categories: [XtreamCategory] {
@@ -977,7 +1006,9 @@ struct ChannelGridView: View {
             sourceKey: tileSourceKey,
             imageBaseHost: imageBaseHost,
             channelNumber: channelNumber,
-            isCompact: isCompactGrid,
+            // Le tile mantengono lo stile testo/stella della vecchia
+            // "Comoda" in entrambe le densità (ora "Compatta" e "Comoda").
+            isCompact: false,
             artworkSize: artworkSize,
             moviePosterHeight: moviePosterHeight,
             isFavorite: contentManagement.isFavorite(id: favoriteID(for: stream)),

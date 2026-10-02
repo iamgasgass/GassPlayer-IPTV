@@ -67,10 +67,36 @@ struct ContinueWatchingSection: View {
 
         VStack(alignment: .leading, spacing: Metrics.headerToCardSpacing) {
             if !visibleItems.isEmpty {
-                Text("Continua a guardare")
-                    .font(.system(size: 18.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, horizontalInset)
+                HStack(alignment: .center) {
+                    Text("Continua a guardare")
+                        .font(.system(size: 18.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 12)
+
+                    // Tasto "Svuota" (stessa azione dell'implementazione
+                    // originale: svuota solo il tipo della sezione, tutto
+                    // in Home) con lo stesso materiale Liquid Glass della
+                    // "X" delle schede dettaglio VOD/Serie TV, in forma di
+                    // capsula perché contiene testo.
+                    Button {
+                        withAnimation(.snappy) {
+                            if let kindFilter {
+                                recentlyWatched.clear(kind: kindFilter)
+                            } else {
+                                recentlyWatched.clear()
+                            }
+                        }
+                    } label: {
+                        Text("Svuota")
+                            .font(.system(size: 14, weight: .semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                    }
+                    .modifier(ClearGlassCapsule())
+                    .accessibilityLabel("Svuota Continua a guardare")
+                }
+                .padding(.horizontal, horizontalInset)
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: Metrics.cardSpacing) {
@@ -286,6 +312,33 @@ struct ContinueWatchingSection: View {
                 imageURLString: image.flatMap { $0.isEmpty ? nil : $0 },
                 subtitle: subtitle.flatMap { $0.isEmpty ? nil : $0 }
             )
+        }
+    }
+}
+
+
+/// Capsula Liquid Glass neutra: stesso `.glass` della `GlassIconButton`
+/// ("X" delle schede dettaglio) in forma di pillola. Il testo usa il colore
+/// primario di sistema (leggibile anche con tema chiaro); su iOS < 26
+/// ripiega su materiale sottile con filo di bordo, come il fallback della X.
+private struct ClearGlassCapsule: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
+                .controlSize(.small)
+                .foregroundStyle(.primary)
+        } else {
+            content
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
+                }
         }
     }
 }
