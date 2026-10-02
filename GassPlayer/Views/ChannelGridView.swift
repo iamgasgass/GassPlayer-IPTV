@@ -453,17 +453,12 @@ struct ChannelGridView: View {
 
     /// Distanza verticale fra l'elemento sopra la griglia (titolo sezione,
     /// chip dei gruppi o "Continua a guardare") e il bordo superiore della
-    /// prima fila di poster. In Compatta/Comoda è UGUALE alla distanza fra
-    /// il titolo di un poster e il bordo superiore del poster sotto
-    /// (`gridRowSpacing`); gli elementi sopra non aggiungono margine
-    /// inferiore proprio. In "Poster" resta il comportamento precedente.
+    /// prima fila di poster: in TUTTE le densità (Compatta, Comoda e
+    /// Poster) è UGUALE alla distanza fra il titolo di un poster e il
+    /// bordo superiore del poster sotto (`gridRowSpacing`). Gli elementi
+    /// sopra non aggiungono margine inferiore proprio.
     private var gridTopPadding: CGFloat {
-        usesLargePosters ? 0 : gridRowSpacing
-    }
-
-    /// Margine inferiore degli elementi sopra la griglia (vedi sopra).
-    private func aboveGridBottomPadding(_ legacy: CGFloat) -> CGFloat {
-        usesLargePosters ? legacy : 0
+        gridRowSpacing
     }
 
     /// Griglia "Poster": larghezza esatta delle colonne fisse e
@@ -602,7 +597,7 @@ struct ChannelGridView: View {
                         kindFilter: kind.rawValue,
                         horizontalInset: 16,
                         topPadding: 8,
-                        bottomPadding: aboveGridBottomPadding(16)
+                        bottomPadding: 0
                     )
                 }
 
@@ -1211,7 +1206,7 @@ struct ChannelGridView: View {
             }
             .padding(.horizontal)
             .padding(.top, 8)
-            .padding(.bottom, aboveGridBottomPadding(8))
+            .padding(.bottom, 0)
         }
     }
 

@@ -106,6 +106,13 @@ struct ContinueWatchingSection: View {
                     LazyHStack(alignment: .top, spacing: Metrics.cardSpacing) {
                         ForEach(visibleItems) { item in
                             card(item)
+                                // La card rimossa sparisce SUBITO (nessuna
+                                // dissolvenza): con la transizione di
+                                // default restava a metà per tutta
+                                // l'animazione mentre la card seguente
+                                // scorreva sopra di lei, mostrando residui
+                                // del contenuto rimosso.
+                                .transition(.identity)
                         }
                     }
                     .padding(.horizontal, horizontalInset)
@@ -166,7 +173,9 @@ struct ContinueWatchingSection: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button(role: .destructive) {
-                withAnimation(.snappy) { recentlyWatched.remove(item) }
+                // Scorrimento rapido delle card seguenti (0,2 s) invece
+                // della `.snappy` di default, percepita come lenta.
+                withAnimation(.easeOut(duration: 0.2)) { recentlyWatched.remove(item) }
             } label: {
                 Label("Rimuovi", systemImage: "trash")
             }
