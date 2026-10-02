@@ -15,6 +15,11 @@ struct RecentlyWatchedItem: Codable, Identifiable, Hashable {
     /// salvati prima di questo campo si decodificano con `nil` e mostrano
     /// il segnaposto a icona finché non vengono riaperti.
     var imageURLString: String? = nil
+    /// Nome della categoria del catalogo Xtream (es. "Serie TV G-H-I"),
+    /// mostrato sotto il titolo nella card di "Continua a guardare".
+    /// Opzionale: i vecchi elementi si decodificano con `nil` e vengono
+    /// completati dalla sezione appena visibile (`updateMetadata`).
+    var subtitle: String? = nil
 }
 
 /// Traccia gli ultimi contenuti aperti in riproduzione per alimentare la
@@ -47,10 +52,19 @@ final class RecentlyWatchedStore: ObservableObject {
 
     /// Registra (o sposta in cima, se già presente) un contenuto appena
     /// aperto in riproduzione.
-    func record(id: String, title: String, kind: String, streamURL: URL, imageURLString: String? = nil) {
-        // Se l'elemento esisteva già e questa chiamata non porta un'immagine,
-        // si conserva quella precedente invece di perderla.
-        let previousImage = items.first { $0.id == id }?.imageURLString
+    func record(
+        id: String,
+        title: String,
+        kind: String,
+        streamURL: URL,
+        imageURLString: String? = nil,
+        subtitle: String? = nil
+    ) {
+        // Se l'elemento esisteva già e questa chiamata non porta un'immagine
+        // (o una categoria), si conserva quella precedente invece di perderla.
+        let previous = items.first { $0.id == id }
+        let previousImage = previous?.imageURLString
+        let previousSubtitle = previous?.subtitle
 
         items.removeAll { $0.id == id }
         items.insert(
@@ -60,7 +74,8 @@ final class RecentlyWatchedStore: ObservableObject {
                 kind: kind,
                 streamURL: streamURL,
                 openedAt: Date(),
-                imageURLString: imageURLString ?? previousImage
+                imageURLString: imageURLString ?? previousImage,
+                subtitle: subtitle ?? previousSubtitle
             ),
             at: 0
         )
@@ -101,6 +116,43 @@ final class RecentlyWatchedStore: ObservableObject {
             changed = true
         }
         if changed { persist() }
+    }
+
+    /// Completa immagine e categoria di un elemento (solo i campi ancora
+    /// vuoti: non sovrascrive mai l'immagine della scheda dettaglio) senza
+    /// cambiarne l'ordine. Usata dalla sezione "Continua a guardare" per
+    /// mostrare subito poster e categoria anche per i contenuti registrati
+    /// prima che questi campi esistessero.
+    func updateMetadata(id: String, imageURLString: String?, subtitle: String?) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+
+        var changed = false
+
+        if items[index].imageURLString == nil, let imageURLString {
+            items[index].imageURLString = imageURLString
+            changed = true
+        }
+
+        if items[index].subtitle == nil, let subtitle {
+            items[index].subtitle = subtitle
+            changed = true
+        }
+
+        if changed { persist() }
+    }
+
+    /// Rilegge l'elenco salvato e forza il ridisegno delle viste che lo
+    /// osservano. Chiamata quando la Home torna visibile: una scheda di un
+    /// `TabView` non in primo piano non è garantito aggiorni subito la
+    /// propria gerarchia, e l'elenco compariva solo al riavvio dell'app.
+    func refresh() {
+        if let data = UserDefaults.standard.data(forKey: storageKey),
+           let decoded = try? JSONDecoder().decode([RecentlyWatchedItem].self, from: data),
+           decoded != items {
+            items = decoded
+        } else {
+            objectWillChange.send()
+        }
     }
 
     private func persist() {

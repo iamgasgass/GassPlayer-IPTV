@@ -120,8 +120,13 @@ struct HomeView: View {
                 heading
 
                 if !recentlyWatched.items.isEmpty {
-                    // Stessa sezione usata nelle schede dettaglio (qui tutti i tipi).
-                    ContinueWatchingSection()
+                    // Stessa sezione usata in VOD e Serie TV (qui tutti i
+                    // tipi). Il contenitore ha 20 pt di padding laterale:
+                    // il padding negativo fa partire header e card a filo
+                    // schermo con il margine di 16 pt del riferimento e
+                    // permette alla riga di scorrere fino al bordo.
+                    ContinueWatchingSection(horizontalInset: 16)
+                        .padding(.horizontal, -20)
                 }
 
                 if hasActiveSource {
@@ -149,6 +154,20 @@ struct HomeView: View {
             .padding(.horizontal, 20)
             .padding(.top, 12)
             .padding(.bottom, 32)
+        }
+        // FIX: "Continua a guardare" compariva in Home solo dopo il
+        // riavvio. La scheda Home vive in un `TabView` e, mentre è in
+        // secondo piano, non è garantito che ridisegni la propria
+        // gerarchia quando un contenuto viene registrato altrove (VOD,
+        // Serie TV): ogni volta che la scheda torna visibile si rilegge
+        // l'elenco e si forza l'aggiornamento.
+        .onAppear {
+            recentlyWatched.refresh()
+        }
+        .onChange(of: selectedTab) { _, newTab in
+            if newTab == .home {
+                recentlyWatched.refresh()
+            }
         }
     }
 

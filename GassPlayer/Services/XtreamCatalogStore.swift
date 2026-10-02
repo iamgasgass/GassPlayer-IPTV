@@ -88,13 +88,72 @@ actor CachedXtreamRepository {
         // mai cacheata, che avveniva prima ad ogni caricamento del catalogo.
         let categories = try? await self.categories(kind: kind, forceRefresh: forceRefresh)
 
-        let result = try await RetryPolicy.withRetry(shouldRetry: Self.shouldRetry) {
-            try await self.api.fetchAllStreams(kind: kind, categories: categories)
+        let knownEmpty = loadKnownEmptyCategories(kind: kind)
+
+        let fetched = try await RetryPolicy.withRetry(shouldRetry: Self.shouldRetry) {
+            try await self.api.fetchAllStreamsReportingEmpty(
+                kind: kind,
+                categories: categories,
+                skippingCategoryIDs: knownEmpty.ids
+            )
         }
 
+        saveKnownEmptyCategories(fetched.emptyCategoryIDs, previous: knownEmpty, kind: kind)
+
+        let result = fetched.streams
         let ttl: TimeInterval = kind == .movie ? 900 : 300
         await CacheService.shared.set(result, for: key, ttl: ttl)
         return result
+    }
+
+    // MARK: - Categorie note come vuote
+
+    /// Le categorie che il provider ha confermato vuote vengono ricordate
+    /// per 12 ore (per sorgente e tipo) così i ricaricamenti successivi non
+    /// rifanno una richiesta `get_*_streams` per ciascuna di esse. Scaduto
+    /// il periodo vengono ricontrollate tutte.
+    private static let emptyCategoriesTTL: TimeInterval = 12 * 3600
+
+    private func emptyCategoriesDefaultsKey(kind: XtreamStreamKind) -> String {
+        "gassplayer.emptyCategories.\(cachePrefix).\(kind.rawValue)"
+    }
+
+    private func loadKnownEmptyCategories(kind: XtreamStreamKind) -> (ids: Set<String>, savedAt: Date?) {
+        guard let stored = UserDefaults.standard.dictionary(forKey: emptyCategoriesDefaultsKey(kind: kind)),
+              let ids = stored["ids"] as? [String],
+              let timestamp = stored["savedAt"] as? Double else {
+            return ([], nil)
+        }
+
+        let savedAt = Date(timeIntervalSince1970: timestamp)
+
+        guard Date().timeIntervalSince(savedAt) < Self.emptyCategoriesTTL else {
+            return ([], nil)
+        }
+
+        return (Set(ids), savedAt)
+    }
+
+    private func saveKnownEmptyCategories(
+        _ ids: Set<String>,
+        previous: (ids: Set<String>, savedAt: Date?),
+        kind: XtreamStreamKind
+    ) {
+        let key = emptyCategoriesDefaultsKey(kind: kind)
+
+        guard !ids.isEmpty else {
+            UserDefaults.standard.removeObject(forKey: key)
+            return
+        }
+
+        // Se non è stata fatta alcuna nuova verifica (tutte già note) si
+        // conserva la data originale, così la scadenza di 12h non slitta.
+        let savedAt = (ids == previous.ids ? previous.savedAt : nil) ?? Date()
+
+        UserDefaults.standard.set(
+            ["ids": Array(ids), "savedAt": savedAt.timeIntervalSince1970],
+            forKey: key
+        )
     }
 
     func seriesList(forceRefresh: Bool = false) async throws -> [XtreamSeriesItem] {
@@ -164,10 +223,17 @@ actor CachedXtreamRepository {
     /// precedente, un `kind` esplicito NON invalida piu' l'intera sorgente:
     /// solo le voci di categorie/stream/catalogo pertinenti a quel tipo.
     func invalidate(kind: XtreamStreamKind? = nil) async {
+        // Un ricaricamento esplicito ricontrolla anche le categorie
+        // ricordate come vuote (vedi `loadKnownEmptyCategories`).
         guard let kind else {
+            for known in XtreamStreamKind.allCases {
+                UserDefaults.standard.removeObject(forKey: emptyCategoriesDefaultsKey(kind: known))
+            }
             await CacheService.shared.invalidate(prefix: cachePrefix)
             return
         }
+
+        UserDefaults.standard.removeObject(forKey: emptyCategoriesDefaultsKey(kind: kind))
 
         let prefix = "\(cachePrefix)."
 

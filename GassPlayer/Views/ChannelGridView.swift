@@ -469,7 +469,7 @@ struct ChannelGridView: View {
                 if kind != .live && !isInitialLoadPending {
                     ContinueWatchingSection(
                         kindFilter: kind.rawValue,
-                        horizontalInset: gridHorizontalPadding,
+                        horizontalInset: 16,
                         topPadding: 8,
                         bottomPadding: 16
                     )
@@ -1560,7 +1560,7 @@ private struct GridTMDBRatingBadge: View {
 /// Cache in memoria + risoluzione robusta degli URL delle immagini del
 /// catalogo Xtream. La lettura dalla cache è sincrona (`NSCache` è
 /// thread-safe), così una cella riciclata mostra l'immagine al primo frame.
-private enum PosterImageStore {
+enum PosterImageStore {
     static let memory: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
         cache.countLimit = 800
@@ -1629,13 +1629,22 @@ private enum PosterImageStore {
         return url
     }
 
-    static func cachedImage(for url: URL) -> UIImage? {
-        memory.object(forKey: url as NSURL)
+    /// Chiave di cache: l'URL stesso per la dimensione standard (tile della
+    /// griglia), URL + frammento per le dimensioni maggiori (es. card
+    /// "Continua a guardare"), così la stessa immagine può convivere a due
+    /// risoluzioni senza che la versione piccola venga mostrata ingrandita.
+    static func key(_ url: URL, maxPixel: CGFloat) -> URL {
+        guard maxPixel != maxPixelSize else { return url }
+        return URL(string: url.absoluteString + "#px\(Int(maxPixel))") ?? url
     }
 
-    static func store(_ image: UIImage, for url: URL) {
+    static func cachedImage(for url: URL, maxPixel: CGFloat = PosterImageStore.maxPixelSize) -> UIImage? {
+        memory.object(forKey: key(url, maxPixel: maxPixel) as NSURL)
+    }
+
+    static func store(_ image: UIImage, for url: URL, maxPixel: CGFloat = PosterImageStore.maxPixelSize) {
         let cost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
-        memory.setObject(image, forKey: url as NSURL, cost: cost)
+        memory.setObject(image, forKey: key(url, maxPixel: maxPixel) as NSURL, cost: cost)
     }
 }
 
@@ -1643,7 +1652,7 @@ private enum PosterImageStore {
 /// SOLO per il download delle icone del catalogo: i server immagini dei
 /// provider IPTV li hanno spesso, e `AsyncImage` in quel caso falliva in
 /// silenzio lasciando la cella senza poster.
-private final class PosterSessionDelegate: NSObject, URLSessionDelegate {
+final class PosterSessionDelegate: NSObject, URLSessionDelegate {
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
@@ -1664,7 +1673,7 @@ private final class PosterSessionDelegate: NSObject, URLSessionDelegate {
 /// (timeout, 429/5xx dovuti alle troppe richieste parallele), fallback
 /// https → http e breve "pausa" sugli URL falliti (mai un fallimento
 /// permanente: la cella riprova al prossimo ingresso in vista).
-private actor PosterDownloader {
+actor PosterDownloader {
     static let shared = PosterDownloader()
 
     private struct Entry {
@@ -1695,8 +1704,12 @@ private actor PosterDownloader {
         return URLSession(configuration: configuration, delegate: PosterSessionDelegate(), delegateQueue: nil)
     }()
 
-    func image(for url: URL) async -> UIImage? {
-        if let cached = PosterImageStore.cachedImage(for: url) { return cached }
+    func image(for sourceURL: URL, maxPixel: CGFloat = PosterImageStore.maxPixelSize) async -> UIImage? {
+        if let cached = PosterImageStore.cachedImage(for: sourceURL, maxPixel: maxPixel) { return cached }
+
+        // `url` è la chiave di deduplicazione/cooldown (URL + dimensione);
+        // `sourceURL` è l'indirizzo reale da scaricare.
+        let url = PosterImageStore.key(sourceURL, maxPixel: maxPixel)
 
         if let failedAt = failures[url], Date().timeIntervalSince(failedAt) < failureCooldown {
             return nil
@@ -1713,7 +1726,7 @@ private actor PosterDownloader {
         } else {
             token = UUID()
             task = Task.detached(priority: .utility) { [session] in
-                await Self.fetch(url, session: session)
+                await Self.fetch(sourceURL, session: session, maxPixel: maxPixel)
             }
             entries[url] = Entry(token: token, task: task, waiters: 1)
         }
@@ -1731,7 +1744,7 @@ private actor PosterDownloader {
         if entries[url]?.token == token { entries[url] = nil }
 
         if let image {
-            PosterImageStore.store(image, for: url)
+            PosterImageStore.store(image, for: sourceURL, maxPixel: maxPixel)
             failures[url] = nil
         } else {
             failures[url] = Date()
@@ -1753,7 +1766,7 @@ private actor PosterDownloader {
         }
     }
 
-    private static func fetch(_ url: URL, session: URLSession) async -> UIImage? {
+    private static func fetch(_ url: URL, session: URLSession, maxPixel: CGFloat) async -> UIImage? {
         var candidates = [url]
 
         // Molti server immagini dei provider espongono solo http: se https
@@ -1768,7 +1781,7 @@ private actor PosterDownloader {
             for attempt in 0..<3 {
                 if Task.isCancelled { return nil }
 
-                switch await download(candidate, session: session) {
+                switch await download(candidate, session: session, maxPixel: maxPixel) {
                 case .image(let image):
                     return image
 
@@ -1795,7 +1808,7 @@ private actor PosterDownloader {
         case permanentFailure
     }
 
-    private static func download(_ url: URL, session: URLSession) async -> DownloadOutcome {
+    private static func download(_ url: URL, session: URLSession, maxPixel: CGFloat) async -> DownloadOutcome {
         do {
             let (data, response) = try await session.data(from: url)
 
@@ -1806,7 +1819,7 @@ private actor PosterDownloader {
                     : .permanentFailure
             }
 
-            guard !data.isEmpty, let image = decode(data) else { return .permanentFailure }
+            guard !data.isEmpty, let image = decode(data, maxPixel: maxPixel) else { return .permanentFailure }
 
             return .image(image)
         } catch let error as URLError {
@@ -1828,7 +1841,7 @@ private actor PosterDownloader {
 
     /// Decodifica ridimensionata con ImageIO (leggera, fuori dal main
     /// thread); se ImageIO non la riconosce ripiega su `UIImage(data:)`.
-    private static func decode(_ data: Data) -> UIImage? {
+    private static func decode(_ data: Data, maxPixel: CGFloat) -> UIImage? {
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
 
         if let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) {
@@ -1836,7 +1849,7 @@ private actor PosterDownloader {
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceShouldCacheImmediately: true,
-                kCGImageSourceThumbnailMaxPixelSize: PosterImageStore.maxPixelSize
+                kCGImageSourceThumbnailMaxPixelSize: maxPixel
             ] as CFDictionary
 
             if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) {
@@ -1851,13 +1864,15 @@ private actor PosterDownloader {
 /// Immagine di griglia (poster o logo canale) con comportamento stabile in
 /// scroll: placeholder neutro, immagine mostrata subito se già in cache,
 /// comparsa SENZA animazione.
-private struct CachedPosterImage: View {
+struct CachedPosterImage: View {
     let urlString: String?
     let baseHost: String
     let width: CGFloat
     let height: CGFloat
     let cornerRadius: CGFloat
     let placeholderSymbol: String
+    var contentMode: ContentMode = .fit
+    var maxPixel: CGFloat = PosterImageStore.maxPixelSize
 
     private let resolvedURL: URL?
 
@@ -1870,7 +1885,9 @@ private struct CachedPosterImage: View {
         width: CGFloat,
         height: CGFloat,
         cornerRadius: CGFloat,
-        placeholderSymbol: String
+        placeholderSymbol: String,
+        contentMode: ContentMode = .fit,
+        maxPixel: CGFloat = PosterImageStore.maxPixelSize
     ) {
         self.urlString = urlString
         self.baseHost = baseHost
@@ -1878,13 +1895,15 @@ private struct CachedPosterImage: View {
         self.height = height
         self.cornerRadius = cornerRadius
         self.placeholderSymbol = placeholderSymbol
+        self.contentMode = contentMode
+        self.maxPixel = maxPixel
 
         let url = PosterImageStore.url(from: urlString, baseHost: baseHost)
         resolvedURL = url
 
         // Lettura sincrona della cache già all'init: la cella riciclata
         // parte direttamente con l'immagine, senza frame di placeholder.
-        if let url, let cached = PosterImageStore.cachedImage(for: url) {
+        if let url, let cached = PosterImageStore.cachedImage(for: url, maxPixel: maxPixel) {
             _image = State(initialValue: cached)
             _imageURL = State(initialValue: url)
         }
@@ -1895,7 +1914,7 @@ private struct CachedPosterImage: View {
             if let image, imageURL == resolvedURL {
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFit()
+                    .aspectRatio(contentMode: contentMode)
             } else {
                 Color(uiColor: .secondarySystemFill)
                     .overlay {
@@ -1911,7 +1930,7 @@ private struct CachedPosterImage: View {
             guard let url = resolvedURL else { return }
             guard imageURL != url || image == nil else { return }
 
-            guard let loaded = await PosterDownloader.shared.image(for: url), !Task.isCancelled else { return }
+            guard let loaded = await PosterDownloader.shared.image(for: url, maxPixel: maxPixel), !Task.isCancelled else { return }
 
             var transaction = Transaction()
             transaction.disablesAnimations = true

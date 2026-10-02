@@ -16,9 +16,27 @@ actor XtreamAPIService {
     private let requestTimeout: TimeInterval
     private static let categoryBatchSize = 6
 
+    /// Sessione dedicata alle chiamate `player_api.php` (cataloghi anche da
+    /// diversi MB): senza `URLCache` (la cache applicativa è già gestita da
+    /// `CachedXtreamRepository` + snapshot su disco, quindi `URLSession.shared`
+    /// copiava inutilmente ogni risposta enorme anche in `URLCache`), con
+    /// timeout di risorsa adeguato ai cataloghi grandi su rete lenta e max
+    /// 6 connessioni per host, il numero che i pannelli Xtream tollerano
+    /// senza rifiutare richieste parallele (live + VOD + serie + categorie).
+    static let catalogSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 300
+        configuration.httpMaximumConnectionsPerHost = 6
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }()
+
     init(
         credentials: XtreamCredentials,
-        session: URLSession = .shared,
+        session: URLSession = XtreamAPIService.catalogSession,
         requestTimeout: TimeInterval = 30
     ) {
         self.credentials = credentials
@@ -129,6 +147,17 @@ actor XtreamAPIService {
         }
     }
 
+    /// Decodifica fuori dall'actor: i cataloghi (decine di migliaia di voci)
+    /// richiedono centinaia di ms di CPU; eseguita sull'actor bloccava
+    /// l'avvio/ripresa delle altre richieste Xtream concorrenti (live, VOD e
+    /// serie condividono la stessa istanza) e serializzava le tre decodifiche.
+    /// Su un task separato le decodifiche procedono in parallelo sui core.
+    private func decodeOffActor<T: Decodable & Sendable>(_ type: [T].Type, from data: Data) async -> [T] {
+        await Task.detached(priority: .userInitiated) {
+            FlexibleArrayDecoder.decode(type, from: data)
+        }.value
+    }
+
     // MARK: - Authentication
 
     func authenticate() async throws -> XtreamAuthResponse {
@@ -179,7 +208,7 @@ actor XtreamAPIService {
             action = "get_series_categories"
         }
 
-        return FlexibleArrayDecoder.decode(
+        return await decodeOffActor(
             [XtreamCategory].self,
             from: try await data(action: action)
         )
@@ -202,7 +231,7 @@ actor XtreamAPIService {
             ? ["category_id": normalizedCategoryId!]
             : [:]
 
-        return FlexibleArrayDecoder.decode(
+        return await decodeOffActor(
             [XtreamStream].self,
             from: try await data(action: action, extra: extra)
         )
@@ -243,6 +272,35 @@ actor XtreamAPIService {
         kind: XtreamStreamKind,
         categories providedCategories: [XtreamCategory]? = nil
     ) async throws -> [XtreamStream] {
+        try await fetchAllStreamsReportingEmpty(
+            kind: kind,
+            categories: providedCategories,
+            skippingCategoryIDs: []
+        ).streams
+    }
+
+    /// Esito di `fetchAllStreamsReportingEmpty`: il catalogo e le categorie
+    /// che il provider ha confermato VUOTE (assenti dalla risposta globale
+    /// e senza contenuti anche interrogandole direttamente).
+    struct CatalogFetchResult {
+        let streams: [XtreamStream]
+        let emptyCategoryIDs: Set<String>
+    }
+
+    /// Come `fetchAllStreams`, ma:
+    /// - non rifà la richiesta per le categorie in `skippingCategoryIDs`
+    ///   (già note come vuote da un recupero precedente): quasi tutti i
+    ///   pannelli hanno decine di categorie vuote, che costavano altrettante
+    ///   richieste inutili ad OGNI caricamento;
+    /// - restituisce le categorie risultate vuote, così il chiamante può
+    ///   ricordarle. Il salto è applicato solo se la risposta globale NON è
+    ///   vuota (altrimenti il provider potrebbe aver avuto un problema
+    ///   temporaneo e il recupero per categoria resta necessario).
+    func fetchAllStreamsReportingEmpty(
+        kind: XtreamStreamKind,
+        categories providedCategories: [XtreamCategory]? = nil,
+        skippingCategoryIDs: Set<String>
+    ) async throws -> CatalogFetchResult {
         guard kind != .series else {
             throw XtreamError.invalidURL
         }
@@ -263,7 +321,7 @@ actor XtreamAPIService {
             globalStreams = try await globalTask
 
             guard let fetchedCategories = await categoriesTask else {
-                return stableDeduplicated(globalStreams)
+                return CatalogFetchResult(streams: stableDeduplicated(globalStreams), emptyCategoryIDs: [])
             }
             categories = fetchedCategories
         }
@@ -281,18 +339,27 @@ actor XtreamAPIService {
                 .filter { !$0.isEmpty }
         )
 
-        let missingCategoryIDs = Array(allCategoryIDs.subtracting(globalCategoryIDs))
+        let absentCategoryIDs = allCategoryIDs.subtracting(globalCategoryIDs)
+
+        // Salta le categorie già note come vuote solo se la risposta
+        // globale contiene davvero dei contenuti.
+        let skipped = globalStreams.isEmpty
+            ? Set<String>()
+            : absentCategoryIDs.intersection(skippingCategoryIDs)
+
+        let missingCategoryIDs = Array(absentCategoryIDs.subtracting(skipped))
 
         guard !missingCategoryIDs.isEmpty else {
-            return stableDeduplicated(globalStreams)
+            return CatalogFetchResult(streams: stableDeduplicated(globalStreams), emptyCategoryIDs: skipped)
         }
 
         DebugLogger.logAsync(
             .info,
-            "Xtream: recupero mirato di \(missingCategoryIDs.count) categorie assenti dalla risposta globale (\(kind.rawValue))"
+            "Xtream: recupero mirato di \(missingCategoryIDs.count) categorie assenti dalla risposta globale (\(kind.rawValue)), \(skipped.count) note vuote saltate"
         )
 
         var collected: [XtreamStream] = []
+        var confirmedEmpty = skipped
 
         for batchStart in stride(
             from: 0,
@@ -305,30 +372,42 @@ actor XtreamAPIService {
             )
             let batch = Array(missingCategoryIDs[batchStart..<batchEnd])
 
-            let batchResults: [[XtreamStream]] = await withTaskGroup(
-                of: [XtreamStream].self,
-                returning: [[XtreamStream]].self
+            let batchResults: [(String, [XtreamStream]?)] = await withTaskGroup(
+                of: (String, [XtreamStream]?).self,
+                returning: [(String, [XtreamStream]?)].self
             ) { group in
                 for categoryID in batch {
                     group.addTask {
-                        (try? await self.fetchStreams(
+                        (categoryID, try? await self.fetchStreams(
                             kind: kind,
                             categoryId: categoryID
-                        )) ?? []
+                        ))
                     }
                 }
 
-                var results: [[XtreamStream]] = []
-                for await streams in group {
-                    results.append(streams)
+                var results: [(String, [XtreamStream]?)] = []
+                for await result in group {
+                    results.append(result)
                 }
                 return results
             }
 
-            collected.append(contentsOf: batchResults.flatMap { $0 })
+            for (categoryID, streams) in batchResults {
+                // `nil` = richiesta fallita: NON si considera vuota.
+                guard let streams else { continue }
+
+                if streams.isEmpty {
+                    confirmedEmpty.insert(categoryID)
+                } else {
+                    collected.append(contentsOf: streams)
+                }
+            }
         }
 
-        return stableDeduplicated(globalStreams + collected)
+        return CatalogFetchResult(
+            streams: stableDeduplicated(globalStreams + collected),
+            emptyCategoryIDs: confirmedEmpty
+        )
     }
 
     // MARK: - VOD detail
@@ -362,7 +441,7 @@ actor XtreamAPIService {
             ? ["category_id": normalizedCategoryId!]
             : [:]
 
-        return FlexibleArrayDecoder.decode(
+        return await decodeOffActor(
             [XtreamSeriesItem].self,
             from: try await data(action: "get_series", extra: extra)
         )

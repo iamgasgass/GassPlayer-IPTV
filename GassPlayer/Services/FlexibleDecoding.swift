@@ -1,5 +1,4 @@
 import Foundation
-import Dispatch
 
 enum FlexibleArrayDecoder {
     /// FIX "la lista si interrompe a meta'": JSONDecoder().decode([T].self)
@@ -17,56 +16,64 @@ enum FlexibleArrayDecoder {
     /// tutte le altre, anche se nello stesso array di una voce "cattiva",
     /// vengono recuperate correttamente.
     ///
-    /// OTTIMIZZAZIONE 2026-09-20: il percorso di recupero elemento-per-
-    /// elemento girava su un solo thread. Con cataloghi Xtream reali da
-    /// migliaia di voci (VOD in particolare) e anche una sola voce
-    /// malformata, questo significava rieseguire decine di migliaia di
-    /// cicli serializza→decodifica in sequenza, un lavoro puramente
-    /// CPU-bound che un iPhone moderno con più core può eseguire in
-    /// parallelo. Ogni iterazione crea la propria istanza locale di
-    /// `JSONDecoder` (nessuno stato condiviso, quindi nessuna corsa sui
-    /// dati) e scrive solo al proprio indice in un buffer preallocato:
-    /// l'ordine originale degli elementi validi e' preservato esattamente
-    /// come nella versione sequenziale, ma il tempo totale scala con il
-    /// numero di core disponibili invece che con il numero di elementi.
+    /// (Storico: fino al 2026-09-20 il recupero girava in parallelo con
+    /// `concurrentPerform`; vedi sotto la versione a passata singola.)
+    ///
+    /// OTTIMIZZAZIONE 2026-10-02 (ricezione playlist più efficiente):
+    /// 1) Il recupero elemento-per-elemento non passa più da
+    /// `JSONSerialization` → `Data` → `JSONDecoder` PER OGNI VOCE (due
+    /// serializzazioni complete del catalogo, solo per scartare 1-2
+    /// elementi malformati — caso frequentissimo: anche un solo `stream_id`
+    /// mancante faceva fallire la via veloce). Ora la via di recupero è una
+    /// SECONDA decodifica singola dello stesso `Data` con `LossyElement`,
+    /// un wrapper che non fallisce mai e quindi consuma ogni voce
+    /// scartando solo quelle davvero illeggibili: stesso risultato, stesso
+    /// ordine, senza alcuna re-serializzazione.
+    /// 2) Alcuni pannelli restituiscono, invece di un array, un OGGETTO
+    /// indicizzato (`{"1": {...}, "2": {...}}`): prima il catalogo
+    /// risultava vuoto, ora i valori vengono letti in ordine di chiave.
     static func decode<T: Decodable>(_ type: [T].Type, from data: Data) -> [T] {
         if let array = try? JSONDecoder().decode([T].self, from: data) {
             return array
         }
 
-        guard let rawArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            if let jsonObject = try? JSONSerialization.jsonObject(with: data) {
-                if let dict = jsonObject as? [String: Any], dict.isEmpty { return [] }
-                if let bool = jsonObject as? Bool, bool == false { return [] }
+        if let lossy = try? JSONDecoder().decode([LossyElement<T>].self, from: data) {
+            let results = lossy.compactMap(\.value)
+            let skippedCount = lossy.count - results.count
+
+            if skippedCount > 0 {
+                DebugLogger.logAsync(.warning, "FlexibleArrayDecoder: \(skippedCount) elementi scartati (campi malformati) su \(lossy.count) totali durante la decodifica di [\(T.self)] — recuperati correttamente gli altri \(results.count)")
             }
-            return []
+
+            return results
         }
 
-        guard !rawArray.isEmpty else { return [] }
-
-        var decodedSlots = [T?](repeating: nil, count: rawArray.count)
-
-        decodedSlots.withUnsafeMutableBufferPointer { buffer in
-            DispatchQueue.concurrentPerform(iterations: rawArray.count) { index in
-                guard let itemData = try? JSONSerialization.data(withJSONObject: rawArray[index]) else {
-                    return
+        // Radice non-array: oggetto indicizzato, `{}` o `false` (assenza di
+        // contenuti per molti pannelli).
+        if let indexed = try? JSONDecoder().decode([String: LossyElement<T>].self, from: data) {
+            return indexed
+                .sorted { lhs, rhs in
+                    switch (Int(lhs.key), Int(rhs.key)) {
+                    case let (left?, right?): return left < right
+                    default: return lhs.key < rhs.key
+                    }
                 }
-                // Istanza locale alla singola iterazione: `JSONDecoder`
-                // non è documentato come thread-safe per riuso condiviso,
-                // quindi ognuna delle esecuzioni concorrenti ne crea una
-                // propria invece di condividerne una sola fra i thread.
-                buffer[index] = try? JSONDecoder().decode(T.self, from: itemData)
-            }
+                .compactMap { $0.value.value }
         }
 
-        let results = decodedSlots.compactMap { $0 }
-        let skippedCount = rawArray.count - results.count
+        return []
+    }
 
-        if skippedCount > 0 {
-            DebugLogger.logAsync(.warning, "FlexibleArrayDecoder: \(skippedCount) elementi scartati (campi malformati) su \(rawArray.count) totali durante la decodifica di [\(T.self)] — recuperati correttamente gli altri \(results.count)")
+    /// Wrapper che non fallisce mai: se la voce non è decodificabile come
+    /// `T` il valore resta `nil`, ma l'elemento viene comunque "consumato"
+    /// dal container non tipizzato (indispensabile perché la decodifica
+    /// dell'array prosegua con la voce successiva).
+    private struct LossyElement<T: Decodable>: Decodable {
+        let value: T?
+
+        init(from decoder: Decoder) throws {
+            value = try? T(from: decoder)
         }
-
-        return results
     }
 }
 
