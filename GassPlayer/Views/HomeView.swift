@@ -168,33 +168,11 @@ struct HomeView: View {
     private var overviewScroll: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                heading
-
-                // Sezioni personalizzabili (Continua a guardare, Guida TV,
-                // preferiti, tendenza) nell'ordine scelto da "Personalizza".
+                // TUTTI i blocchi della Home, nell'ordine scelto da
+                // "Personalizza" (foglio "Sezioni home").
                 ForEach(homeLayout.order) { section in
                     sectionView(section)
                 }
-
-                if hasActiveSource {
-                    connectedSourceCard
-                } else {
-                    emptySourceCard
-                }
-
-                libraryDestination(
-                    title: "Live TV",
-                    subtitle: hasActiveSource
-                        ? "Canali in diretta dalla sorgente attiva"
-                        : "I canali appariranno qui",
-                    systemImage: "tv.fill",
-                    tint: .red,
-                    destination: .liveTV
-                )
-
-                onDemandSection
-
-                sourceSummary
 
                 // In fondo, come nel riferimento: apre "Sezioni home".
                 HomePersonalizeButton {
@@ -227,6 +205,33 @@ struct HomeView: View {
     @ViewBuilder
     private func sectionView(_ section: HomeSectionID) -> some View {
         switch section {
+        case .heading:
+            heading
+
+        case .sourceCard:
+            if hasActiveSource {
+                connectedSourceCard
+            } else {
+                emptySourceCard
+            }
+
+        case .liveTV:
+            libraryDestination(
+                title: "Live TV",
+                subtitle: hasActiveSource
+                    ? "Canali in diretta dalla sorgente attiva"
+                    : "I canali appariranno qui",
+                systemImage: "tv.fill",
+                tint: .red,
+                destination: .liveTV
+            )
+
+        case .onDemand:
+            onDemandSection
+
+        case .sources:
+            sourceSummary
+
         case .continueWatching:
             if recentlyWatched.items.contains(where: { homeLayout.continueKind == nil || $0.kind == homeLayout.continueKind }) {
                 // Stessa sezione usata in VOD e Serie TV (qui tutti i tipi

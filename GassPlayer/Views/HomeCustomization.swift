@@ -4,29 +4,40 @@ import UIKit
 // MARK: - Sezioni della Home
 
 /// Le sezioni della panoramica Home che l'utente può riordinare, nascondere
-/// e riaggiungere da "Personalizza" (le stesse sette del foglio "Sezioni
-/// home" di riferimento). Intestazione, scheda sorgente, Live TV, On demand e
-/// Sorgenti restano blocchi fissi della Home, non personalizzabili.
+/// e riaggiungere da "Personalizza": TUTTI i blocchi della panoramica Home
+/// (intestazione, Continua a guardare, scheda sorgente, Live TV, Guida TV,
+/// preferiti, tendenza, On demand, Sorgenti), così il foglio "Sezioni home"
+/// mostra e controlla esattamente ciò che c'è in Home.
 enum HomeSectionID: String, CaseIterable, Codable, Identifiable {
+    case heading
     case continueWatching
+    case sourceCard
+    case liveTV
     case guidaTV
     case favoriteChannels
     case favoriteSeries
     case favoriteMovies
     case trendingSeries
     case trendingMovies
+    case onDemand
+    case sources
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .heading: return "Intestazione"
         case .continueWatching: return "Continua a guardare"
+        case .sourceCard: return "Sorgente"
+        case .liveTV: return "Live TV"
         case .guidaTV: return "Guida TV"
         case .favoriteChannels: return "Canali preferiti"
         case .favoriteSeries: return "Serie TV preferite"
         case .favoriteMovies: return "Film preferiti"
         case .trendingSeries: return "Serie di tendenza"
         case .trendingMovies: return "Film di tendenza"
+        case .onDemand: return "On demand"
+        case .sources: return "Sorgenti"
         }
     }
 
@@ -50,18 +61,34 @@ final class HomeLayoutStore: ObservableObject {
         var order: [String]
         var hidden: [String]
         var continueKind: String?
+        /// Versione dell'elenco sezioni: se diversa da quella attuale
+        /// l'ordine salvato (che non conosce tutti i blocchi) viene
+        /// sostituito dall'ordine predefinito completo.
+        var version: Int?
     }
+
+    private static let layoutVersion = 2
 
     private let storageKey = "gassplayer.home.layout"
 
     private static let defaultOrder: [HomeSectionID] = [
-        .continueWatching, .guidaTV, .favoriteChannels, .favoriteSeries,
-        .favoriteMovies, .trendingSeries, .trendingMovies
+        .heading, .continueWatching, .sourceCard, .liveTV, .guidaTV,
+        .favoriteChannels, .favoriteSeries, .favoriteMovies,
+        .trendingSeries, .trendingMovies, .onDemand, .sources
     ]
 
     init() {
         if let data = UserDefaults.standard.data(forKey: storageKey),
            let stored = try? JSONDecoder().decode(Stored.self, from: data) {
+            guard stored.version == Self.layoutVersion else {
+                // Layout salvato da una versione con meno sezioni: ordine
+                // predefinito completo, mantenendo solo il filtro di
+                // "Continua a guardare".
+                order = Self.defaultOrder
+                continueKind = stored.continueKind
+                return
+            }
+
             var visible = stored.order.compactMap(HomeSectionID.init(rawValue:))
             let hidden = Set(stored.hidden.compactMap(HomeSectionID.init(rawValue:)))
 
@@ -115,7 +142,8 @@ final class HomeLayoutStore: ObservableObject {
         let stored = Stored(
             order: order.map(\.rawValue),
             hidden: hiddenSections.map(\.rawValue),
-            continueKind: continueKind
+            continueKind: continueKind,
+            version: Self.layoutVersion
         )
 
         guard let data = try? JSONEncoder().encode(stored) else { return }

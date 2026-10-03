@@ -309,6 +309,7 @@ struct ChannelGridView: View {
     @State private var catalogIndex = CatalogIndex(kind: .live, streams: [], series: [], categories: [])
     @State private var indexedSourceIdentity: SourceIdentity?
     @State private var showEPGGuide = false
+    @State private var showTrendingUnavailable = false
 
     private let epgTileBatchLimit = 24
     private let epgTileConcurrency = 4
@@ -601,6 +602,20 @@ struct ChannelGridView: View {
                     )
                 }
 
+                // "Serie di tendenza" (Serie TV) / "Film di tendenza" (VOD),
+                // subito dopo "Continua a guardare": stessa sezione della
+                // Home (20 titoli della settimana, card con classifica).
+                if kind != .live && !isInitialLoadPending {
+                    HomeTrendingRail(
+                        title: kind == .series ? "Serie di tendenza" : "Film di tendenza",
+                        isSeries: kind == .series,
+                        horizontalInset: 16
+                    ) { item in
+                        openTrending(item)
+                    }
+                    .padding(.top, 20)
+                }
+
                 if isInitialLoadPending {
                     loadingView
                 } else if case .failed(let message) = xtreamCatalog.state, itemCount == 0 {
@@ -713,6 +728,11 @@ struct ChannelGridView: View {
                     seriesName: series.name,
                     fallbackCoverURLString: series.cover
                 )
+            }
+            .alert("Non disponibile nella tua playlist", isPresented: $showTrendingUnavailable) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Questo titolo di tendenza non è presente nella sorgente attiva.")
             }
             .fullScreenCover(item: $selectedMovieForDetail) { stream in
                 MovieDetailView(credentials: credentials, stream: stream)
@@ -1292,6 +1312,22 @@ struct ChannelGridView: View {
         guard displayedStreams.indices.contains(targetIndex) else { return nil }
 
         return displayedStreams[targetIndex]
+    }
+
+    /// Apre il contenuto equivalente del catalogo della sorgente attiva; se
+    /// la sorgente non lo ha lo dice invece di non fare nulla.
+    private func openTrending(_ item: TMDBTrendingItem) {
+        if kind == .series {
+            if let match = HomeTrendingMatcher.series(for: item, in: allSeries) {
+                selectedSeries = match
+                return
+            }
+        } else if let match = HomeTrendingMatcher.movie(for: item, in: allStreams) {
+            selectedMovieForDetail = match
+            return
+        }
+
+        showTrendingUnavailable = true
     }
 
     private func favoriteID(for stream: XtreamStream) -> String {
