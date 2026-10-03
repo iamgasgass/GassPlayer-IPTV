@@ -77,9 +77,9 @@ final class HomeLayoutStore: ObservableObject {
 
     /// Tutte le sezioni della panoramica Home, nell'ordine predefinito.
     static let homeSections: [HomeSectionID] = [
-        .heading, .search, .continueWatching, .sourceCard, .liveTV, .guidaTV,
-        .favoriteChannels, .favoriteSeries, .favoriteMovies,
-        .trendingSeries, .trendingMovies, .onDemand, .sources
+        .heading, .search, .continueWatching, .sourceCard, .sources,
+        .liveTV, .guidaTV, .onDemand, .favoriteChannels, .favoriteSeries,
+        .favoriteMovies, .trendingSeries, .trendingMovies
     ]
 
     private let layoutVersion: Int
@@ -92,7 +92,7 @@ final class HomeLayoutStore: ObservableObject {
     init(
         storageKey: String = "gassplayer.home.layout",
         sections: [HomeSectionID] = HomeLayoutStore.homeSections,
-        layoutVersion: Int = 3
+        layoutVersion: Int = 4
     ) {
         self.storageKey = storageKey
         self.sections = sections
