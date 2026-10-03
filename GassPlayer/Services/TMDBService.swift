@@ -39,6 +39,20 @@ struct TMDBSearchResult: Decodable {
     }
 }
 
+/// Titolo "di tendenza" della settimana (film o serie) per le sezioni
+/// "Film di tendenza" / "Serie di tendenza" della Home.
+struct TMDBTrendingItem: Identifiable, Hashable {
+    let id: Int
+    let title: String
+    let originalTitle: String?
+    /// Primo genere (in italiano), mostrato sotto il titolo.
+    let genre: String?
+    /// Immagine orizzontale (16:9) per la card.
+    let backdropURL: URL?
+    let year: String?
+    let isSeries: Bool
+}
+
 private struct TMDBSearchResponse: Decodable {
     let results: [TMDBSearchResult]
 }
@@ -248,6 +262,9 @@ actor TMDBService {
     private var seasonCache: [String: [TMDBEpisode]] = [:]
     /// Cache del risultato finale di `fullDetails` (dopo matching e verifica).
     private var fullDetailsCache: [String: TMDBDetails] = [:]
+    /// Cache dei titoli di tendenza (30 minuti) e dei nomi dei generi.
+    private var trendingCache: [String: (date: Date, items: [TMDBTrendingItem])] = [:]
+    private var genreNamesCache: [String: [Int: String]] = [:]
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -722,5 +739,135 @@ actor TMDBService {
 
         if similarity >= 0.6 { return true }
         return Self.castOverlap(castNames, with: details.credits?.cast ?? []) > 0
+    }
+}
+
+
+// MARK: - Titoli di tendenza (Home)
+
+private struct TMDBTrendingResponse: Decodable {
+    struct Raw: Decodable {
+        let id: Int
+        let title: String?
+        let name: String?
+        let originalTitle: String?
+        let originalName: String?
+        let backdropPath: String?
+        let genreIds: [Int]?
+        let releaseDate: String?
+        let firstAirDate: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, title, name
+            case originalTitle = "original_title"
+            case originalName = "original_name"
+            case backdropPath = "backdrop_path"
+            case genreIds = "genre_ids"
+            case releaseDate = "release_date"
+            case firstAirDate = "first_air_date"
+        }
+    }
+
+    let results: [Raw]
+}
+
+private struct TMDBGenreListResponse: Decodable {
+    let genres: [TMDBGenre]
+}
+
+extension TMDBService {
+    /// Titoli di tendenza della settimana (`trending/{movie|tv}/week`),
+    /// in italiano, ordinati come li restituisce TMDB (posizione 1 = più in
+    /// tendenza). Solo titoli con immagine orizzontale, fino a `limit` (20
+    /// = una pagina di TMDB; la seconda pagina serve solo se alcuni titoli
+    /// non hanno l'immagine). Cache di 30 minuti: rientrare in Home non
+    /// rifà le richieste.
+    func trending(isSeries: Bool, limit: Int = 20) async throws -> [TMDBTrendingItem] {
+        guard let apiKey = UserDefaults.standard.string(forKey: Self.apiKeyDefaultsKey), !apiKey.isEmpty else {
+            throw TMDBError.missingAPIKey
+        }
+
+        let key = isSeries ? "tv" : "movie"
+
+        if let cached = trendingCache[key], Date().timeIntervalSince(cached.date) < 1800 {
+            return Array(cached.items.prefix(limit))
+        }
+
+        let genres = await genreNames(isSeries: isSeries, apiKey: apiKey)
+
+        var items: [TMDBTrendingItem] = []
+        var seen = Set<Int>()
+        var lastError: Error?
+
+        for page in 1...2 where items.count < limit {
+            var components = URLComponents(string: "https://api.themoviedb.org/3/trending/\(key)/week")!
+            components.queryItems = [
+                URLQueryItem(name: "api_key", value: apiKey),
+                URLQueryItem(name: "language", value: "it-IT"),
+                URLQueryItem(name: "page", value: String(page))
+            ]
+            guard let url = components.url else { break }
+
+            do {
+                let (data, _) = try await session.data(from: url)
+                let decoded = try JSONDecoder().decode(TMDBTrendingResponse.self, from: data)
+
+                for raw in decoded.results {
+                    guard seen.insert(raw.id).inserted,
+                          let backdrop = raw.backdropPath,
+                          let title = (raw.title ?? raw.name)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !title.isEmpty else {
+                        continue
+                    }
+
+                    let date = raw.releaseDate ?? raw.firstAirDate
+
+                    items.append(
+                        TMDBTrendingItem(
+                            id: raw.id,
+                            title: title,
+                            originalTitle: raw.originalTitle ?? raw.originalName,
+                            genre: raw.genreIds?.lazy.compactMap { genres[$0] }.first,
+                            backdropURL: URL(string: "https://image.tmdb.org/t/p/w780\(backdrop)"),
+                            year: date.flatMap { $0.count >= 4 ? String($0.prefix(4)) : nil },
+                            isSeries: isSeries
+                        )
+                    )
+                }
+            } catch {
+                lastError = error
+                break
+            }
+        }
+
+        if items.isEmpty {
+            throw TMDBError.network(lastError ?? URLError(.badServerResponse))
+        }
+
+        trendingCache[key] = (Date(), items)
+
+        return Array(items.prefix(limit))
+    }
+
+    private func genreNames(isSeries: Bool, apiKey: String) async -> [Int: String] {
+        let key = isSeries ? "tv" : "movie"
+        if let cached = genreNamesCache[key] { return cached }
+
+        var components = URLComponents(string: "https://api.themoviedb.org/3/genre/\(key)/list")!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "language", value: "it-IT")
+        ]
+
+        guard let url = components.url,
+              let (data, _) = try? await session.data(from: url),
+              let decoded = try? JSONDecoder().decode(TMDBGenreListResponse.self, from: data) else {
+            return [:]
+        }
+
+        let map = Dictionary(decoded.genres.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        genreNamesCache[key] = map
+
+        return map
     }
 }
