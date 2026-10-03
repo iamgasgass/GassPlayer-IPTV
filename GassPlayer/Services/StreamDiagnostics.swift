@@ -66,6 +66,16 @@ enum PlaybackProfileStore {
         map[key] = ext.lowercased()
         UserDefaults.standard.set(map, forKey: extKey)
     }
+
+    /// Dimentica l'estensione appresa: serve quando il provider ha ricominciato
+    /// a servire il formato del catalogo e quello appreso e' ormai obsoleto
+    /// (altrimenti ogni apertura sprecherebbe una sonda sul formato vecchio).
+    static func forgetExtension(for url: URL) {
+        guard let key = extensionKey(for: url) else { return }
+        var map = (UserDefaults.standard.dictionary(forKey: extKey) as? [String: String]) ?? [:]
+        guard map.removeValue(forKey: key) != nil else { return }
+        UserDefaults.standard.set(map, forKey: extKey)
+    }
 }
 
 /// Cache in memoria delle risoluzioni riuscite: riaprire lo stesso film
@@ -73,7 +83,10 @@ enum PlaybackProfileStore {
 /// Chiave = URL richiesto completo (quindi legata anche alle credenziali).
 enum ResolutionCache {
     private static let lock = NSLock()
-    private static var entries: [String: (resolution: StreamResolution, date: Date)] = [:]
+    /// Sempre letta/scritta sotto `lock`: `nonisolated(unsafe)` dichiara
+    /// al compilatore (anche in modalita' Swift 6) che l'accesso e'
+    /// sincronizzato a mano.
+    nonisolated(unsafe) private static var entries: [String: (resolution: StreamResolution, date: Date)] = [:]
     private static let ttl: TimeInterval = 600
 
     static func fresh(for url: URL) -> StreamResolution? {
@@ -309,8 +322,11 @@ enum StreamDiagnostics {
                 let pair = pairs[next]
                 next += 1
                 inFlight += 1
+                // Mai oltre la scadenza globale: prima una sonda appesa
+                // poteva sforarla fino a `probeTimeout` secondi.
+                let timeout = max(1, min(probeTimeout, deadline.timeIntervalSinceNow))
                 group.addTask {
-                    .probe(await StreamDiagnostics.probe(pair.url, userAgent: pair.ua, timeout: probeTimeout))
+                    .probe(await StreamDiagnostics.probe(pair.url, userAgent: pair.ua, timeout: timeout))
                 }
             }
             func scheduleTick() {
@@ -368,6 +384,9 @@ enum StreamDiagnostics {
         let ext = winner.requestedURL.pathExtension.lowercased()
         if ext != requested.pathExtension.lowercased() {
             PlaybackProfileStore.rememberExtension(ext, for: requested)
+        } else if let learned = PlaybackProfileStore.learnedExtension(for: requested), learned != ext {
+            // Ha vinto il formato del catalogo: quello appreso e' obsoleto.
+            PlaybackProfileStore.forgetExtension(for: requested)
         }
         return resolution
     }
