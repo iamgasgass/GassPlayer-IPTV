@@ -316,17 +316,31 @@ struct ChannelGridView: View {
     /// "Film/Serie di tendenza"): ordine e visibilità salvati per sezione.
     @StateObject private var movieSectionLayout = HomeLayoutStore(
         storageKey: "gassplayer.vod.sections",
-        sections: [.continueWatching, .trendingMovies],
-        layoutVersion: 1
+        sections: [.continueWatching, .trendingMovies, .categories],
+        layoutVersion: 2
     )
     @StateObject private var seriesSectionLayout = HomeLayoutStore(
         storageKey: "gassplayer.series.sections",
-        sections: [.continueWatching, .trendingSeries],
+        sections: [.continueWatching, .trendingSeries, .categories],
+        layoutVersion: 2
+    )
+    /// Live TV: l'unica sezione configurabile è "Categorie".
+    @StateObject private var liveSectionLayout = HomeLayoutStore(
+        storageKey: "gassplayer.live.sections",
+        sections: [.categories],
         layoutVersion: 1
     )
 
+    /// Richiesta di scorrere fino alla griglia dopo il tocco su una
+    /// categoria della sezione "Categorie".
+    @State private var pendingScrollToGrid = false
+
     private var sectionLayout: HomeLayoutStore {
-        kind == .series ? seriesSectionLayout : movieSectionLayout
+        switch kind {
+        case .live: return liveSectionLayout
+        case .movie: return movieSectionLayout
+        case .series: return seriesSectionLayout
+        }
     }
 
     private let epgTileBatchLimit = 24
@@ -596,6 +610,7 @@ struct ChannelGridView: View {
 
     var body: some View {
         NavigationStack {
+            ScrollViewReader { scrollProxy in
             ScrollView {
                 // Il titolo grande manuale serve solo in "Espansibile": in
                 // "Scorrevole" il titolo grande di sistema (nativo) copre
@@ -603,9 +618,9 @@ struct ChannelGridView: View {
                 // In VOD e Serie TV il titolo grande è sempre manuale: a fianco
                 // c'è il tasto "Modifica", che il titolo di sistema non può
                 // ospitare.
-                if groupUIStyle == "espansibile" || kind != .live {
-                    sectionTitleHeader
-                }
+                // Titolo grande manuale in tutte le sezioni (Live TV, VOD,
+                // Serie TV): a fianco c'è il tasto "Modifica".
+                sectionTitleHeader
 
                 if groupUIStyle == "scorrevole" {
                     categoryChips
@@ -615,7 +630,7 @@ struct ChannelGridView: View {
                 // tasto "Modifica": "Continua a guardare" (solo contenuti di
                 // questa sezione) e "Film/Serie di tendenza" (20 titoli della
                 // settimana, come in Home).
-                if kind != .live && !isInitialLoadPending {
+                if !isInitialLoadPending {
                     topSections
                 }
 
@@ -630,6 +645,7 @@ struct ChannelGridView: View {
                     .padding(.vertical, 32)
                 } else {
                     content
+                        .id("channelGridTop")
                         .frame(maxWidth: .infinity)
                         .background {
                             GeometryReader { proxy in
@@ -641,9 +657,21 @@ struct ChannelGridView: View {
             .onPreferenceChange(ChannelGridWidthKey.self) { width in
                 if abs(width - gridContainerWidth) > 0.5 { gridContainerWidth = width }
             }
+            .onChange(of: pendingScrollToGrid) { _, requested in
+                guard requested else { return }
+                pendingScrollToGrid = false
+
+                // Dopo il rebuild della griglia filtrata.
+                DispatchQueue.main.async {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        scrollProxy.scrollTo("channelGridTop", anchor: .top)
+                    }
+                }
+            }
+            }
             // VOD/Serie TV: titolo grande manuale con "Modifica" a fianco,
             // quindi nessun titolo di sistema (resterebbe duplicato).
-            .navigationTitle(kind == .live ? kind.displayName : "")
+            .navigationTitle("")
             // "Espansibile": la pillola del gruppo occupa lo slot del
             // titolo (`.principal`), quindi il titolo di sistema resta
             // forzato su `.inline` (il titolo grande manuale sopra lo
@@ -651,7 +679,7 @@ struct ChannelGridView: View {
             // slot, quindi si usa `.large` per il comportamento nativo
             // (titolo grande finché non si scrolla, poi piccolo in
             // toolbar).
-            .navigationBarTitleDisplayMode(groupUIStyle == "espansibile" || kind != .live ? .inline : .large)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 toolbarContent
             }
@@ -803,6 +831,10 @@ struct ChannelGridView: View {
                         )
                     }
 
+                case .categories:
+                    categoriesSection
+                        .padding(.top, hasVisibleSection(before: index, in: order, hasContinue: hasContinue) ? 0 : 20)
+
                 case .trendingSeries, .trendingMovies:
                     HomeTrendingRail(
                         title: section.title,
@@ -825,13 +857,79 @@ struct ChannelGridView: View {
     }
 
     private func hasVisibleSection(before index: Int, in order: [HomeSectionID], hasContinue: Bool) -> Bool {
-        order.prefix(index).contains { $0 == .continueWatching && hasContinue }
+        order.prefix(index).contains { $0 == .continueWatching ? hasContinue : true }
+    }
+
+    // MARK: - Sezione "Categorie"
+
+    private struct CategoryEntry: Identifiable {
+        let id: String
+        let name: String
+        let selection: CategorySelection
+    }
+
+    /// Tutti i gruppi della playlist con almeno un contenuto, nell'ordine
+    /// della playlist, più "Senza categoria" in coda se serve.
+    private var categoryEntries: [CategoryEntry] {
+        var entries = visibleCategories.map {
+            CategoryEntry(id: $0.categoryId, name: $0.categoryName, selection: .category($0.categoryId))
+        }
+
+        if uncategorizedCount > 0 {
+            entries.append(CategoryEntry(id: "_uncategorized", name: "Senza categoria", selection: .uncategorized))
+        }
+
+        return entries
+    }
+
+    /// Griglia di tessere Liquid Glass (stesso materiale del tasto
+    /// "Modifica"), una per gruppo della playlist: 2 colonne da 176 pt
+    /// su iPhone, 68 pt di altezza, 9 pt di spazio, nome in alto a sinistra
+    /// su max 2 righe. Il tocco filtra la griglia sotto e vi scorre; un
+    /// secondo tocco sulla stessa categoria torna a "Tutti".
+    @ViewBuilder
+    private var categoriesSection: some View {
+        let entries = categoryEntries
+
+        if !entries.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Categorie")
+                    .font(.system(size: 18.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 9, alignment: .top)],
+                    spacing: 9
+                ) {
+                    ForEach(entries) { entry in
+                        CategoryTile(
+                            name: entry.name,
+                            isSelected: selectedCategory == entry.selection
+                        ) {
+                            if selectedCategory == entry.selection {
+                                selectedCategory = .all
+                            } else {
+                                selectedCategory = entry.selection
+                                pendingScrollToGrid = true
+                            }
+                        }
+                        .equatable()
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
     }
 
     /// Nome della sezione nei titoli del foglio e del menu ("Sezioni VOD",
     /// "Sezioni Serie TV").
     private var sectionsSheetTitle: String {
-        kind == .series ? "Sezioni Serie TV" : "Sezioni VOD"
+        switch kind {
+        case .live: return "Sezioni Live TV"
+        case .movie: return "Sezioni VOD"
+        case .series: return "Sezioni Serie TV"
+        }
     }
 
     /// Titolo grande della sezione (Live TV / VOD / Serie TV), usato
@@ -848,21 +946,19 @@ struct ChannelGridView: View {
                 .font(.largeTitle.bold())
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Solo VOD e Serie TV: tasto "Modifica" (Liquid Glass, identico a
-            // "Svuota") sulla riga del titolo grande. Sempre presente, anche
-            // con entrambe le sezioni configurabili nascoste.
-            if kind != .live {
-                Button {
-                    showSectionsSheet = true
-                } label: {
-                    Text("Modifica")
-                        .font(.system(size: 14, weight: .semibold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                }
-                .modifier(ClearGlassCapsule())
-                .accessibilityLabel("Modifica sezioni \(kind.displayName)")
+            // Tasto "Modifica" (Liquid Glass, identico a "Svuota") sulla riga
+            // del titolo grande, in Live TV, VOD e Serie TV. Sempre presente,
+            // anche con tutte le sezioni configurabili nascoste.
+            Button {
+                showSectionsSheet = true
+            } label: {
+                Text("Modifica")
+                    .font(.system(size: 14, weight: .semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
             }
+            .modifier(ClearGlassCapsule())
+            .accessibilityLabel("Modifica sezioni \(kind.displayName)")
         }
         .padding(.leading, 20)
         .padding(.trailing, 16)
@@ -2261,6 +2357,68 @@ struct CachedPosterImage: View {
                 image = loaded
                 imageURL = url
             }
+        }
+    }
+}
+
+
+// MARK: - Tessera "Categorie" (Liquid Glass)
+
+/// Tessera di un gruppo della playlist: stesso materiale Liquid Glass del
+/// tasto "Modifica" (`glassEffect` nativo su iOS 26+, materiale sottile con
+/// filo di bordo prima). 68 pt di altezza, nome in alto a sinistra con 16 pt
+/// di margine, massimo 2 righe; la tessera selezionata ha una tinta d'accento.
+private struct CategoryTile: View, Equatable {
+    let name: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    // Le closure non entrano nel confronto: la tessera si ridisegna solo
+    // se cambiano nome o selezione.
+    static func == (lhs: CategoryTile, rhs: CategoryTile) -> Bool {
+        lhs.name == rhs.name && lhs.isSelected == rhs.isSelected
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(name)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .padding(16)
+                .frame(maxWidth: .infinity, minHeight: 68, maxHeight: 68, alignment: .topLeading)
+                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .modifier(CategoryGlassTile(isSelected: isSelected))
+        .accessibilityLabel(name)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct CategoryGlassTile: ViewModifier {
+    let isSelected: Bool
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+
+        if #available(iOS 26.0, *) {
+            content.glassEffect(
+                isSelected
+                    ? .regular.tint(Color.accentColor.opacity(0.45)).interactive()
+                    : .regular.interactive(),
+                in: shape
+            )
+        } else {
+            content
+                .background(.ultraThinMaterial, in: shape)
+                .overlay {
+                    shape.strokeBorder(
+                        isSelected ? Color.accentColor : Color.white.opacity(0.16),
+                        lineWidth: isSelected ? 1.5 : 0.5
+                    )
+                }
         }
     }
 }

@@ -21,6 +21,9 @@ enum HomeSectionID: String, CaseIterable, Codable, Identifiable {
     case trendingMovies
     case onDemand
     case sources
+    /// Griglia "Categorie" (tutti i gruppi della playlist): solo nelle
+    /// sezioni Live TV, VOD e Serie TV, non in Home.
+    case categories
 
     var id: String { rawValue }
 
@@ -38,6 +41,7 @@ enum HomeSectionID: String, CaseIterable, Codable, Identifiable {
         case .trendingMovies: return "Film di tendenza"
         case .onDemand: return "On demand"
         case .sources: return "Sorgenti"
+        case .categories: return "Categorie"
         }
     }
 

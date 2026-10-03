@@ -265,6 +265,10 @@ struct HomeView: View {
                 openTrending(item)
             }
             .padding(.horizontal, -20)
+
+        case .categories:
+            // Solo nelle sezioni Live TV / VOD / Serie TV.
+            EmptyView()
         }
     }
 
