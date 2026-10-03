@@ -24,6 +24,9 @@ enum HomeSectionID: String, CaseIterable, Codable, Identifiable {
     /// Griglia "Categorie" (tutti i gruppi della playlist): solo nelle
     /// sezioni Live TV, VOD e Serie TV, non in Home.
     case categories
+    /// Barra di ricerca ("Ricerca"): in Home cerca in tutta la playlist, nelle
+    /// sezioni Live TV / VOD / Serie TV solo in quella sezione.
+    case search
 
     var id: String { rawValue }
 
@@ -42,6 +45,7 @@ enum HomeSectionID: String, CaseIterable, Codable, Identifiable {
         case .onDemand: return "On demand"
         case .sources: return "Sorgenti"
         case .categories: return "Categorie"
+        case .search: return "Ricerca"
         }
     }
 
@@ -73,7 +77,7 @@ final class HomeLayoutStore: ObservableObject {
 
     /// Tutte le sezioni della panoramica Home, nell'ordine predefinito.
     static let homeSections: [HomeSectionID] = [
-        .heading, .continueWatching, .sourceCard, .liveTV, .guidaTV,
+        .heading, .search, .continueWatching, .sourceCard, .liveTV, .guidaTV,
         .favoriteChannels, .favoriteSeries, .favoriteMovies,
         .trendingSeries, .trendingMovies, .onDemand, .sources
     ]
@@ -88,7 +92,7 @@ final class HomeLayoutStore: ObservableObject {
     init(
         storageKey: String = "gassplayer.home.layout",
         sections: [HomeSectionID] = HomeLayoutStore.homeSections,
-        layoutVersion: Int = 2
+        layoutVersion: Int = 3
     ) {
         self.storageKey = storageKey
         self.sections = sections
@@ -829,5 +833,102 @@ struct HomeFavoritesRail: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(name)
+    }
+}
+
+
+// MARK: - Ricerca
+
+/// Ricerca nei titoli dei cataloghi: confronto senza maiuscole/accenti,
+/// tutte le parole digitate devono comparire nel titolo (in qualunque
+/// ordine); i titoli che INIZIANO con la prima parola vengono per primi.
+/// Pensata per girare fuori dal main thread su cataloghi molto grandi.
+enum CatalogSearch {
+    static func fold(_ text: String) -> String {
+        text.folding(options: [.diacriticInsensitive, .caseInsensitive, .widthInsensitive], locale: nil)
+    }
+
+    static func tokens(_ query: String) -> [String] {
+        fold(query)
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+    }
+
+    static func filter<T>(_ items: [T], tokens: [String], name: (T) -> String) -> [T] {
+        guard let first = tokens.first else { return [] }
+
+        var prefixMatches: [T] = []
+        var otherMatches: [T] = []
+
+        for item in items {
+            let folded = fold(name(item))
+            guard tokens.allSatisfy({ folded.contains($0) }) else { continue }
+
+            if folded.hasPrefix(first) {
+                prefixMatches.append(item)
+            } else {
+                otherMatches.append(item)
+            }
+        }
+
+        return prefixMatches + otherMatches
+    }
+}
+
+/// Barra di ricerca Liquid Glass: capsula alta 44 pt, lente a sinistra e
+/// segnaposto "Ricerca" in grigio (17 pt), come nel riferimento. Il margine
+/// laterale lo decide chi la usa (16 pt).
+struct GlassSearchField: View {
+    @Binding var text: String
+    var prompt: String = "Ricerca"
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 17, weight: .regular))
+                .foregroundStyle(.secondary)
+
+            TextField(text: $text, prompt: Text(prompt).foregroundStyle(.secondary)) {
+                EmptyView()
+            }
+            .font(.system(size: 17))
+            .focused($isFocused)
+            .submitLabel(.search)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 17))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancella ricerca")
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+        .modifier(GlassSearchFieldBackground())
+        .contentShape(Capsule())
+        .onTapGesture { isFocused = true }
+    }
+}
+
+private struct GlassSearchFieldBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            content
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.6)
+                }
+        }
     }
 }

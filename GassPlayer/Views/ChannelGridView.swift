@@ -316,24 +316,45 @@ struct ChannelGridView: View {
     /// "Film/Serie di tendenza"): ordine e visibilità salvati per sezione.
     @StateObject private var movieSectionLayout = HomeLayoutStore(
         storageKey: "gassplayer.vod.sections",
-        sections: [.continueWatching, .trendingMovies, .categories],
-        layoutVersion: 2
+        sections: [.search, .continueWatching, .trendingMovies, .categories],
+        layoutVersion: 3
     )
     @StateObject private var seriesSectionLayout = HomeLayoutStore(
         storageKey: "gassplayer.series.sections",
-        sections: [.continueWatching, .trendingSeries, .categories],
-        layoutVersion: 2
+        sections: [.search, .continueWatching, .trendingSeries, .categories],
+        layoutVersion: 3
     )
     /// Live TV: l'unica sezione configurabile è "Categorie".
     @StateObject private var liveSectionLayout = HomeLayoutStore(
         storageKey: "gassplayer.live.sections",
-        sections: [.categories],
-        layoutVersion: 1
+        sections: [.search, .categories],
+        layoutVersion: 2
     )
 
     /// Richiesta di scorrere fino alla griglia dopo il tocco su una
     /// categoria della sezione "Categorie".
     @State private var pendingScrollToGrid = false
+
+    // Ricerca nella sezione (barra "Ricerca" configurabile da "Modifica").
+    @State private var searchQuery = ""
+    @State private var searchAppliedQuery = ""
+    @State private var searchStreams: [XtreamStream] = []
+    @State private var searchSeries: [XtreamSeriesItem] = []
+
+    private var trimmedSearchQuery: String {
+        searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isSearching: Bool {
+        !trimmedSearchQuery.isEmpty
+    }
+
+    /// I risultati valgono per la query appena digitata (la ricerca ha un
+    /// piccolo debounce): finché non coincidono si mostra un indicatore
+    /// invece di un falso "nessun risultato".
+    private var isSearchPending: Bool {
+        isSearching && searchAppliedQuery != trimmedSearchQuery
+    }
 
     private var sectionLayout: HomeLayoutStore {
         switch kind {
@@ -520,6 +541,9 @@ struct ChannelGridView: View {
     }
 
     private var displayedStreams: [XtreamStream] {
+        // Ricerca: titoli di tutta la sezione, qualunque sia la categoria.
+        if isSearching { return searchStreams }
+
         switch selectedCategory {
         case .all:
             return allStreams
@@ -533,6 +557,8 @@ struct ChannelGridView: View {
     }
 
     private var displayedSeries: [XtreamSeriesItem] {
+        if isSearching { return searchSeries }
+
         switch selectedCategory {
         case .all:
             return allSeries
@@ -622,7 +648,7 @@ struct ChannelGridView: View {
                 // Serie TV): a fianco c'è il tasto "Modifica".
                 sectionTitleHeader
 
-                if groupUIStyle == "scorrevole" {
+                if groupUIStyle == "scorrevole" && !isSearching && sectionLayout.order.first != .search {
                     categoryChips
                 }
 
@@ -636,6 +662,10 @@ struct ChannelGridView: View {
 
                 if isInitialLoadPending {
                     loadingView
+                } else if isSearchPending {
+                    ProgressView()
+                        .padding(.vertical, 48)
+                        .frame(maxWidth: .infinity)
                 } else if case .failed(let message) = xtreamCatalog.state, itemCount == 0 {
                     ContentUnavailableView(
                         "Impossibile caricare il catalogo",
@@ -653,6 +683,10 @@ struct ChannelGridView: View {
                             }
                         }
                 }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .task(id: searchQuery) {
+                await runSearch()
             }
             .onPreferenceChange(ChannelGridWidthKey.self) { width in
                 if abs(width - gridContainerWidth) > 0.5 { gridContainerWidth = width }
@@ -794,6 +828,7 @@ struct ChannelGridView: View {
             }
             .onChange(of: kind) { _, _ in
                 selectedCategory = .all
+                searchQuery = ""
                 epgByStream = [:]
             }
         }
@@ -821,6 +856,24 @@ struct ChannelGridView: View {
         VStack(alignment: .leading, spacing: 20) {
             ForEach(Array(order.enumerated()), id: \.element) { index, section in
                 switch section {
+                case .search:
+                    // Barra subito sotto il titolo della sezione e il tasto
+                    // "Modifica"; con "UI Gruppi: Scorrevole" i chip dei
+                    // gruppi vengono dopo la barra (non fra titolo e barra).
+                    VStack(alignment: .leading, spacing: 0) {
+                        GlassSearchField(text: $searchQuery)
+                            .padding(.horizontal, 16)
+                            .padding(.top, index == 0 ? 12 : 0)
+
+                        if index == 0 && groupUIStyle == "scorrevole" && !isSearching {
+                            categoryChips
+                        }
+                    }
+
+                case _ where isSearching:
+                    // Durante la ricerca restano solo la barra e i risultati.
+                    EmptyView()
+
                 case .continueWatching:
                     if hasContinue {
                         ContinueWatchingSection(
@@ -1205,6 +1258,9 @@ struct ChannelGridView: View {
     private var content: some View {
         if kind == .series {
             seriesGrid
+        } else if displayedStreams.isEmpty && isSearching {
+            ContentUnavailableView.search(text: trimmedSearchQuery)
+                .padding(.vertical, 32)
         } else if displayedStreams.isEmpty {
             ContentUnavailableView(
                 "Nessun contenuto in questa sezione",
@@ -1223,7 +1279,10 @@ struct ChannelGridView: View {
 
     @ViewBuilder
     private var seriesGrid: some View {
-        if displayedSeries.isEmpty {
+        if displayedSeries.isEmpty && isSearching {
+            ContentUnavailableView.search(text: trimmedSearchQuery)
+                .padding(.vertical, 32)
+        } else if displayedSeries.isEmpty {
             ContentUnavailableView(
                 "Nessuna serie in questa sezione",
                 systemImage: "rectangle.stack.fill",
@@ -1488,6 +1547,50 @@ struct ChannelGridView: View {
         guard displayedStreams.indices.contains(targetIndex) else { return nil }
 
         return displayedStreams[targetIndex]
+    }
+
+    /// Cerca nei titoli di TUTTA la sezione corrente (non solo nella
+    /// categoria selezionata). Debounce di 250 ms e filtro fuori dal main
+    /// thread: la digitazione resta fluida anche con cataloghi enormi.
+    private func runSearch() async {
+        let query = trimmedSearchQuery
+
+        guard !query.isEmpty else {
+            searchStreams = []
+            searchSeries = []
+            searchAppliedQuery = ""
+            return
+        }
+
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        guard !Task.isCancelled else { return }
+
+        let tokens = CatalogSearch.tokens(query)
+
+        if kind == .series {
+            let items = allSeries
+            let found = await Task.detached(priority: .userInitiated) {
+                CatalogSearch.filter(items, tokens: tokens) { $0.name }
+            }.value
+
+            guard !Task.isCancelled else { return }
+            searchSeries = found
+        } else {
+            let items = allStreams
+            let found = await Task.detached(priority: .userInitiated) {
+                CatalogSearch.filter(items, tokens: tokens) { $0.name }
+            }.value
+
+            guard !Task.isCancelled else { return }
+            searchStreams = found
+
+            if kind == .live {
+                epgByStream = epgByStream
+                await loadEPGForVisibleStreams()
+            }
+        }
+
+        searchAppliedQuery = query
     }
 
     /// Apre il contenuto equivalente del catalogo della sorgente attiva; se

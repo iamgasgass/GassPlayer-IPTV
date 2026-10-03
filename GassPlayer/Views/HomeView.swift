@@ -74,6 +74,15 @@ struct HomeView: View {
     @State private var homeSeriesTarget: XtreamSeriesItem?
     @State private var showTrendingUnavailable = false
 
+    // Ricerca globale della Home (barra "Ricerca" configurabile da
+    // "Personalizza"): tutti i titoli del catalogo della sorgente attiva,
+    // Live TV, Film e Serie TV insieme.
+    @State private var homeSearchQuery = ""
+    @State private var homeSearchAppliedQuery = ""
+    @State private var homeSearchLive: [XtreamStream] = []
+    @State private var homeSearchMovies: [XtreamStream] = []
+    @State private var homeSearchSeries: [XtreamSeriesItem] = []
+
     var body: some View {
         NavigationStack {
             Group {
@@ -171,18 +180,30 @@ struct HomeView: View {
                 // TUTTI i blocchi della Home, nell'ordine scelto da
                 // "Personalizza" (foglio "Sezioni home").
                 ForEach(homeLayout.order) { section in
-                    sectionView(section)
+                    // Durante la ricerca restano solo intestazione, barra e
+                    // risultati.
+                    if !isHomeSearching || section == .heading || section == .search {
+                        sectionView(section)
+                    }
                 }
 
-                // In fondo, come nel riferimento: apre "Sezioni home".
-                HomePersonalizeButton {
-                    showCustomize = true
+                if isHomeSearching {
+                    homeSearchResults
+                } else {
+                    // In fondo, come nel riferimento: apre "Sezioni home".
+                    HomePersonalizeButton {
+                        showCustomize = true
+                    }
                 }
             }
             .animation(.snappy(duration: 0.25), value: homeLayout.order)
             .padding(.horizontal, 20)
             .padding(.top, 12)
             .padding(.bottom, 32)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .task(id: homeSearchQuery) {
+            await runHomeSearch()
         }
         // FIX: "Continua a guardare" compariva in Home solo dopo il
         // riavvio. La scheda Home vive in un `TabView` e, mentre è in
@@ -200,6 +221,186 @@ struct HomeView: View {
         }
     }
 
+    // MARK: - Ricerca globale
+
+    private var trimmedHomeSearch: String {
+        homeSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isHomeSearching: Bool {
+        !trimmedHomeSearch.isEmpty
+    }
+
+    /// I risultati valgono per la query appena digitata (c'è un piccolo
+    /// debounce): finché non coincidono si mostra un indicatore invece di
+    /// un falso "nessun risultato".
+    private var isHomeSearchPending: Bool {
+        isHomeSearching && homeSearchAppliedQuery != trimmedHomeSearch
+    }
+
+    private func runHomeSearch() async {
+        let query = trimmedHomeSearch
+
+        guard !query.isEmpty else {
+            homeSearchLive = []
+            homeSearchMovies = []
+            homeSearchSeries = []
+            homeSearchAppliedQuery = ""
+            return
+        }
+
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        guard !Task.isCancelled else { return }
+
+        let tokens = CatalogSearch.tokens(query)
+        let live = xtreamCatalog.liveStreams
+        let movies = xtreamCatalog.vodStreams
+        let series = xtreamCatalog.seriesItems
+
+        async let foundLive = Task.detached(priority: .userInitiated) {
+            CatalogSearch.filter(live, tokens: tokens) { $0.name }
+        }.value
+        async let foundMovies = Task.detached(priority: .userInitiated) {
+            CatalogSearch.filter(movies, tokens: tokens) { $0.name }
+        }.value
+        async let foundSeries = Task.detached(priority: .userInitiated) {
+            CatalogSearch.filter(series, tokens: tokens) { $0.name }
+        }.value
+
+        let (liveResult, movieResult, seriesResult) = await (foundLive, foundMovies, foundSeries)
+        guard !Task.isCancelled else { return }
+
+        homeSearchLive = liveResult
+        homeSearchMovies = movieResult
+        homeSearchSeries = seriesResult
+        homeSearchAppliedQuery = query
+    }
+
+    @ViewBuilder
+    private var homeSearchResults: some View {
+        if !hasActiveSource {
+            ContentUnavailableView(
+                "Nessuna sorgente attiva",
+                systemImage: "magnifyingglass",
+                description: Text("Attiva una sorgente per cercare nei suoi titoli.")
+            )
+            .padding(.vertical, 32)
+        } else if isHomeSearchPending {
+            ProgressView()
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 48)
+        } else if homeSearchLive.isEmpty && homeSearchMovies.isEmpty && homeSearchSeries.isEmpty {
+            ContentUnavailableView.search(text: trimmedHomeSearch)
+                .padding(.vertical, 32)
+        } else if let credentials = sourceManager.activeSource?.xtreamCredentials {
+            LazyVStack(alignment: .leading, spacing: 24) {
+                searchGroup(title: "Live TV", count: homeSearchLive.count) {
+                    ForEach(homeSearchLive) { stream in
+                        searchRow(
+                            title: stream.name,
+                            subtitle: "Live TV",
+                            image: stream.streamIcon,
+                            baseHost: credentials.host,
+                            isPoster: false,
+                            symbol: "tv"
+                        ) { homeLiveTarget = stream }
+                    }
+                }
+
+                searchGroup(title: "Film", count: homeSearchMovies.count) {
+                    ForEach(homeSearchMovies) { stream in
+                        searchRow(
+                            title: stream.name,
+                            subtitle: "Film",
+                            image: stream.streamIcon,
+                            baseHost: credentials.host,
+                            isPoster: true,
+                            symbol: "film"
+                        ) { homeMovieTarget = stream }
+                    }
+                }
+
+                searchGroup(title: "Serie TV", count: homeSearchSeries.count) {
+                    ForEach(homeSearchSeries) { series in
+                        searchRow(
+                            title: series.name,
+                            subtitle: "Serie TV",
+                            image: series.cover,
+                            baseHost: credentials.host,
+                            isPoster: true,
+                            symbol: "rectangle.stack.fill"
+                        ) { homeSeriesTarget = series }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func searchGroup<Rows: View>(
+        title: String,
+        count: Int,
+        @ViewBuilder rows: () -> Rows
+    ) -> some View {
+        if count > 0 {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("\(title) (\(count))")
+                    .font(.system(size: 18.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    rows()
+                }
+            }
+        }
+    }
+
+    private func searchRow(
+        title: String,
+        subtitle: String,
+        image: String?,
+        baseHost: String,
+        isPoster: Bool,
+        symbol: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                CachedPosterImage(
+                    urlString: image,
+                    baseHost: baseHost,
+                    width: isPoster ? 44 : 56,
+                    height: isPoster ? 64 : 44,
+                    cornerRadius: 8,
+                    placeholderSymbol: symbol,
+                    contentMode: isPoster ? .fill : .fit
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 15.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    Text(subtitle)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(subtitle): \(title)")
+    }
+
     // MARK: - Sezioni personalizzabili
 
     @ViewBuilder
@@ -207,6 +408,11 @@ struct HomeView: View {
         switch section {
         case .heading:
             heading
+
+        case .search:
+            // Il contenitore ha 20 pt di margine, la barra ne vuole 16.
+            GlassSearchField(text: $homeSearchQuery)
+                .padding(.horizontal, -4)
 
         case .sourceCard:
             if hasActiveSource {
