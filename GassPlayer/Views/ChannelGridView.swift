@@ -600,7 +600,10 @@ struct ChannelGridView: View {
                 // Il titolo grande manuale serve solo in "Espansibile": in
                 // "Scorrevole" il titolo grande di sistema (nativo) copre
                 // già esattamente lo stesso comportamento richiesto.
-                if groupUIStyle == "espansibile" {
+                // In VOD e Serie TV il titolo grande è sempre manuale: a fianco
+                // c'è il tasto "Modifica", che il titolo di sistema non può
+                // ospitare.
+                if groupUIStyle == "espansibile" || kind != .live {
                     sectionTitleHeader
                 }
 
@@ -638,7 +641,9 @@ struct ChannelGridView: View {
             .onPreferenceChange(ChannelGridWidthKey.self) { width in
                 if abs(width - gridContainerWidth) > 0.5 { gridContainerWidth = width }
             }
-            .navigationTitle(kind.displayName)
+            // VOD/Serie TV: titolo grande manuale con "Modifica" a fianco,
+            // quindi nessun titolo di sistema (resterebbe duplicato).
+            .navigationTitle(kind == .live ? kind.displayName : "")
             // "Espansibile": la pillola del gruppo occupa lo slot del
             // titolo (`.principal`), quindi il titolo di sistema resta
             // forzato su `.inline` (il titolo grande manuale sopra lo
@@ -646,7 +651,7 @@ struct ChannelGridView: View {
             // slot, quindi si usa `.large` per il comportamento nativo
             // (titolo grande finché non si scrolla, poi piccolo in
             // toolbar).
-            .navigationBarTitleDisplayMode(groupUIStyle == "espansibile" ? .inline : .large)
+            .navigationBarTitleDisplayMode(groupUIStyle == "espansibile" || kind != .live ? .inline : .large)
             .toolbar {
                 toolbarContent
             }
@@ -802,8 +807,7 @@ struct ChannelGridView: View {
                     HomeTrendingRail(
                         title: section.title,
                         isSeries: kind == .series,
-                        horizontalInset: 16,
-                        onEdit: { showSectionsSheet = true }
+                        horizontalInset: 16
                     ) { item in
                         openTrending(item)
                     }
@@ -839,11 +843,30 @@ struct ChannelGridView: View {
     /// nativo di sistema (`.navigationBarTitleDisplayMode(.large)`) copre
     /// già lo stesso identico comportamento richiesto.
     private var sectionTitleHeader: some View {
-        Text(kind.displayName)
-            .font(.largeTitle.bold())
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.top, 8)
+        HStack(alignment: .center, spacing: 12) {
+            Text(kind.displayName)
+                .font(.largeTitle.bold())
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Solo VOD e Serie TV: tasto "Modifica" (Liquid Glass, identico a
+            // "Svuota") sulla riga del titolo grande. Sempre presente, anche
+            // con entrambe le sezioni configurabili nascoste.
+            if kind != .live {
+                Button {
+                    showSectionsSheet = true
+                } label: {
+                    Text("Modifica")
+                        .font(.system(size: 14, weight: .semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                }
+                .modifier(ClearGlassCapsule())
+                .accessibilityLabel("Modifica sezioni \(kind.displayName)")
+            }
+        }
+        .padding(.leading, 20)
+        .padding(.trailing, 16)
+        .padding(.top, 8)
     }
 
     @ToolbarContentBuilder
@@ -951,17 +974,6 @@ struct ChannelGridView: View {
                     }
                 } label: {
                     Label("UI Gruppi", systemImage: "rectangle.grid.1x2")
-                }
-
-                // Solo VOD e Serie TV: apre lo stesso foglio del tasto
-                // "Modifica", anche quando "di tendenza" è nascosta (il suo
-                // tasto non c'è più).
-                if kind != .live {
-                    Button {
-                        showSectionsSheet = true
-                    } label: {
-                        Label(sectionsSheetTitle, systemImage: "list.bullet")
-                    }
                 }
 
                 Button {
