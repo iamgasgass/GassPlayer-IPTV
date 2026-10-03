@@ -310,6 +310,24 @@ struct ChannelGridView: View {
     @State private var indexedSourceIdentity: SourceIdentity?
     @State private var showEPGGuide = false
     @State private var showTrendingUnavailable = false
+    @State private var showSectionsSheet = false
+
+    /// Sezioni configurabili di VOD e Serie TV ("Continua a guardare" e
+    /// "Film/Serie di tendenza"): ordine e visibilità salvati per sezione.
+    @StateObject private var movieSectionLayout = HomeLayoutStore(
+        storageKey: "gassplayer.vod.sections",
+        sections: [.continueWatching, .trendingMovies],
+        layoutVersion: 1
+    )
+    @StateObject private var seriesSectionLayout = HomeLayoutStore(
+        storageKey: "gassplayer.series.sections",
+        sections: [.continueWatching, .trendingSeries],
+        layoutVersion: 1
+    )
+
+    private var sectionLayout: HomeLayoutStore {
+        kind == .series ? seriesSectionLayout : movieSectionLayout
+    }
 
     private let epgTileBatchLimit = 24
     private let epgTileConcurrency = 4
@@ -590,30 +608,12 @@ struct ChannelGridView: View {
                     categoryChips
                 }
 
-                // "Continua a guardare" come in `HomeView` (con l'immagine
-                // della scheda dettaglio), ma solo con i contenuti di
-                // questa sezione: film in VOD, serie in Serie TV.
+                // Sezioni configurabili di VOD/Serie TV nell'ordine scelto dal
+                // tasto "Modifica": "Continua a guardare" (solo contenuti di
+                // questa sezione) e "Film/Serie di tendenza" (20 titoli della
+                // settimana, come in Home).
                 if kind != .live && !isInitialLoadPending {
-                    ContinueWatchingSection(
-                        kindFilter: kind.rawValue,
-                        horizontalInset: 16,
-                        topPadding: 8,
-                        bottomPadding: 0
-                    )
-                }
-
-                // "Serie di tendenza" (Serie TV) / "Film di tendenza" (VOD),
-                // subito dopo "Continua a guardare": stessa sezione della
-                // Home (20 titoli della settimana, card con classifica).
-                if kind != .live && !isInitialLoadPending {
-                    HomeTrendingRail(
-                        title: kind == .series ? "Serie di tendenza" : "Film di tendenza",
-                        isSeries: kind == .series,
-                        horizontalInset: 16
-                    ) { item in
-                        openTrending(item)
-                    }
-                    .padding(.top, 20)
+                    topSections
                 }
 
                 if isInitialLoadPending {
@@ -729,6 +729,13 @@ struct ChannelGridView: View {
                     fallbackCoverURLString: series.cover
                 )
             }
+            .sheet(isPresented: $showSectionsSheet) {
+                HomeCustomizeSheet(
+                    layout: sectionLayout,
+                    title: sectionsSheetTitle,
+                    showsOptions: false
+                )
+            }
             .alert("Non disponibile nella tua playlist", isPresented: $showTrendingUnavailable) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -771,6 +778,56 @@ struct ChannelGridView: View {
         // Gruppi" cambia: il titolo grande compare ora correttamente
         // subito dopo lo switch.
         .id(groupUIStyle)
+    }
+
+    @ViewBuilder
+    private var topSections: some View {
+        let order = sectionLayout.order
+        let hasContinue = recentlyWatched.items.contains { $0.kind == kind.rawValue }
+
+        VStack(alignment: .leading, spacing: 20) {
+            ForEach(Array(order.enumerated()), id: \.element) { index, section in
+                switch section {
+                case .continueWatching:
+                    if hasContinue {
+                        ContinueWatchingSection(
+                            kindFilter: kind.rawValue,
+                            horizontalInset: 16,
+                            topPadding: index == 0 ? 8 : 0,
+                            bottomPadding: 0
+                        )
+                    }
+
+                case .trendingSeries, .trendingMovies:
+                    HomeTrendingRail(
+                        title: section.title,
+                        isSeries: kind == .series,
+                        horizontalInset: 16,
+                        onEdit: { showSectionsSheet = true }
+                    ) { item in
+                        openTrending(item)
+                    }
+                    // 20 pt di distacco dagli elementi sopra (chip gruppi o
+                    // "Continua a guardare"); se sopra, nel gruppo, c'è già
+                    // una sezione visibile lo spazio lo dà lo `spacing`.
+                    .padding(.top, hasVisibleSection(before: index, in: order, hasContinue: hasContinue) ? 0 : 20)
+
+                default:
+                    EmptyView()
+                }
+            }
+        }
+        .animation(.snappy(duration: 0.25), value: order)
+    }
+
+    private func hasVisibleSection(before index: Int, in order: [HomeSectionID], hasContinue: Bool) -> Bool {
+        order.prefix(index).contains { $0 == .continueWatching && hasContinue }
+    }
+
+    /// Nome della sezione nei titoli del foglio e del menu ("Sezioni VOD",
+    /// "Sezioni Serie TV").
+    private var sectionsSheetTitle: String {
+        kind == .series ? "Sezioni Serie TV" : "Sezioni VOD"
     }
 
     /// Titolo grande della sezione (Live TV / VOD / Serie TV), usato
@@ -894,6 +951,17 @@ struct ChannelGridView: View {
                     }
                 } label: {
                     Label("UI Gruppi", systemImage: "rectangle.grid.1x2")
+                }
+
+                // Solo VOD e Serie TV: apre lo stesso foglio del tasto
+                // "Modifica", anche quando "di tendenza" è nascosta (il suo
+                // tasto non c'è più).
+                if kind != .live {
+                    Button {
+                        showSectionsSheet = true
+                    } label: {
+                        Label(sectionsSheetTitle, systemImage: "list.bullet")
+                    }
                 }
 
                 Button {

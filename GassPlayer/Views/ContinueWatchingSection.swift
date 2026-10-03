@@ -375,7 +375,7 @@ struct ContinueWatchingSection: View {
 /// ("X" delle schede dettaglio) in forma di pillola. Il testo usa il colore
 /// primario di sistema (leggibile anche con tema chiaro); su iOS < 26
 /// ripiega su materiale sottile con filo di bordo, come il fallback della X.
-private struct ClearGlassCapsule: ViewModifier {
+struct ClearGlassCapsule: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
             content

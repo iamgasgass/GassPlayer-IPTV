@@ -67,46 +67,60 @@ final class HomeLayoutStore: ObservableObject {
         var version: Int?
     }
 
-    private static let layoutVersion = 2
-
-    private let storageKey = "gassplayer.home.layout"
-
-    private static let defaultOrder: [HomeSectionID] = [
+    /// Tutte le sezioni della panoramica Home, nell'ordine predefinito.
+    static let homeSections: [HomeSectionID] = [
         .heading, .continueWatching, .sourceCard, .liveTV, .guidaTV,
         .favoriteChannels, .favoriteSeries, .favoriteMovies,
         .trendingSeries, .trendingMovies, .onDemand, .sources
     ]
 
-    init() {
+    private let layoutVersion: Int
+    private let storageKey: String
+    /// Sezioni gestite da questo store (l'ordine è anche quello predefinito):
+    /// la Home le gestisce tutte, VOD e Serie TV solo le proprie.
+    let sections: [HomeSectionID]
+    private var defaultOrder: [HomeSectionID] { sections }
+
+    init(
+        storageKey: String = "gassplayer.home.layout",
+        sections: [HomeSectionID] = HomeLayoutStore.homeSections,
+        layoutVersion: Int = 2
+    ) {
+        self.storageKey = storageKey
+        self.sections = sections
+        self.layoutVersion = layoutVersion
+
         if let data = UserDefaults.standard.data(forKey: storageKey),
            let stored = try? JSONDecoder().decode(Stored.self, from: data) {
-            guard stored.version == Self.layoutVersion else {
+            guard stored.version == layoutVersion else {
                 // Layout salvato da una versione con meno sezioni: ordine
                 // predefinito completo, mantenendo solo il filtro di
                 // "Continua a guardare".
-                order = Self.defaultOrder
+                order = sections
                 continueKind = stored.continueKind
                 return
             }
 
-            var visible = stored.order.compactMap(HomeSectionID.init(rawValue:))
+            var visible = stored.order
+                .compactMap(HomeSectionID.init(rawValue:))
+                .filter { sections.contains($0) }
             let hidden = Set(stored.hidden.compactMap(HomeSectionID.init(rawValue:)))
 
             // Sezioni nate dopo il salvataggio: in coda, visibili.
-            for section in Self.defaultOrder where !visible.contains(section) && !hidden.contains(section) {
+            for section in sections where !visible.contains(section) && !hidden.contains(section) {
                 visible.append(section)
             }
 
             order = visible
             continueKind = stored.continueKind
         } else {
-            order = Self.defaultOrder
+            order = sections
             continueKind = nil
         }
     }
 
     var hiddenSections: [HomeSectionID] {
-        HomeSectionID.allCases.filter { !order.contains($0) }
+        sections.filter { !order.contains($0) }
     }
 
     func remove(_ section: HomeSectionID) {
@@ -143,7 +157,7 @@ final class HomeLayoutStore: ObservableObject {
             order: order.map(\.rawValue),
             hidden: hiddenSections.map(\.rawValue),
             continueKind: continueKind,
-            version: Self.layoutVersion
+            version: layoutVersion
         )
 
         guard let data = try? JSONEncoder().encode(stored) else { return }
@@ -209,6 +223,11 @@ struct HomePersonalizeButton: View {
 /// Liquid Glass come la "X" delle schede dettaglio.
 struct HomeCustomizeSheet: View {
     @ObservedObject var layout: HomeLayoutStore
+    /// Titolo del foglio ("Sezioni home", "Sezioni Film", …).
+    var title: String = "Sezioni home"
+    /// Mostra il pulsante a cursori delle opzioni (solo in Home: nelle
+    /// sezioni VOD/Serie TV "Continua a guardare" è già limitato al tipo).
+    var showsOptions: Bool = true
 
     private enum Metrics {
         static let rowHeight: CGFloat = 55
@@ -224,7 +243,7 @@ struct HomeCustomizeSheet: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                Text("Sezioni home")
+                Text(title)
                     .font(.system(size: 17, weight: .semibold))
                     .padding(.top, 26)
                     .padding(.bottom, 37)
@@ -276,7 +295,7 @@ struct HomeCustomizeSheet: View {
 
             Spacer(minLength: 8)
 
-            if section.hasOptions {
+            if showsOptions && section.hasOptions {
                 optionsMenu
             }
 
@@ -434,6 +453,9 @@ struct HomeTrendingRail: View {
     let title: String
     let isSeries: Bool
     var horizontalInset: CGFloat = 16
+    /// Se presente, la riga del titolo mostra il tasto "Modifica" (Liquid
+    /// Glass, identico a "Svuota" di "Continua a guardare").
+    var onEdit: (() -> Void)?
     let onSelect: (TMDBTrendingItem) -> Void
 
     @AppStorage(TMDBService.apiKeyDefaultsKey) private var apiKey = ""
@@ -452,20 +474,45 @@ struct HomeTrendingRail: View {
         static let imageMaxPixel: CGFloat = 800
     }
 
-    init(title: String, isSeries: Bool, horizontalInset: CGFloat = 16, onSelect: @escaping (TMDBTrendingItem) -> Void) {
+    init(
+        title: String,
+        isSeries: Bool,
+        horizontalInset: CGFloat = 16,
+        onEdit: (() -> Void)? = nil,
+        onSelect: @escaping (TMDBTrendingItem) -> Void
+    ) {
         self.title = title
         self.isSeries = isSeries
         self.horizontalInset = horizontalInset
+        self.onEdit = onEdit
         self.onSelect = onSelect
         _items = State(initialValue: HomeTrendingMemory.items(for: isSeries ? "tv" : "movie"))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Metrics.headerToCardSpacing) {
-            Text(title)
-                .font(.system(size: 18.5, weight: .medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, horizontalInset)
+            HStack(alignment: .center) {
+                Text(title)
+                    .font(.system(size: 18.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 12)
+
+                if let onEdit {
+                    // Stesso tasto, stesso materiale e stessa posizione di
+                    // "Svuota" in "Continua a guardare", ma sulla riga del
+                    // nome della sezione.
+                    Button(action: onEdit) {
+                        Text("Modifica")
+                            .font(.system(size: 14, weight: .semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                    }
+                    .modifier(ClearGlassCapsule())
+                    .accessibilityLabel("Modifica \(title)")
+                }
+            }
+            .padding(.horizontal, horizontalInset)
 
             if apiKey.isEmpty {
                 hint("Aggiungi la chiave API TMDB nelle Impostazioni per vedere i titoli di tendenza.")
