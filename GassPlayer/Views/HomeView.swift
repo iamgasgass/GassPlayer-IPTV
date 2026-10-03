@@ -65,6 +65,15 @@ struct HomeView: View {
     @State private var showGuidaTVUnavailableAlert = false
     @State private var showManageActiveSource = false
 
+    /// Ordine/visibilità delle sezioni personalizzabili (foglio "Personalizza"):
+    /// la Home osserva lo store, quindi ogni modifica si vede all'istante.
+    @StateObject private var homeLayout = HomeLayoutStore()
+    @State private var showCustomize = false
+    @State private var homeLiveTarget: XtreamStream?
+    @State private var homeMovieTarget: XtreamStream?
+    @State private var homeSeriesTarget: XtreamSeriesItem?
+    @State private var showTrendingUnavailable = false
+
     var body: some View {
         NavigationStack {
             Group {
@@ -100,6 +109,48 @@ struct HomeView: View {
             } message: {
                 Text("La guida programmi richiede una sorgente Xtream attiva. Aggiungine una dalle Impostazioni.")
             }
+            .sheet(isPresented: $showCustomize) {
+                HomeCustomizeSheet(layout: homeLayout)
+            }
+            .fullScreenCover(item: $homeLiveTarget) { stream in
+                if let credentials = sourceManager.activeSource?.xtreamCredentials,
+                   let url = XtreamAPIService(credentials: credentials).streamURL(for: stream, kind: .live) {
+                    AdaptivePlayerView(url: url, title: stream.name)
+                        .task {
+                            recentlyWatched.record(
+                                id: credentials.favoriteID(kind: .live, streamId: stream.streamId),
+                                title: stream.name,
+                                kind: XtreamStreamKind.live.rawValue,
+                                streamURL: url
+                            )
+                        }
+                } else {
+                    ContentUnavailableView(
+                        "URL dello stream non valido",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                }
+            }
+            .fullScreenCover(item: $homeMovieTarget) { stream in
+                if let credentials = sourceManager.activeSource?.xtreamCredentials {
+                    MovieDetailView(credentials: credentials, stream: stream)
+                }
+            }
+            .fullScreenCover(item: $homeSeriesTarget) { series in
+                if let credentials = sourceManager.activeSource?.xtreamCredentials {
+                    SeriesEpisodesView(
+                        credentials: credentials,
+                        seriesId: series.seriesId,
+                        seriesName: series.name,
+                        fallbackCoverURLString: series.cover
+                    )
+                }
+            }
+            .alert("Non disponibile nella tua playlist", isPresented: $showTrendingUnavailable) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Questo titolo di tendenza non è presente nella sorgente attiva.")
+            }
             .sheet(isPresented: $showManageActiveSource) {
                 if let activeSource = sourceManager.activeSource {
                     SourceManageView(source: activeSource)
@@ -119,14 +170,10 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 24) {
                 heading
 
-                if !recentlyWatched.items.isEmpty {
-                    // Stessa sezione usata in VOD e Serie TV (qui tutti i
-                    // tipi). Il contenitore ha 20 pt di padding laterale:
-                    // il padding negativo fa partire header e card a filo
-                    // schermo con il margine di 16 pt del riferimento e
-                    // permette alla riga di scorrere fino al bordo.
-                    ContinueWatchingSection(horizontalInset: 16)
-                        .padding(.horizontal, -20)
+                // Sezioni personalizzabili (Continua a guardare, Guida TV,
+                // preferiti, tendenza) nell'ordine scelto da "Personalizza".
+                ForEach(homeLayout.order) { section in
+                    sectionView(section)
                 }
 
                 if hasActiveSource {
@@ -145,12 +192,16 @@ struct HomeView: View {
                     destination: .liveTV
                 )
 
-                guidaTVDestination
-
                 onDemandSection
 
                 sourceSummary
+
+                // In fondo, come nel riferimento: apre "Sezioni home".
+                HomePersonalizeButton {
+                    showCustomize = true
+                }
             }
+            .animation(.snappy(duration: 0.25), value: homeLayout.order)
             .padding(.horizontal, 20)
             .padding(.top, 12)
             .padding(.bottom, 32)
@@ -169,6 +220,84 @@ struct HomeView: View {
                 recentlyWatched.refresh()
             }
         }
+    }
+
+    // MARK: - Sezioni personalizzabili
+
+    @ViewBuilder
+    private func sectionView(_ section: HomeSectionID) -> some View {
+        switch section {
+        case .continueWatching:
+            if recentlyWatched.items.contains(where: { homeLayout.continueKind == nil || $0.kind == homeLayout.continueKind }) {
+                // Stessa sezione usata in VOD e Serie TV (qui tutti i tipi
+                // o il tipo scelto dalle opzioni). Il contenitore ha 20 pt
+                // di padding laterale: il padding negativo fa partire
+                // header e card a filo schermo con il margine di 16 pt.
+                ContinueWatchingSection(kindFilter: homeLayout.continueKind, horizontalInset: 16)
+                    .padding(.horizontal, -20)
+            }
+
+        case .guidaTV:
+            guidaTVDestination
+
+        case .favoriteChannels:
+            favoritesRail(section, kind: .live)
+
+        case .favoriteSeries:
+            favoritesRail(section, kind: .series)
+
+        case .favoriteMovies:
+            favoritesRail(section, kind: .movie)
+
+        case .trendingSeries:
+            HomeTrendingRail(title: section.title, isSeries: true, horizontalInset: 16) { item in
+                openTrending(item)
+            }
+            .padding(.horizontal, -20)
+
+        case .trendingMovies:
+            HomeTrendingRail(title: section.title, isSeries: false, horizontalInset: 16) { item in
+                openTrending(item)
+            }
+            .padding(.horizontal, -20)
+        }
+    }
+
+    @ViewBuilder
+    private func favoritesRail(_ section: HomeSectionID, kind: XtreamStreamKind) -> some View {
+        if let credentials = sourceManager.activeSource?.xtreamCredentials {
+            HomeFavoritesRail(
+                title: section.title,
+                kind: kind,
+                horizontalInset: 16,
+                credentials: credentials,
+                onSelectLive: { homeLiveTarget = $0 },
+                onSelectMovie: { homeMovieTarget = $0 },
+                onSelectSeries: { homeSeriesTarget = $0 }
+            )
+            .padding(.horizontal, -20)
+        }
+    }
+
+    /// Apre il contenuto equivalente nella sorgente attiva; se la sorgente
+    /// non lo ha lo dice invece di non fare nulla.
+    private func openTrending(_ item: TMDBTrendingItem) {
+        guard sourceManager.activeSource?.xtreamCredentials != nil else {
+            showTrendingUnavailable = true
+            return
+        }
+
+        if item.isSeries {
+            if let match = HomeTrendingMatcher.series(for: item, in: xtreamCatalog.seriesItems) {
+                homeSeriesTarget = match
+                return
+            }
+        } else if let match = HomeTrendingMatcher.movie(for: item, in: xtreamCatalog.vodStreams) {
+            homeMovieTarget = match
+            return
+        }
+
+        showTrendingUnavailable = true
     }
 
     // MARK: - Preferiti (menu "Home" a tendina)
