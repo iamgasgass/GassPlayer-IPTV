@@ -10,7 +10,36 @@ import Foundation
 /// (`GassPlayer/1.0`) era proprio uno di quelli che alcuni backend
 /// respingono: il primo tentativo ora usa un UA VLC, il piu' tollerato.
 enum StreamUserAgents {
-    static let vlc = "VLC/3.0.20 LibVLC/3.0.20"
+    /// Chiave di `UserDefaults` del campo "User Agent" (Impostazioni →
+    /// Generale).
+    static let customDefaultsKey = "gassplayer.network.userAgent"
+
+    static let defaultVLC = "VLC/3.0.20 LibVLC/3.0.20"
+
+    /// User Agent scelto dall'utente, `nil` se il campo e' vuoto. Letto UNA
+    /// sola volta per avvio (`static let` e' valutata alla prima lettura):
+    /// e' esattamente il "dovrai riavviare l'app per rendere effettive le
+    /// modifiche" mostrato sotto il campo, e garantisce che tutte le
+    /// richieste di una sessione usino lo stesso valore.
+    static let custom: String? = {
+        let raw = UserDefaults.standard.string(forKey: customDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let raw, !raw.isEmpty else { return nil }
+        return raw
+    }()
+
+    /// Primo user-agent tentato per riprodurre: quello dell'utente, se
+    /// impostato, altrimenti VLC.
+    static let vlc: String = custom ?? defaultVLC
+
+    /// Applica l'UA personalizzato (solo se impostato) a una richiesta
+    /// verso il provider: chiamate API Xtream, playlist M3U, XMLTV. Senza
+    /// impostazione non cambia nulla rispetto a prima.
+    static func applyCustom(to request: inout URLRequest) {
+        if let custom {
+            request.setValue(custom, forHTTPHeaderField: "User-Agent")
+        }
+    }
 
     /// Ordine di tentativo quando il provider rifiuta l'accesso.
     static let ladder: [String] = [

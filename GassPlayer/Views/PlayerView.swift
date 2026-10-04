@@ -1120,6 +1120,7 @@ struct AdvancedSettingsView: View {
     @State private var preferredBuffer: Double
     @State private var maxBuffer: Double
     @State private var hardwareDecode: Bool
+    @State private var asynchronousDecompression: Bool
     @State private var autoDeInterlace: Bool
     @State private var isAccurateSeek: Bool
     @State private var videoDelay: Double
@@ -1130,6 +1131,7 @@ struct AdvancedSettingsView: View {
         _preferredBuffer = State(initialValue: prefs.preferredForwardBufferDuration)
         _maxBuffer = State(initialValue: prefs.maxBufferDuration)
         _hardwareDecode = State(initialValue: prefs.hardwareDecode)
+        _asynchronousDecompression = State(initialValue: prefs.asynchronousDecompression)
         _autoDeInterlace = State(initialValue: prefs.autoDeInterlace)
         _isAccurateSeek = State(initialValue: prefs.isAccurateSeek)
         _videoDelay = State(initialValue: prefs.videoDelay)
@@ -1160,6 +1162,10 @@ struct AdvancedSettingsView: View {
                     Toggle("Decodifica hardware (VideoToolbox)", isOn: $hardwareDecode)
                         .onChange(of: hardwareDecode) { newValue in
                             controller.setHardwareDecode(newValue)
+                        }
+                    Toggle("Decompressione asincrona", isOn: $asynchronousDecompression)
+                        .onChange(of: asynchronousDecompression) { newValue in
+                            controller.setAsynchronousDecompression(newValue)
                         }
                     Toggle("De-interlacciamento automatico", isOn: $autoDeInterlace)
                         .onChange(of: autoDeInterlace) { newValue in

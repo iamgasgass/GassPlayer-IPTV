@@ -29,6 +29,11 @@ struct SettingsView: View {
     @AppStorage("gassplayer.network.preferredDNS")
     private var preferredDNS = "1.1.1.1"
 
+    /// User Agent personalizzato (vuoto = predefinito VLC). Letto una sola
+    /// volta per avvio da `StreamUserAgents.custom`: serve riavviare l'app.
+    @AppStorage(StreamUserAgents.customDefaultsKey)
+    private var customUserAgent = ""
+
     @State private var showResetConfirmation = false
     @State private var isRefreshingCatalog = false
     @State private var catalogActionFeedback: String?
@@ -60,6 +65,9 @@ struct SettingsView: View {
 
     @AppStorage("gassplayer.player.hardwareDecode")
     private var playerHardwareDecode = true
+
+    @AppStorage("gassplayer.player.asynchronousDecompression")
+    private var playerAsynchronousDecompression = true
 
     @AppStorage("gassplayer.player.isAccurateSeek")
     private var playerAccurateSeek = false
@@ -550,6 +558,31 @@ struct SettingsView: View {
         settingsPage(title: "Impostazioni generali") {
             catalogSection
             historySection
+            userAgentSection
+        }
+    }
+
+    /// Campo "User Agent": usato per riproduzione, chiamate API Xtream,
+    /// download di playlist M3U e guida XMLTV. Vuoto = VLC/3.0.20.
+    private var userAgentSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("User Agent")
+                .font(.headline)
+
+            GlassCard {
+                TextField("ie. VLC/3.0.18 LibVLC/3.0.18", text: $customUserAgent)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.asciiCapable)
+                    .submitLabel(.done)
+                    .font(.subheadline)
+                    .padding(.vertical, 2)
+            }
+
+            Text("Dovrai riavviare l'app per rendere effettive le modifiche all'User-Agent.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
         }
     }
 
@@ -642,6 +675,16 @@ struct SettingsView: View {
                 symbol: "cpu",
                 tint: .teal,
                 isOn: $playerHardwareDecode
+            )
+
+            SettingsDivider()
+
+            SettingsToggleRow(
+                title: "Decompressione asincrona",
+                detail: "Decomprime i frame su un thread dedicato: meno scatti con 4K/HEVC",
+                symbol: "shuffle",
+                tint: .teal,
+                isOn: $playerAsynchronousDecompression
             )
 
             SettingsDivider()
@@ -1243,6 +1286,7 @@ struct SettingsView: View {
         playerForwardBuffer = factory.preferredForwardBufferDuration
         playerMaxBuffer = factory.maxBufferDuration
         playerHardwareDecode = factory.hardwareDecode
+        playerAsynchronousDecompression = factory.asynchronousDecompression
         playerAccurateSeek = factory.isAccurateSeek
         playerAutoDeInterlace = factory.autoDeInterlace
         playerVideoGravity = factory.videoGravity.rawValue

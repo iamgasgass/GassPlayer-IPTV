@@ -215,6 +215,7 @@ struct EPGService {
             "application/json, text/plain, */*",
             forHTTPHeaderField: "Accept"
         )
+        StreamUserAgents.applyCustom(to: &request)
 
         do {
             let (data, response) = try await session.data(for: request)

@@ -47,11 +47,12 @@ struct M3UChannelsView: View {
                                     HStack(spacing: 10) {
                                         GroupIconView(
                                             logoURL: store.groupIcon(for: kind, group: group),
-                                            fallbackSystemImage: kind.systemImage
+                                            fallbackSystemImage: kind.systemImage,
+                                            baseHost: playlistURL.absoluteString
                                         )
                                         Text(group)
                                         Spacer()
-                                        Text("\(store.channels(for: kind, group: group).count)")
+                                        Text("\(store.channelCount(for: kind, group: group))")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
@@ -82,22 +83,19 @@ struct M3UChannelsView: View {
 private struct GroupIconView: View {
     let logoURL: String?
     let fallbackSystemImage: String
+    let baseHost: String
 
     var body: some View {
-        Group {
-            if let logoURL, let url = URL(string: logoURL) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image): image.resizable().scaledToFit()
-                    default: Image(systemName: fallbackSystemImage).foregroundStyle(.secondary)
-                    }
-                }
-            } else {
-                Image(systemName: fallbackSystemImage).foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: 24, height: 24)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        // Immagine in cache (stessa di Live/VOD/Serie): niente flash del
+        // segnaposto quando la riga viene riciclata durante lo scroll.
+        CachedPosterImage(
+            urlString: logoURL,
+            baseHost: baseHost,
+            width: 24,
+            height: 24,
+            cornerRadius: 6,
+            placeholderSymbol: fallbackSystemImage
+        )
     }
 }
 
@@ -107,7 +105,9 @@ struct M3UGroupChannelsView: View {
     let sourceKey: String
     @EnvironmentObject var contentManagement: ContentManagementService
     @EnvironmentObject var recentlyWatched: RecentlyWatchedStore
+    @EnvironmentObject var m3uStore: M3UPlaylistStore
     @State private var selectedChannel: M3UChannel?
+    @State private var guideChannel: M3UChannel?
 
     var body: some View {
         List(channels) { channel in
@@ -116,23 +116,41 @@ struct M3UGroupChannelsView: View {
                     selectedChannel = channel
                 } label: {
                     HStack(spacing: 12) {
-                        AsyncImage(url: URL(string: channel.logoURL ?? "")) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image.resizable().scaledToFit()
-                            default:
-                                Image(systemName: channel.kind.systemImage).foregroundStyle(.secondary)
+                        CachedPosterImage(
+                            urlString: channel.logoURL,
+                            baseHost: sourceKey,
+                            width: 36,
+                            height: 36,
+                            cornerRadius: 8,
+                            placeholderSymbol: channel.kind.systemImage
+                        )
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(channel.title)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            if channel.kind == .live {
+                                // `epgRevision` fa rileggere la riga quando
+                                // arriva la guida.
+                                let _ = m3uStore.epgRevision
+                                if let program = m3uStore.currentProgram(for: channel) {
+                                    M3UProgramLine(program: program)
+                                }
                             }
                         }
-                        .frame(width: 36, height: 36)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                        Text(channel.title)
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
                     }
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    if channel.kind == .live, !m3uStore.programs(for: channel).isEmpty {
+                        Button {
+                            guideChannel = channel
+                        } label: {
+                            Label("Guida programmi", systemImage: "list.bullet.rectangle")
+                        }
+                    }
+                }
 
                 Spacer()
 
@@ -156,6 +174,94 @@ struct M3UGroupChannelsView: View {
                         streamURL: channel.streamURL
                     )
                 }
+        }
+        .sheet(item: $guideChannel) { channel in
+            M3UChannelGuideSheet(channel: channel)
+                .environmentObject(m3uStore)
+        }
+    }
+}
+
+/// Riga "programma in onda" sotto il nome del canale, con barra di
+/// avanzamento quando il programma è in corso.
+private struct M3UProgramLine: View {
+    let program: EPGProgram
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(program.title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            if program.isCurrent() {
+                ProgressView(value: program.progress())
+                    .progressViewStyle(.linear)
+                    .tint(.accentColor)
+                    .frame(maxWidth: 140)
+            } else {
+                Text(program.start.formatted(date: .omitted, time: .shortened))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
+/// Elenco dei programmi del canale (oggi e prossime ore) preso dalla guida
+/// XMLTV della playlist.
+private struct M3UChannelGuideSheet: View {
+    let channel: M3UChannel
+    @EnvironmentObject var m3uStore: M3UPlaylistStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            let now = Date()
+            let programs = m3uStore.programs(for: channel).filter { $0.end > now }
+
+            List {
+                if programs.isEmpty {
+                    Text("Nessun programma disponibile per questo canale.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(programs) { program in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(program.start.formatted(date: .omitted, time: .shortened))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+
+                                if program.isCurrent(at: now) {
+                                    Text("IN ONDA")
+                                        .font(.caption2.weight(.bold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.accentColor.opacity(0.2), in: Capsule())
+                                }
+                            }
+
+                            Text(program.title)
+                                .font(.subheadline.weight(.medium))
+
+                            if let description = program.description {
+                                Text(description)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            .navigationTitle(channel.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Chiudi") { dismiss() }
+                }
+            }
         }
     }
 }

@@ -90,6 +90,11 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// decodifica video a VideoToolbox (H.264/H.265). Dopo un errore
         /// il controller passa da solo a `false` (fallback software).
         var hardwareDecode: Bool = true
+        /// `KSOptions.asynchronousDecompression`: la decompressione dei
+        /// frame video avviene su un thread dedicato invece che nel thread
+        /// di rendering, riducendo i salti con flussi pesanti (4K/HEVC).
+        /// Attiva di default (era gia' forzata a `true` nel player).
+        var asynchronousDecompression: Bool = true
         var isAccurateSeek: Bool = false
         var autoDeInterlace: Bool = false
         /// Secondi. Positivo = video ritardato rispetto all'audio.
@@ -120,6 +125,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
             static let forwardBuffer = "gassplayer.player.preferredForwardBufferDuration"
             static let maxBuffer = "gassplayer.player.maxBufferDuration"
             static let hardwareDecode = "gassplayer.player.hardwareDecode"
+            static let asyncDecompression = "gassplayer.player.asynchronousDecompression"
             static let accurateSeek = "gassplayer.player.isAccurateSeek"
             static let autoDeInterlace = "gassplayer.player.autoDeInterlace"
             static let videoGravity = "gassplayer.player.videoGravity"
@@ -133,6 +139,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
             if let v = d.object(forKey: Key.forwardBuffer) as? Double { prefs.preferredForwardBufferDuration = v }
             if let v = d.object(forKey: Key.maxBuffer) as? Double { prefs.maxBufferDuration = v }
             if let v = d.object(forKey: Key.hardwareDecode) as? Bool { prefs.hardwareDecode = v }
+            if let v = d.object(forKey: Key.asyncDecompression) as? Bool { prefs.asynchronousDecompression = v }
             if let v = d.object(forKey: Key.accurateSeek) as? Bool { prefs.isAccurateSeek = v }
             if let v = d.object(forKey: Key.autoDeInterlace) as? Bool { prefs.autoDeInterlace = v }
             if let raw = d.string(forKey: Key.videoGravity), let mode = VideoGravityMode(rawValue: raw) { prefs.videoGravity = mode }
@@ -148,6 +155,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
             d.set(prefs.preferredForwardBufferDuration, forKey: Key.forwardBuffer)
             d.set(prefs.maxBufferDuration, forKey: Key.maxBuffer)
             d.set(prefs.hardwareDecode, forKey: Key.hardwareDecode)
+            d.set(prefs.asynchronousDecompression, forKey: Key.asyncDecompression)
             d.set(prefs.isAccurateSeek, forKey: Key.accurateSeek)
             d.set(prefs.autoDeInterlace, forKey: Key.autoDeInterlace)
             d.set(prefs.videoGravity.rawValue, forKey: Key.videoGravity)
@@ -157,7 +165,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         /// fabbrica. Usato dal tasto di reset in Impostazioni.
         static func resetToFactoryDefaults() {
             let d = UserDefaults.standard
-            [Key.forwardBuffer, Key.maxBuffer, Key.hardwareDecode, Key.accurateSeek, Key.autoDeInterlace, Key.videoGravity]
+            [Key.forwardBuffer, Key.maxBuffer, Key.hardwareDecode, Key.asyncDecompression, Key.accurateSeek, Key.autoDeInterlace, Key.videoGravity]
                 .forEach { d.removeObject(forKey: $0) }
         }
     }
@@ -411,7 +419,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         options.isAccurateSeek = preferences.isAccurateSeek
         options.autoDeInterlace = preferences.autoDeInterlace
         options.videoDelay = preferences.videoDelay
-        options.asynchronousDecompression = true
+        options.asynchronousDecompression = preferences.asynchronousDecompression
 
         let threadCount = min(ProcessInfo.processInfo.activeProcessorCount, 4)
         options.decoderOptions["threads"] = "\(threadCount)"
@@ -651,6 +659,15 @@ final class KSPlaybackController: NSObject, ObservableObject {
     /// Scelta MANUALE hardware/software (indipendente dal fallback automatico).
     func setHardwareDecode(_ enabled: Bool) {
         preferences.hardwareDecode = enabled
+        PlayerEngineDefaultsStore.save(preferences)
+        reload()
+    }
+
+    /// Decompressione asincrona dei frame: richiede di ricreare il layer
+    /// perche' `KSOptions` si fissa all'apertura (come per la decodifica
+    /// hardware).
+    func setAsynchronousDecompression(_ enabled: Bool) {
+        preferences.asynchronousDecompression = enabled
         PlayerEngineDefaultsStore.save(preferences)
         reload()
     }

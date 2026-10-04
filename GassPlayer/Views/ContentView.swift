@@ -93,6 +93,14 @@ struct ContentView: View {
             await xtreamCatalog.loadIfNeeded(credentials: credentials)
             vpnManager.handleAppBecameActive()
         }
+        // Playlist M3U: il caricamento parte appena la sorgente diventa
+        // attiva (da qualunque scheda), non solo quando si apre la scheda
+        // Live TV/VOD/Serie. Cache in memoria/disco: il cambio è immediato.
+        .task(id: m3uPlaylistURL) {
+            guard let m3uPlaylistURL else { return }
+
+            await m3uStore.loadIfNeeded(url: m3uPlaylistURL)
+        }
     }
 
     @ViewBuilder

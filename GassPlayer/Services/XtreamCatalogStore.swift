@@ -376,6 +376,18 @@ final class XtreamCatalogStore: ObservableObject {
     private var loadedSourceFingerprint: String?
     private var loadingTask: Task<Void, Never>?
 
+    /// Ultimi cataloghi usati, tenuti in memoria (array condivisi, nessuna
+    /// copia): tornare a una playlist appena lasciata è istantaneo, senza
+    /// leggere né decodificare lo snapshot su disco.
+    private var memorySnapshots: [String: PersistentCatalogStore.Snapshot] = [:]
+    private var memorySnapshotOrder: [String] = []
+    private static let memorySnapshotLimit = 3
+
+    /// Sorgenti già aggiornate da rete in questa sessione: "Aggiorna
+    /// all'avvio" vale una volta per avvio e per sorgente, non a ogni
+    /// cambio di playlist (prima ogni switch rifaceva l'intero scaricamento).
+    private var sessionRefreshedFingerprints = Set<String>()
+
     deinit {
         loadingTask?.cancel()
     }
@@ -405,7 +417,9 @@ final class XtreamCatalogStore: ObservableObject {
 
         loadingTask = task
         await task.value
-        loadingTask = nil
+        // Identità: se nel frattempo `reset()` (cambio playlist) ha avviato
+        // un altro caricamento, questo non va azzerato da un task vecchio.
+        if loadingTask == task { loadingTask = nil }
     }
 
     /// Refresh esplicito dell'intero catalogo o della sola sezione indicata.
@@ -457,15 +471,22 @@ final class XtreamCatalogStore: ObservableObject {
 
         loadingTask = task
         await task.value
-        loadingTask = nil
+        if loadingTask == task { loadingTask = nil }
     }
 
     /// Elimina lo snapshot su disco. Usare per "Cancella cache catalogo" in
     /// Impostazioni oppure per rimuovere completamente la sorgente.
     func clearPersistedCache(credentials: XtreamCredentials? = nil) async {
         if let credentials {
-            await persistentStore.remove(sourceFingerprint: Self.sourceFingerprint(credentials))
+            let fingerprint = Self.sourceFingerprint(credentials)
+            memorySnapshots[fingerprint] = nil
+            memorySnapshotOrder.removeAll { $0 == fingerprint }
+            sessionRefreshedFingerprints.remove(fingerprint)
+            await persistentStore.remove(sourceFingerprint: fingerprint)
         } else {
+            memorySnapshots.removeAll()
+            memorySnapshotOrder.removeAll()
+            sessionRefreshedFingerprints.removeAll()
             await persistentStore.removeAll()
         }
     }
@@ -473,6 +494,8 @@ final class XtreamCatalogStore: ObservableObject {
     /// Svuota soltanto lo stato in memoria (logout, rimozione sorgente o
     /// cambio di host/username). Lo snapshot su disco resta disponibile.
     func reset() {
+        stashCurrentCatalogInMemory()
+
         loadingTask?.cancel()
         loadingTask = nil
 
@@ -516,7 +539,7 @@ final class XtreamCatalogStore: ObservableObject {
         credentials: XtreamCredentials,
         fingerprint: String
     ) async {
-        if settings.refreshOnLaunch {
+        if settings.refreshOnLaunch && !sessionRefreshedFingerprints.contains(fingerprint) {
             // Il refresh di rete e' comunque obbligatorio: non ha senso
             // aspettare la lettura dello snapshot per deciderlo. Le due
             // operazioni partono in parallelo; lo snapshot viene applicato
@@ -559,7 +582,14 @@ final class XtreamCatalogStore: ObservableObject {
         credentials: XtreamCredentials,
         fingerprint: String
     ) async {
-        guard let snapshot = await persistentStore.load(sourceFingerprint: fingerprint) else {
+        // Memoria prima del disco: senza `await`, senza decodifica.
+        let snapshot: PersistentCatalogStore.Snapshot
+
+        if let inMemory = memorySnapshots[fingerprint] {
+            snapshot = inMemory
+        } else if let fromDisk = await persistentStore.load(sourceFingerprint: fingerprint) {
+            snapshot = fromDisk
+        } else {
             return
         }
 
@@ -640,6 +670,7 @@ final class XtreamCatalogStore: ObservableObject {
 
         if hasContentNow {
             loadedSourceFingerprint = fingerprint
+            sessionRefreshedFingerprints.insert(fingerprint)
             settings.markRefreshed()
             lastRefreshDate = settings.lastRefreshDate
             state = .loaded
@@ -773,6 +804,36 @@ final class XtreamCatalogStore: ObservableObject {
         var seen = Set<Int>()
         return items.filter { item in
             item.seriesId > 0 && seen.insert(item.seriesId).inserted
+        }
+    }
+
+    /// Conserva in memoria il catalogo attuale prima che `reset()` lo
+    /// svuoti (cambio di playlist): vedi `memorySnapshots`.
+    private func stashCurrentCatalogInMemory() {
+        guard state == .loaded,
+              let fingerprint = loadedSourceFingerprint,
+              !liveStreams.isEmpty || !vodStreams.isEmpty || !seriesItems.isEmpty else {
+            return
+        }
+
+        memorySnapshots[fingerprint] = PersistentCatalogStore.Snapshot(
+            schemaVersion: 1,
+            sourceFingerprint: fingerprint,
+            savedAt: lastRefreshDate ?? Date(),
+            liveCategories: liveCategories,
+            vodCategories: vodCategories,
+            seriesCategories: seriesCategories,
+            liveStreams: liveStreams,
+            vodStreams: vodStreams,
+            seriesItems: seriesItems
+        )
+
+        memorySnapshotOrder.removeAll { $0 == fingerprint }
+        memorySnapshotOrder.append(fingerprint)
+
+        while memorySnapshotOrder.count > Self.memorySnapshotLimit, let oldest = memorySnapshotOrder.first {
+            memorySnapshotOrder.removeFirst()
+            memorySnapshots[oldest] = nil
         }
     }
 

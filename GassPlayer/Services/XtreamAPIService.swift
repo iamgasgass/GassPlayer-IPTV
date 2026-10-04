@@ -121,6 +121,7 @@ actor XtreamAPIService {
             "application/json, text/plain, */*",
             forHTTPHeaderField: "Accept"
         )
+        StreamUserAgents.applyCustom(to: &request)
 
         return request
     }
