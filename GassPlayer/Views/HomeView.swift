@@ -73,6 +73,7 @@ struct HomeView: View {
     @State private var homeMovieTarget: XtreamStream?
     @State private var homeSeriesTarget: XtreamSeriesItem?
     @State private var showTrendingUnavailable = false
+    @State private var showFavoriteUnavailable = false
 
     // Ricerca globale della Home (barra "Ricerca" configurabile da
     // "Personalizza"): tutti i titoli del catalogo della sorgente attiva,
@@ -154,6 +155,11 @@ struct HomeView: View {
                         fallbackCoverURLString: series.cover
                     )
                 }
+            }
+            .alert("Preferito non disponibile", isPresented: $showFavoriteUnavailable) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Questo contenuto non è presente nella sorgente attiva o il catalogo non è ancora stato caricato.")
             }
             .alert("Non disponibile nella tua playlist", isPresented: $showTrendingUnavailable) {
                 Button("OK", role: .cancel) {}
@@ -569,30 +575,92 @@ struct HomeView: View {
         }
     }
 
+    /// Apre il preferito toccato: scheda dettaglio per Film e Serie TV,
+    /// streaming diretto per i canali Live TV. L'id del preferito è
+    /// `host|utente|tipo|idContenuto`: si risolve sul catalogo della
+    /// sorgente attiva (stessa sorgente e stesso utente), altrimenti si
+    /// avvisa invece di non fare nulla.
+    private func openFavorite(_ item: FavoriteItem) {
+        guard let credentials = sourceManager.activeSource?.xtreamCredentials else {
+            showFavoriteUnavailable = true
+            return
+        }
+
+        let parts = item.id.components(separatedBy: "|")
+        let host = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        guard parts.count >= 4, parts[0] == host, parts[1] == credentials.username,
+              let contentID = Int(parts[3]) else {
+            showFavoriteUnavailable = true
+            return
+        }
+
+        switch item.kind {
+        case XtreamStreamKind.series.rawValue:
+            if let series = xtreamCatalog.seriesItems.first(where: { $0.seriesId == contentID }) {
+                homeSeriesTarget = series
+                return
+            }
+
+        case XtreamStreamKind.movie.rawValue:
+            if let movie = xtreamCatalog.vodStreams.first(where: { $0.streamId == contentID }) {
+                homeMovieTarget = movie
+                return
+            }
+
+        case XtreamStreamKind.live.rawValue:
+            if let channel = xtreamCatalog.liveStreams.first(where: { $0.streamId == contentID }) {
+                homeLiveTarget = channel
+                return
+            }
+
+        default:
+            break
+        }
+
+        showFavoriteUnavailable = true
+    }
+
     private func favoriteRow(_ item: FavoriteItem) -> some View {
         GlassCard {
             HStack(spacing: 14) {
-                Image(systemName: homeMenuSelection.systemImage)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(homeMenuSelection.tint)
-                    .frame(width: 44, height: 44)
-                    .background(
-                        homeMenuSelection.tint.opacity(0.16),
-                        in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    )
+                // Tutta la parte sinistra della riga è il tasto che apre il
+                // contenuto; la stella a destra resta un tasto a parte.
+                Button {
+                    openFavorite(item)
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: homeMenuSelection.systemImage)
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(homeMenuSelection.tint)
+                            .frame(width: 44, height: 44)
+                            .background(
+                                homeMenuSelection.tint.opacity(0.16),
+                                in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            )
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.title)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.title)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
 
-                    Text("Aggiunto il \(item.addedAt.formatted(date: .abbreviated, time: .omitted))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                            Text("Aggiunto il \(item.addedAt.formatted(date: .abbreviated, time: .omitted))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer(minLength: 8)
+                    }
+                    .contentShape(Rectangle())
                 }
-
-                Spacer(minLength: 8)
+                .buttonStyle(.plain)
+                .accessibilityLabel(item.title)
+                .accessibilityHint(
+                    item.kind == XtreamStreamKind.live.rawValue
+                        ? "Apre lo streaming diretto"
+                        : "Apre la scheda dettagli"
+                )
 
                 Button {
                     withAnimation(.snappy) {

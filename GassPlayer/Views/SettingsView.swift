@@ -194,20 +194,16 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
+            // Hub: poche voci raggruppate (Playlist, Avanzate, Rete,
+            // Integrazioni, Supporto); il resto vive nelle sottopagine,
+            // aperte solo quando servono.
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 24) {
-                    connectionsSection
-                    playbackSection
-                    appearanceSection
-                    librarySection
-                    catalogSection
-                    historySection
-                    metadataSection
-                    servicesSection
-                    securitySection
-                    diagnosticsSection
-                    dataSection
-                    aboutSection
+                    playlistSection
+                    advancedSection
+                    networkSection
+                    integrationsSection
+                    supportSection
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -224,86 +220,114 @@ struct SettingsView: View {
                     .fontWeight(.semibold)
                 }
             }
-            .confirmationDialog(
-                "Ripristinare le impostazioni di riproduzione?",
-                isPresented: $showResetConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button("Ripristina", role: .destructive) {
-                    resetPlaybackDefaults()
-                }
-                Button("Annulla", role: .cancel) {}
-            } message: {
-                Text(
-                    "Autoplay, ripresa, velocità e opzioni della griglia torneranno ai valori predefiniti. Sorgenti e preferiti non verranno modificati."
-                )
+        }
+        // Dialoghi e fogli sono agganciati allo stack e non alla sola
+        // pagina radice: le azioni (ripristino, import, feedback) partono
+        // dalle sottopagine, e un alert legato alla radice mentre è
+        // aperta un'altra pagina non si presenterebbe in modo affidabile.
+        .confirmationDialog(
+            "Ripristinare le impostazioni di riproduzione?",
+            isPresented: $showResetConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Ripristina", role: .destructive) {
+                resetPlaybackDefaults()
             }
-            .alert(
-                "Impostazioni",
-                isPresented: Binding(
-                    get: { catalogActionFeedback != nil },
-                    set: { isPresented in if !isPresented { catalogActionFeedback = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(catalogActionFeedback ?? "")
-            }
-            .sheet(isPresented: $showImportPreferencesSheet) {
-                ImportPreferencesSheet(text: $importPreferencesText, onImport: importPreferences)
-            }
-            .alert(
-                "Preferenze",
-                isPresented: Binding(
-                    get: { importPreferencesFeedback != nil },
-                    set: { isPresented in if !isPresented { importPreferencesFeedback = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(importPreferencesFeedback ?? "")
-            }
+            Button("Annulla", role: .cancel) {}
+        } message: {
+            Text(
+                "Autoplay, ripresa, velocità e opzioni della griglia torneranno ai valori predefiniti. Sorgenti e preferiti non verranno modificati."
+            )
+        }
+        .alert(
+            "Impostazioni",
+            isPresented: Binding(
+                get: { catalogActionFeedback != nil },
+                set: { isPresented in if !isPresented { catalogActionFeedback = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(catalogActionFeedback ?? "")
+        }
+        .sheet(isPresented: $showImportPreferencesSheet) {
+            ImportPreferencesSheet(text: $importPreferencesText, onImport: importPreferences)
+        }
+        .alert(
+            "Preferenze",
+            isPresented: Binding(
+                get: { importPreferencesFeedback != nil },
+                set: { isPresented in if !isPresented { importPreferencesFeedback = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(importPreferencesFeedback ?? "")
         }
     }
 
-    private var connectionsSection: some View {
+    // MARK: - Hub
+
+    /// Riga di navigazione del hub verso una sottopagina.
+    private func hubLink<Destination: View>(
+        title: String,
+        detail: String,
+        symbol: String,
+        tint: Color,
+        @ViewBuilder destination: () -> Destination
+    ) -> some View {
+        NavigationLink {
+            destination()
+        } label: {
+            SettingsRow(
+                title: title,
+                detail: detail,
+                symbol: symbol,
+                tint: tint,
+                showsChevron: true
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Pagina secondaria: stessa scena (sfondo, margini, card Liquid Glass)
+    /// del hub, titolo in linea con il pulsante indietro.
+    private func settingsPage<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 24) {
+                content()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 32)
+        }
+        .background(background)
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var playlistSection: some View {
         SettingsSection(
-            title: "Connessioni",
-            subtitle: "Sorgenti e sicurezza della rete",
-            symbol: "network",
+            title: "Playlist",
+            subtitle: "Sorgenti e sorgente attiva",
+            symbol: "play.square.stack.fill",
             tint: .blue
         ) {
-            NavigationLink {
+            hubLink(
+                title: "Sorgenti",
+                detail: sourceCountDescription,
+                symbol: "square.stack.3d.up.fill",
+                tint: .blue
+            ) {
                 SourcesView()
-            } label: {
-                SettingsRow(
-                    title: "Sorgenti",
-                    detail: sourceCountDescription,
-                    symbol: "square.stack.3d.up.fill",
-                    tint: .blue,
-                    showsChevron: true
-                )
             }
-            .buttonStyle(.plain)
-
-            SettingsDivider()
-
-            NavigationLink {
-                EPGManageView()
-            } label: {
-                SettingsRow(
-                    title: "Gestisci EPG",
-                    detail: epgManagerDescription,
-                    symbol: "text.book.closed.fill",
-                    tint: .teal,
-                    showsChevron: true
-                )
-            }
-            .buttonStyle(.plain)
-
-            SettingsDivider()
 
             if sourceManager.sources.count > 1 {
+                SettingsDivider()
+
                 Menu {
                     Picker("Sorgente attiva", selection: activeSourceSelection) {
                         ForEach(sourceManager.sources) { source in
@@ -321,22 +345,7 @@ struct SettingsView: View {
                     )
                 }
                 .buttonStyle(.plain)
-
-                SettingsDivider()
             }
-
-            NavigationLink {
-                PersonalVPNView()
-            } label: {
-                SettingsRow(
-                    title: "VPN personale",
-                    detail: "Gestisci connessione e configurazione",
-                    symbol: "lock.shield.fill",
-                    tint: .indigo,
-                    showsChevron: true
-                )
-            }
-            .buttonStyle(.plain)
 
             if sourceManager.sources.isEmpty {
                 SettingsDivider()
@@ -348,6 +357,232 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .padding(.top, 8)
             }
+        }
+    }
+
+    private var advancedSection: some View {
+        SettingsSection(
+            title: "Avanzate",
+            subtitle: "Generale, interfaccia, lettore e backup",
+            symbol: "gearshape.2.fill",
+            tint: .gray
+        ) {
+            hubLink(
+                title: "Generale",
+                detail: "Catalogo e cronologia",
+                symbol: "gearshape.fill",
+                tint: .teal
+            ) {
+                generalPage
+            }
+
+            SettingsDivider()
+
+            hubLink(
+                title: "Interfaccia utente",
+                detail: "Tema e griglia · \(themeManager.theme.rawValue), \(gridDensityName)",
+                symbol: "slider.horizontal.3",
+                tint: .purple
+            ) {
+                interfacePage
+            }
+
+            SettingsDivider()
+
+            hubLink(
+                title: "Lettore video",
+                detail: "Riproduzione, buffer, decodifica e sottotitoli",
+                symbol: "play.rectangle.fill",
+                tint: .red
+            ) {
+                playerPage
+            }
+
+            SettingsDivider()
+
+            hubLink(
+                title: "Backup",
+                detail: "iCloud, esporta e importa",
+                symbol: "icloud.fill",
+                tint: .blue
+            ) {
+                backupPage
+            }
+
+            SettingsDivider()
+
+            hubLink(
+                title: "EPG",
+                detail: epgManagerDescription,
+                symbol: "text.book.closed.fill",
+                tint: .teal
+            ) {
+                EPGManageView()
+            }
+
+            SettingsDivider()
+
+            hubLink(
+                title: "Parental Lock",
+                detail: "Limiti di visione e codice di protezione",
+                symbol: "lock.shield",
+                tint: .orange
+            ) {
+                ParentalLockView()
+            }
+        }
+    }
+
+    private var networkSection: some View {
+        SettingsSection(
+            title: "Rete",
+            subtitle: "VPN, DNS e download",
+            symbol: "network",
+            tint: .indigo
+        ) {
+            hubLink(
+                title: "VPN personale",
+                detail: "Gestisci connessione e configurazione",
+                symbol: "lock.shield.fill",
+                tint: .indigo
+            ) {
+                PersonalVPNView()
+            }
+
+            SettingsDivider()
+
+            Menu {
+                Picker("DNS preferito", selection: $preferredDNS) {
+                    Text("1.1.1.1 · Cloudflare").tag("1.1.1.1")
+                    Text("8.8.8.8 · Google").tag("8.8.8.8")
+                    Text("Automatico di sistema").tag("system")
+                }
+            } label: {
+                SettingsRow(
+                    title: "DNS preferito",
+                    detail: dnsDescription,
+                    symbol: "network",
+                    tint: .mint,
+                    showsChevron: true
+                )
+            }
+            .buttonStyle(.plain)
+
+            SettingsDivider()
+
+            SettingsToggleRow(
+                title: "Download solo Wi-Fi",
+                detail: "Evita l’utilizzo della rete cellulare",
+                symbol: "wifi",
+                tint: .green,
+                isOn: $downloadManager.wifiOnly
+            )
+        }
+    }
+
+    /// Include \"Metadati\": prima non esisteva ALCUN punto della UI per
+    /// inserire una API key TMDB (poster reali, cast, loghi, voti usati
+    /// dalle schede dettaglio); la chiave OMDb è facoltativa (IMDb, Rotten
+    /// Tomatoes, Metacritic nelle valutazioni).
+    private var integrationsSection: some View {
+        SettingsSection(
+            title: "Integrazioni",
+            subtitle: "Trakt, TMDB e OMDb",
+            symbol: "puzzlepiece.extension.fill",
+            tint: .orange
+        ) {
+            hubLink(
+                title: "Trakt.tv",
+                detail: traktAccount.isConnected ? "Connesso" : "Non connesso",
+                symbol: "checkmark.seal.fill",
+                tint: .orange
+            ) {
+                TraktConnectView()
+            }
+
+            SettingsDivider()
+
+            hubLink(
+                title: "TMDB e OMDb",
+                detail: TMDBService.hasAPIKey
+                    ? "TMDB configurato\(OMDbService.hasAPIKey ? " · OMDb configurato" : "")"
+                    : "Nessuna API key configurata",
+                symbol: "key.fill",
+                tint: .indigo
+            ) {
+                MetadataSettingsView()
+            }
+        }
+    }
+
+    private var supportSection: some View {
+        SettingsSection(
+            title: "Supporto",
+            subtitle: "Diagnostica e informazioni",
+            symbol: "lifepreserver.fill",
+            tint: .cyan
+        ) {
+            hubLink(
+                title: "Diagnostica",
+                detail: "Log, rete e cache di sistema",
+                symbol: "wrench.and.screwdriver.fill",
+                tint: .gray
+            ) {
+                diagnosticsPage
+            }
+
+            SettingsDivider()
+
+            hubLink(
+                title: "Informazioni",
+                detail: "Versione \(appVersionString)",
+                symbol: "info.circle.fill",
+                tint: .blue
+            ) {
+                aboutPage
+            }
+        }
+    }
+
+    // MARK: - Sottopagine
+
+    private var generalPage: some View {
+        settingsPage(title: "Impostazioni generali") {
+            catalogSection
+            historySection
+        }
+    }
+
+    private var interfacePage: some View {
+        settingsPage(title: "Impostazioni dell'interfaccia utente") {
+            appearanceSection
+            librarySection
+        }
+    }
+
+    private var playerPage: some View {
+        settingsPage(title: "Impostazioni del player") {
+            playbackSection
+            subtitleSection
+        }
+    }
+
+    private var backupPage: some View {
+        settingsPage(title: "Backup e dispositivi") {
+            cloudSection
+            dataSection
+        }
+    }
+
+    private var diagnosticsPage: some View {
+        settingsPage(title: "Diagnostica") {
+            diagnosticsSection
+        }
+    }
+
+    private var aboutPage: some View {
+        settingsPage(title: "Informazioni") {
+            aboutSection
         }
     }
 
@@ -546,7 +781,7 @@ struct SettingsView: View {
     private var librarySection: some View {
         SettingsSection(
             title: "Libreria",
-            subtitle: "Canali, film, serie e sottotitoli",
+            subtitle: "Griglia di canali, film e serie",
             symbol: "rectangle.grid.2x2.fill",
             tint: .cyan
         ) {
@@ -578,28 +813,6 @@ struct SettingsView: View {
                 tint: .teal,
                 isOn: $showChannelNumbers
             )
-
-            SettingsDivider()
-
-            Menu {
-                Picker(
-                    "Lingua sottotitoli",
-                    selection: $subtitleLanguage
-                ) {
-                    Text("Italiano").tag("it")
-                    Text("English").tag("en")
-                    Text("Español").tag("es")
-                }
-            } label: {
-                SettingsRow(
-                    title: "Lingua sottotitoli",
-                    detail: subtitleLanguageName,
-                    symbol: "captions.bubble.fill",
-                    tint: .blue,
-                    showsChevron: true
-                )
-            }
-            .buttonStyle(.plain)
         }
     }
 
@@ -736,29 +949,29 @@ struct SettingsView: View {
         }
     }
 
-    /// Nuova sezione "Metadati": prima non esisteva ALCUN punto della UI
-    /// per inserire una API key TMDB, rendendo di fatto irraggiungibile
-    /// per l'utente l'arricchimento (poster reali, cast, loghi, voti) già
-    /// implementato in `TMDBService` — e usato dalle schede dettaglio
-    /// film/serie. Aggiunta qui anche la chiave OMDb (facoltativa, per
-    /// IMDb/Rotten Tomatoes/Metacritic nella sezione "VALUTAZIONI").
-    private var metadataSection: some View {
+    /// Sottotitoli: la lingua preferita vive con le impostazioni del player.
+    private var subtitleSection: some View {
         SettingsSection(
-            title: "Metadati",
-            subtitle: "Poster, trame, cast e valutazioni reali",
-            symbol: "sparkles.rectangle.stack",
-            tint: .indigo
+            title: "Sottotitoli",
+            subtitle: "Lingua preferita",
+            symbol: "captions.bubble.fill",
+            tint: .blue
         ) {
-            NavigationLink {
-                MetadataSettingsView()
+            Menu {
+                Picker(
+                    "Lingua sottotitoli",
+                    selection: $subtitleLanguage
+                ) {
+                    Text("Italiano").tag("it")
+                    Text("English").tag("en")
+                    Text("Español").tag("es")
+                }
             } label: {
                 SettingsRow(
-                    title: "TMDB e OMDb",
-                    detail: TMDBService.hasAPIKey
-                        ? "TMDB configurato\(OMDbService.hasAPIKey ? " · OMDb configurato" : "")"
-                        : "Nessuna API key configurata",
-                    symbol: "key.fill",
-                    tint: .indigo,
+                    title: "Lingua sottotitoli",
+                    detail: subtitleLanguageName,
+                    symbol: "captions.bubble.fill",
+                    tint: .blue,
                     showsChevron: true
                 )
             }
@@ -766,12 +979,13 @@ struct SettingsView: View {
         }
     }
 
-    private var servicesSection: some View {
+    /// Sincronizzazione iCloud di sorgenti e preferiti (pagina Backup).
+    private var cloudSection: some View {
         SettingsSection(
-            title: "Servizi",
-            subtitle: "Sincronizzazione, download e rete",
-            symbol: "cloud.fill",
-            tint: .green
+            title: "iCloud",
+            subtitle: "Sincronizzazione di sorgenti e preferiti",
+            symbol: "icloud.fill",
+            tint: .blue
         ) {
             Button {
                 syncToCloud()
@@ -797,72 +1011,6 @@ struct SettingsView: View {
                     symbol: "icloud.and.arrow.down",
                     tint: .blue,
                     showsChevron: false
-                )
-            }
-            .buttonStyle(.plain)
-
-            SettingsDivider()
-
-            SettingsToggleRow(
-                title: "Download solo Wi-Fi",
-                detail: "Evita l’utilizzo della rete cellulare",
-                symbol: "wifi",
-                tint: .green,
-                isOn: $downloadManager.wifiOnly
-            )
-
-            SettingsDivider()
-
-            Menu {
-                Picker("DNS preferito", selection: $preferredDNS) {
-                    Text("1.1.1.1 · Cloudflare").tag("1.1.1.1")
-                    Text("8.8.8.8 · Google").tag("8.8.8.8")
-                    Text("Automatico di sistema").tag("system")
-                }
-            } label: {
-                SettingsRow(
-                    title: "DNS preferito",
-                    detail: dnsDescription,
-                    symbol: "network",
-                    tint: .mint,
-                    showsChevron: true
-                )
-            }
-            .buttonStyle(.plain)
-
-            SettingsDivider()
-
-            NavigationLink {
-                TraktConnectView()
-            } label: {
-                SettingsRow(
-                    title: "Trakt.tv",
-                    detail: traktAccount.isConnected ? "Connesso" : "Non connesso",
-                    symbol: "checkmark.seal.fill",
-                    tint: .orange,
-                    showsChevron: true
-                )
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private var securitySection: some View {
-        SettingsSection(
-            title: "Sicurezza",
-            subtitle: "Protezione dei contenuti",
-            symbol: "checkmark.shield.fill",
-            tint: .orange
-        ) {
-            NavigationLink {
-                ParentalLockView()
-            } label: {
-                SettingsRow(
-                    title: "Parental Lock",
-                    detail: "Limiti di visione e codice di protezione",
-                    symbol: "lock.shield",
-                    tint: .orange,
-                    showsChevron: true
                 )
             }
             .buttonStyle(.plain)
