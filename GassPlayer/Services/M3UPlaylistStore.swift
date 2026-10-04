@@ -100,8 +100,12 @@ final class M3UPlaylistStore: ObservableObject {
         isLoading = true
         loadingURL = url
 
-        let task = Task { [weak self] in
-            await self?.loadFromDiskThenNetwork(url: url, generation: generation)
+        // `guard let self` (e non `self?.`): con la catena opzionale il
+        // task restituirebbe `()?` e non sarebbe assegnabile a
+        // `Task<Void, Never>`.
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.loadFromDiskThenNetwork(url: url, generation: generation)
         }
         loadTask = task
         await task.value
