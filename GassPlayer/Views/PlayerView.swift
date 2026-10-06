@@ -15,6 +15,11 @@ struct PlayerView: View {
     var onPrevious: (() -> Void)?
     var onNext: (() -> Void)?
 
+    /// Rigo sopra il titolo per Serie TV ("Stagione 1 Episodio 3").
+    var subtitle: String?
+    /// Logo/nome canale/programma in onda per la Live TV.
+    var liveInfo: PlayerLiveInfo?
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var controller: KSPlaybackController
@@ -78,6 +83,8 @@ struct PlayerView: View {
     @AppStorage("gassplayer.playback.speed")
     private var preferredPlaybackSpeed = 1.0
     @State private var externalPlayers: [ExternalPlayer] = []
+    @State private var streamBadges = PlayerStreamBadges()
+    @State private var liveProgram: EPGProgram?
     @State private var airPlayRoutePicker: AVRoutePickerView?
 
     private var isAnyModalPresented: Bool {
@@ -86,9 +93,18 @@ struct PlayerView: View {
         || showAspectPicker || showChannelHistory || showChannelSearch
     }
 
-    init(url: URL, title: String, onPrevious: (() -> Void)? = nil, onNext: (() -> Void)? = nil) {
+    init(
+        url: URL,
+        title: String,
+        subtitle: String? = nil,
+        liveInfo: PlayerLiveInfo? = nil,
+        onPrevious: (() -> Void)? = nil,
+        onNext: (() -> Void)? = nil
+    ) {
         self.url = url
         self.title = title
+        self.subtitle = subtitle
+        self.liveInfo = liveInfo
         self.onPrevious = onPrevious
         self.onNext = onNext
         _controller = StateObject(wrappedValue: KSPlaybackController(url: url, title: title))
@@ -149,6 +165,29 @@ struct PlayerView: View {
         }
         .task(id: url) {
             externalPlayers = ExternalPlayer.available(for: url)
+        }
+        // Badge del motore (risoluzione, FPS, audio): letti ogni secondo solo
+        // mentre i controlli sono visibili, non a ogni aggiornamento del
+        // tempo di riproduzione.
+        .task(id: showControls) {
+            guard showControls else { return }
+
+            while !Task.isCancelled {
+                let badges = readStreamBadges()
+                if badges != streamBadges { streamBadges = badges }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+        // Programma in onda del canale (e suo aggiornamento al cambio
+        // programma): si riavvia ad ogni zapping.
+        .task(id: liveInfo?.id) {
+            liveProgram = nil
+            guard let provider = liveInfo?.programProvider else { return }
+
+            while !Task.isCancelled {
+                liveProgram = await provider()
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+            }
         }
         // Permette di aggiornare la STESSA schermata player con un nuovo
         // contenuto (usato da `GlobalSearchView` per non aprire un player
@@ -344,7 +383,7 @@ struct PlayerView: View {
         VStack {
             PlayerTopBar(
                 data: PlayerTopBarData(
-                    title: title,
+                    title: "",
                     isBuffering: controller.isBuffering,
                     supportsPictureInPicture: controller.supportsPictureInPicture,
                     videoGravity: controller.preferences.videoGravity,
@@ -382,8 +421,74 @@ struct PlayerView: View {
             )
             .equatable()
             Spacer()
+            infoBlock
+                .padding(.horizontal)
+                .safeAreaPadding(.horizontal)
             progressBar
         }
+    }
+
+    // MARK: - Blocco titolo e badge
+
+    private var infoBlock: some View {
+        PlayerInfoBlock(
+            title: title,
+            subtitle: subtitle,
+            isLive: controller.isLiveContent,
+            liveInfo: liveInfo,
+            program: liveProgram,
+            badges: badgeTexts
+        )
+    }
+
+    /// Playlist, motore, risoluzione, FPS, audio (solo quelli noti).
+    private var badgeTexts: [String] {
+        var result: [String] = []
+
+        if let name = sourceManager.activeSource?.name, !name.isEmpty {
+            result.append(name.uppercased())
+        }
+
+        result.append(streamBadges.engine)
+
+        if let resolution = streamBadges.resolutionLabel(isLive: controller.isLiveContent) {
+            result.append(resolution)
+        }
+
+        if streamBadges.fps > 0 {
+            result.append("\(streamBadges.fps) FPS")
+        }
+
+        if let audio = streamBadges.audio {
+            result.append(audio)
+        }
+
+        return result
+    }
+
+    private func readStreamBadges() -> PlayerStreamBadges {
+        let player = controller.layer.player
+        var badges = PlayerStreamBadges()
+
+        badges.engine = player is KSAVPlayer ? "AV" : "KS"
+
+        let size = player.naturalSize
+        if size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 {
+            badges.width = Int(size.width.rounded())
+            badges.height = Int(size.height.rounded())
+        }
+
+        let video = controller.videoTracks.first { $0.isEnabled } ?? controller.videoTracks.first
+        if let rate = video?.nominalFrameRate, rate.isFinite, rate > 0 {
+            badges.fps = Int(rate.rounded())
+        }
+
+        let audio = controller.audioTracks.first { $0.isEnabled } ?? controller.audioTracks.first
+        if let channels = audio?.audioStreamBasicDescription?.mChannelsPerFrame {
+            badges.audio = PlayerStreamBadges.audioLabel(channels: Int(channels))
+        }
+
+        return badges
     }
 
     private func triggerAirPlayPicker() {
@@ -589,7 +694,7 @@ struct PlayerView: View {
             // trasporto + testo tempo): 96pt non bastava e il tasto finiva
             // sovrapposto allo slider su alcuni dispositivi. 150pt lascia
             // margine anche in landscape con safe area ridotta.
-            .padding(.bottom, 150)
+            .padding(.bottom, 230)
         }
         .safeAreaPadding()
         .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -775,15 +880,8 @@ struct PlayerTopBar: View, Equatable {
         HStack {
             GlassIconButton(systemImage: "xmark") { actions.dismiss() }
 
-            Spacer(minLength: 8)
-
-            Text(data.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .shadow(radius: 4)
-                .layoutPriority(1)
-
+            // Il titolo non sta più qui (un titolo lungo copriva i tasti):
+            // vive nel blocco in basso a sinistra, vedi `PlayerInfoBlock`.
             Spacer(minLength: 8)
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1125,6 +1223,11 @@ struct AdvancedSettingsView: View {
     @State private var isAccurateSeek: Bool
     @State private var videoDelay: Double
 
+    /// Stesso valore del campo "User Agent" di Impostazioni → Generale
+    /// (stessa chiave): usato da riproduzione, API Xtream, M3U e XMLTV.
+    @AppStorage(StreamUserAgents.customDefaultsKey)
+    private var customUserAgent = ""
+
     init(controller: KSPlaybackController) {
         self.controller = controller
         let prefs = controller.preferences
@@ -1191,6 +1294,18 @@ struct AdvancedSettingsView: View {
                     Text("Sincronizzazione audio/video")
                 } footer: {
                     Text("Se il video anticipa l'audio, sposta verso destra; se lo insegue, sposta verso sinistra.")
+                }
+
+                Section {
+                    TextField("ie. VLC/3.0.18 LibVLC/3.0.18", text: $customUserAgent)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.asciiCapable)
+                        .submitLabel(.done)
+                } header: {
+                    Text("User Agent")
+                } footer: {
+                    Text("Dovrai riavviare l'app per rendere effettive le modifiche all'User-Agent. Vuoto = VLC/3.0.20 predefinito.")
                 }
 
                 Section("Ricerca") {

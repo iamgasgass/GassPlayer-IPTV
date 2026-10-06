@@ -91,7 +91,10 @@ struct SeriesEpisodesView: View {
             if let url = episodeStreamURL(for: episode) {
                 AdaptivePlayerView(
                     url: url,
-                    title: episode.title,
+                    // Titolo grande = serie; sopra, "Stagione X Episodio Y"
+                    // (come nel riferimento del player).
+                    title: seriesName,
+                    subtitle: "Stagione \(episode.season ?? selectedSeason ?? 1) Episodio \(episode.episodeNum)",
                     onPrevious: adjacentEpisode(to: episode, offset: -1).map { target in
                         { selectedEpisode = target }
                     },

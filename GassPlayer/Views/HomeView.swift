@@ -83,6 +83,11 @@ struct HomeView: View {
     @State private var homeSearchLive: [XtreamStream] = []
     @State private var homeSearchMovies: [XtreamStream] = []
     @State private var homeSearchSeries: [XtreamSeriesItem] = []
+    // Ricerca globale quando la sorgente attiva è una playlist M3U/M3U8.
+    @State private var homeSearchM3ULive: [M3UChannel] = []
+    @State private var homeSearchM3UMovies: [M3UChannel] = []
+    @State private var homeSearchM3USeries: [M3UChannel] = []
+    @State private var homeM3UTarget: M3UChannel?
 
     var body: some View {
         NavigationStack {
@@ -102,11 +107,15 @@ struct HomeView: View {
                 if let credentials = sourceManager.activeSource?.xtreamCredentials {
                     EPGGridView(credentials: credentials, kind: .live)
                         .environmentObject(xtreamCatalog)
+                } else if let playlistURL = activeM3UURL {
+                    // Playlist M3U/M3U8: stessa guida, programmi dall'XMLTV.
+                    EPGGridView(m3uSource: EPGGridM3USource(store: m3uStore, playlistURL: playlistURL))
+                        .environmentObject(xtreamCatalog)
                 } else {
                     ContentUnavailableView(
                         "Guida TV non disponibile",
                         systemImage: "tv.slash",
-                        description: Text("Attiva una sorgente Xtream per consultare la guida programmi.")
+                        description: Text("Attiva una sorgente Xtream o una playlist M3U per consultare la guida programmi.")
                     )
                 }
             }
@@ -117,7 +126,7 @@ struct HomeView: View {
                 Button("Vai alle sorgenti") { overlayState.showSettings = true }
                 Button("Annulla", role: .cancel) {}
             } message: {
-                Text("La guida programmi richiede una sorgente Xtream attiva. Aggiungine una dalle Impostazioni.")
+                Text("La guida programmi richiede una sorgente Xtream o una playlist M3U con canali live. Aggiungine una dalle Impostazioni.")
             }
             .sheet(isPresented: $showCustomize) {
                 HomeCustomizeSheet(layout: homeLayout)
@@ -125,7 +134,11 @@ struct HomeView: View {
             .fullScreenCover(item: $homeLiveTarget) { stream in
                 if let credentials = sourceManager.activeSource?.xtreamCredentials,
                    let url = XtreamAPIService(credentials: credentials).streamURL(for: stream, kind: .live) {
-                    AdaptivePlayerView(url: url, title: stream.name)
+                    AdaptivePlayerView(
+                        url: url,
+                        title: stream.name,
+                        liveInfo: .xtream(stream: stream, credentials: credentials)
+                    )
                         .task {
                             recentlyWatched.record(
                                 id: credentials.favoriteID(kind: .live, streamId: stream.streamId),
@@ -138,6 +151,23 @@ struct HomeView: View {
                     ContentUnavailableView(
                         "URL dello stream non valido",
                         systemImage: "exclamationmark.triangle"
+                    )
+                }
+            }
+            .fullScreenCover(item: $homeM3UTarget) { channel in
+                AdaptivePlayerView(
+                    url: channel.streamURL,
+                    title: channel.title,
+                    liveInfo: channel.kind == .live
+                        ? .m3u(channel: channel, store: m3uStore, baseHost: activeM3UURL?.absoluteString ?? "")
+                        : nil
+                )
+                .task(id: channel.id) {
+                    recentlyWatched.record(
+                        id: "\(activeM3UURL?.absoluteString ?? "")-\(channel.id)",
+                        title: channel.title,
+                        kind: channel.kind.rawValue,
+                        streamURL: channel.streamURL
                     )
                 }
             }
@@ -227,6 +257,27 @@ struct HomeView: View {
         }
     }
 
+    // MARK: - Playlist M3U attiva
+
+    /// URL della playlist se la sorgente attiva è M3U/M3U8 (stessa
+    /// validazione usata da `ContentView`).
+    private var activeM3UURL: URL? {
+        guard let source = sourceManager.activeSource, source.type == .m3u8 else { return nil }
+
+        let normalized = source.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: normalized),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+
+        return url
+    }
+
+    private var m3uHasLiveChannels: Bool {
+        !(m3uStore.snapshot.channelsByKind[.live] ?? []).isEmpty
+    }
+
     // MARK: - Ricerca globale
 
     private var trimmedHomeSearch: String {
@@ -251,6 +302,9 @@ struct HomeView: View {
             homeSearchLive = []
             homeSearchMovies = []
             homeSearchSeries = []
+            homeSearchM3ULive = []
+            homeSearchM3UMovies = []
+            homeSearchM3USeries = []
             homeSearchAppliedQuery = ""
             return
         }
@@ -259,6 +313,37 @@ struct HomeView: View {
         guard !Task.isCancelled else { return }
 
         let tokens = CatalogSearch.tokens(query)
+
+        // Sorgente M3U/M3U8: stessa ricerca globale sui canali della playlist.
+        if activeM3UURL != nil {
+            let snapshot = m3uStore.snapshot
+            let live = snapshot.channelsByKind[.live] ?? []
+            let movies = snapshot.channelsByKind[.movie] ?? []
+            let series = snapshot.channelsByKind[.series] ?? []
+
+            async let foundLive = Task.detached(priority: .userInitiated) {
+                CatalogSearch.filter(live, tokens: tokens) { $0.title }
+            }.value
+            async let foundMovies = Task.detached(priority: .userInitiated) {
+                CatalogSearch.filter(movies, tokens: tokens) { $0.title }
+            }.value
+            async let foundSeries = Task.detached(priority: .userInitiated) {
+                CatalogSearch.filter(series, tokens: tokens) { $0.title }
+            }.value
+
+            let (liveResult, movieResult, seriesResult) = await (foundLive, foundMovies, foundSeries)
+            guard !Task.isCancelled else { return }
+
+            homeSearchM3ULive = liveResult
+            homeSearchM3UMovies = movieResult
+            homeSearchM3USeries = seriesResult
+            homeSearchLive = []
+            homeSearchMovies = []
+            homeSearchSeries = []
+            homeSearchAppliedQuery = query
+            return
+        }
+
         let live = xtreamCatalog.liveStreams
         let movies = xtreamCatalog.vodStreams
         let series = xtreamCatalog.seriesItems
@@ -295,9 +380,53 @@ struct HomeView: View {
             ProgressView()
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 48)
-        } else if homeSearchLive.isEmpty && homeSearchMovies.isEmpty && homeSearchSeries.isEmpty {
+        } else if homeSearchLive.isEmpty && homeSearchMovies.isEmpty && homeSearchSeries.isEmpty
+                    && homeSearchM3ULive.isEmpty && homeSearchM3UMovies.isEmpty && homeSearchM3USeries.isEmpty {
             ContentUnavailableView.search(text: trimmedHomeSearch)
                 .padding(.vertical, 32)
+        } else if let playlistURL = activeM3UURL {
+            let baseHost = playlistURL.absoluteString
+
+            LazyVStack(alignment: .leading, spacing: 24) {
+                searchGroup(title: "Live TV", count: homeSearchM3ULive.count) {
+                    ForEach(homeSearchM3ULive) { channel in
+                        searchRow(
+                            title: channel.title,
+                            subtitle: channel.groupTitle ?? "Live TV",
+                            image: channel.logoURL,
+                            baseHost: baseHost,
+                            isPoster: false,
+                            symbol: "tv"
+                        ) { homeM3UTarget = channel }
+                    }
+                }
+
+                searchGroup(title: "Film", count: homeSearchM3UMovies.count) {
+                    ForEach(homeSearchM3UMovies) { channel in
+                        searchRow(
+                            title: channel.title,
+                            subtitle: channel.groupTitle ?? "Film",
+                            image: channel.logoURL,
+                            baseHost: baseHost,
+                            isPoster: true,
+                            symbol: "film"
+                        ) { homeM3UTarget = channel }
+                    }
+                }
+
+                searchGroup(title: "Serie TV", count: homeSearchM3USeries.count) {
+                    ForEach(homeSearchM3USeries) { channel in
+                        searchRow(
+                            title: channel.title,
+                            subtitle: channel.groupTitle ?? "Serie TV",
+                            image: channel.logoURL,
+                            baseHost: baseHost,
+                            isPoster: true,
+                            symbol: "rectangle.stack.fill"
+                        ) { homeM3UTarget = channel }
+                    }
+                }
+            }
         } else if let credentials = sourceManager.activeSource?.xtreamCredentials {
             LazyVStack(alignment: .leading, spacing: 24) {
                 searchGroup(title: "Live TV", count: homeSearchLive.count) {
@@ -978,9 +1107,9 @@ struct HomeView: View {
     }
 
     private var guidaTVSubtitle: String {
-        guard hasActiveSource else { return "Disponibile con una sorgente Xtream" }
-        guard sourceManager.activeSource?.xtreamCredentials != nil else {
-            return "Richiede una sorgente Xtream attiva"
+        guard hasActiveSource else { return "Disponibile con una sorgente Xtream o M3U" }
+        guard sourceManager.activeSource?.xtreamCredentials != nil || activeM3UURL != nil else {
+            return "Richiede una sorgente Xtream o M3U attiva"
         }
 
         return epgManager.autoUpdateEnabled
@@ -989,7 +1118,8 @@ struct HomeView: View {
     }
 
     private func openGuidaTV() {
-        if sourceManager.activeSource?.xtreamCredentials != nil {
+        if sourceManager.activeSource?.xtreamCredentials != nil
+            || (activeM3UURL != nil && m3uHasLiveChannels) {
             showGuidaTV = true
         } else {
             showGuidaTVUnavailableAlert = true

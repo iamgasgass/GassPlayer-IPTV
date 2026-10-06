@@ -138,7 +138,11 @@ struct ChannelsView: View {
             }
             .fullScreenCover(item: $selectedStream) { stream in
                 if let url = service.streamURL(for: stream, kind: kind) {
-                    AdaptivePlayerView(url: url, title: stream.name)
+                    AdaptivePlayerView(
+                        url: url,
+                        title: stream.name,
+                        liveInfo: kind == .live ? .xtream(stream: stream, credentials: credentials) : nil
+                    )
                 }
             }
             .navigationDestination(item: $selectedSeries) { series in

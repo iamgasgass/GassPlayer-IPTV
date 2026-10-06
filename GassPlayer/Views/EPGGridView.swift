@@ -1,4 +1,6 @@
 import SwiftUI
+import Combine
+import UIKit
 
 /// Stile dell'aspetto dell'interfaccia EPG selezionabile dall'utente
 enum EPGLayoutDensity: String, CaseIterable, Identifiable {
@@ -118,10 +120,170 @@ enum EPGChannelCardStyle: String, CaseIterable, Identifiable {
 ///   (case-insensitive) come sinonimo di "FHD": viene estratto e mostrato con la stessa
 ///   identica pillola (bordo sottile, nessun riempimento) usata per 4K/FHD/HD/SD, invece di
 ///   restare testo semplice in coda al nome canale. Nessun'altra logica è stata toccata.
+// MARK: - Playlist M3U come sorgente della guida
+
+/// Una playlist M3U/M3U8 vista dalla guida EPG: i canali live diventano
+/// `XtreamStream` "sintetici" (id numerico stabile derivato dall'id del
+/// canale) e i gruppi diventano `XtreamCategory`, così la griglia, i filtri
+/// per gruppo, la ricerca e i preferiti funzionano senza duplicare il codice.
+/// I programmi arrivano dall'XMLTV già caricato da `M3UPlaylistStore` (nessuna
+/// rete in griglia); la riproduzione in differita non esiste per le M3U.
+@MainActor
+struct EPGGridM3USource {
+    let store: M3UPlaylistStore
+    let playlistURL: URL
+    let streams: [XtreamStream]
+    let categories: [XtreamCategory]
+    private let channelsByStreamID: [Int: M3UChannel]
+
+    init(store: M3UPlaylistStore, playlistURL: URL) {
+        self.store = store
+        self.playlistURL = playlistURL
+
+        let live = store.snapshot.channelsByKind[.live] ?? []
+        var used = Set<Int>()
+        var streams: [XtreamStream] = []
+        var categories: [XtreamCategory] = []
+        var seenGroups = Set<String>()
+        var map: [Int: M3UChannel] = [:]
+        streams.reserveCapacity(live.count)
+        map.reserveCapacity(live.count)
+
+        for channel in live {
+            var id = Self.stableID(channel.id)
+            // Collisione (rarissima): si prende il primo id libero.
+            while used.contains(id) { id = id % 0x3FFF_FFFF + 1 }
+            used.insert(id)
+
+            let group = channel.groupTitle?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nonEmpty
+
+            if let group, seenGroups.insert(group).inserted {
+                categories.append(XtreamCategory(categoryId: group, categoryName: group))
+            }
+
+            streams.append(
+                XtreamStream(
+                    streamId: id,
+                    name: channel.title,
+                    streamIcon: channel.logoURL,
+                    categoryId: group,
+                    containerExtension: nil
+                )
+            )
+            map[id] = channel
+        }
+
+        self.streams = streams
+        self.categories = categories
+        self.channelsByStreamID = map
+    }
+
+    /// FNV-1a a 64 bit ridotto a un intero positivo di 30 bit.
+    private static func stableID(_ text: String) -> Int {
+        let hash = text.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { partial, byte in
+            (partial ^ UInt64(byte)) &* UInt64(1_099_511_628_211)
+        }
+        return Int(truncatingIfNeeded: hash & 0x3FFF_FFFF) + 1
+    }
+
+    func channel(for streamID: Int) -> M3UChannel? {
+        channelsByStreamID[streamID]
+    }
+
+    func programs(for streamID: Int) -> [EPGProgram] {
+        channelsByStreamID[streamID].map { store.programs(for: $0) } ?? []
+    }
+
+    /// Host/URL base per risolvere loghi con percorso relativo.
+    var baseHost: String { playlistURL.absoluteString }
+
+    var scopeKey: String {
+        let digest = "m3u|\(playlistURL.absoluteString.lowercased())".utf8
+            .reduce(UInt64(14_695_981_039_346_656_037)) { partial, byte in
+                (partial ^ UInt64(byte)) &* UInt64(1_099_511_628_211)
+            }
+        return String(digest, radix: 16)
+    }
+}
+
+/// Logo del canale nel banner della guida: lettura SINCRONA dalla cache
+/// condivisa delle immagini (come le griglie) così, quando una riga viene
+/// ricostruita durante lo scroll, il logo c'è già al primo frame invece di
+/// ripartire da zero come faceva `AsyncImage`.
+private struct EPGBannerLogo: View {
+    let urlString: String?
+    let baseHost: String
+    let padding: CGFloat
+    let fallbackSize: CGFloat
+
+    private let resolvedURL: URL?
+    @State private var image: UIImage?
+
+    init(urlString: String?, baseHost: String, padding: CGFloat, fallbackSize: CGFloat) {
+        self.urlString = urlString
+        self.baseHost = baseHost
+        self.padding = padding
+        self.fallbackSize = fallbackSize
+
+        let url = PosterImageStore.url(from: urlString, baseHost: baseHost)
+        resolvedURL = url
+        _image = State(initialValue: url.flatMap { PosterImageStore.cachedImage(for: $0) })
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .renderingMode(.original)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(padding)
+            } else {
+                Image(systemName: "play.tv.fill")
+                    .renderingMode(.original)
+                    .font(.system(size: fallbackSize))
+                    .foregroundStyle(.white)
+            }
+        }
+        .task(id: resolvedURL) {
+            guard image == nil, let url = resolvedURL else { return }
+            guard let loaded = await PosterDownloader.shared.image(for: url), !Task.isCancelled else { return }
+
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { image = loaded }
+        }
+    }
+}
+
+/// Riga della guida che si ridisegna SOLO quando cambia la sua chiave
+/// (programmi, densità, stile, minuto corrente, preferito...): gli
+/// aggiornamenti di altre righe (es. un canale che riceve i programmi) non
+/// fanno più rivalutare e ridisegnare le decine di tile già a schermo, che
+/// era la causa degli scatti a scroll e durante il caricamento dell'EPG.
+private struct EPGEquatableRow<Content: View>: View, Equatable {
+    let key: Int
+    let content: () -> Content
+
+    static func == (lhs: EPGEquatableRow<Content>, rhs: EPGEquatableRow<Content>) -> Bool {
+        lhs.key == rhs.key
+    }
+
+    var body: some View {
+        content()
+    }
+}
+
 struct EPGGridView: View {
-    let credentials: XtreamCredentials
+    /// `nil` quando la guida è aperta su una playlist M3U (vedi `m3uSource`).
+    let credentials: XtreamCredentials?
     let kind: XtreamStreamKind
     var onPlayLive: ((XtreamStream) -> Void)? = nil
+    /// Sorgente M3U: ricostruita dopo "Ricarica" (i canali possono cambiare).
+    @State private var m3uSource: EPGGridM3USource?
+    private let scopeKeyValue: String
 
     @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
     @Environment(\.dismiss) private var dismiss
@@ -148,6 +310,8 @@ struct EPGGridView: View {
     @State private var renderLimit = 32
     @State private var reloadTaskBox = TaskBox()
     @State private var didAppear = false
+    @State private var groupMemo = GroupMemo()
+    @State private var streamMemo = StreamMemo()
 
     // MARK: - Parametri di tempo & concorrenza (INVARIATI)
     private let renderPageSize = 32
@@ -270,9 +434,23 @@ struct EPGGridView: View {
         self.credentials = credentials
         self.kind = kind
         self.onPlayLive = onPlayLive
-        _favorites = StateObject(
-            wrappedValue: EPGFavoritesStore(scopeKey: Self.scopeKey(for: credentials))
-        )
+        _m3uSource = State(initialValue: nil)
+        let scope = Self.scopeKey(for: credentials)
+        scopeKeyValue = scope
+        _favorites = StateObject(wrappedValue: EPGFavoritesStore(scopeKey: scope))
+    }
+
+    /// Guida di una playlist M3U/M3U8 (canali live con XMLTV).
+    init(
+        m3uSource: EPGGridM3USource,
+        onPlayLive: ((XtreamStream) -> Void)? = nil
+    ) {
+        credentials = nil
+        kind = .live
+        self.onPlayLive = onPlayLive
+        _m3uSource = State(initialValue: m3uSource)
+        scopeKeyValue = m3uSource.scopeKey
+        _favorites = StateObject(wrappedValue: EPGFavoritesStore(scopeKey: m3uSource.scopeKey))
     }
 
     private final class TaskBox {
@@ -388,15 +566,28 @@ struct EPGGridView: View {
     // MARK: - Sorgenti Dati Centralizzate
 
     private var streams: [XtreamStream] {
-        xtreamCatalog.streams(for: kind)
+        if let m3uSource { return m3uSource.streams }
+        return xtreamCatalog.streams(for: kind)
     }
 
     private var liveCategories: [XtreamCategory] {
-        xtreamCatalog.categories(for: .live)
+        if let m3uSource { return m3uSource.categories }
+        return xtreamCatalog.categories(for: .live)
     }
 
     private var isCatalogStillLoading: Bool {
-        streams.isEmpty && (xtreamCatalog.state == .loading || xtreamCatalog.state == .idle)
+        if let m3uSource { return streams.isEmpty && m3uSource.store.isLoading }
+        return streams.isEmpty && (xtreamCatalog.state == .loading || xtreamCatalog.state == .idle)
+    }
+
+    private var m3uEPGRevisionPublisher: AnyPublisher<Int, Never> {
+        guard let m3uSource else { return Empty<Int, Never>().eraseToAnyPublisher() }
+        return m3uSource.store.$epgRevision.dropFirst().eraseToAnyPublisher()
+    }
+
+    /// Host per risolvere i loghi con percorso relativo.
+    private var imageBaseHost: String {
+        m3uSource?.baseHost ?? credentials?.host ?? ""
     }
 
     private var normalizedSelectedGroupID: String? {
@@ -405,7 +596,69 @@ struct EPGGridView: View {
         return normalized.isEmpty ? nil : normalized
     }
 
+    /// Impronta leggera del catalogo (numero e alcuni id): sostituisce la
+    /// vecchia `streams.map(\.streamId)` che ad ogni valutazione di `body`
+    /// allocava e confrontava un array con TUTTI gli id (migliaia di canali).
+    private struct CatalogSignature: Equatable {
+        let count: Int
+        let first: Int
+        let middle: Int
+        let last: Int
+    }
+
+    private var catalogSignature: CatalogSignature {
+        let all = streams
+        guard !all.isEmpty else { return CatalogSignature(count: 0, first: 0, middle: 0, last: 0) }
+        return CatalogSignature(
+            count: all.count,
+            first: all[0].streamId,
+            middle: all[all.count / 2].streamId,
+            last: all[all.count - 1].streamId
+        )
+    }
+
+    private final class GroupMemo {
+        var signature: CatalogSignature?
+        var categoryCount = -1
+        var groups: [XtreamCategory] = []
+        var counts: [String: Int] = [:]
+    }
+
+    private final class StreamMemo {
+        var key: Int?
+        var value: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String)?
+    }
+
+    /// Gruppi e conteggi: una sola scansione del catalogo per cambio di
+    /// catalogo (prima era O(canali) ad ogni render, anche durante lo scroll
+    /// quando l'EPG aggiornava lo stato).
     private var groupData: (groups: [XtreamCategory], counts: [String: Int], name: String, icon: String) {
+        let signature = catalogSignature
+        let categoriesNow = liveCategories
+
+        if groupMemo.signature != signature || groupMemo.categoryCount != categoriesNow.count {
+            let computed = computeGroupBase(categories: categoriesNow)
+            groupMemo.signature = signature
+            groupMemo.categoryCount = categoriesNow.count
+            groupMemo.groups = computed.groups
+            groupMemo.counts = computed.counts
+        }
+
+        let groups = groupMemo.groups
+        let currentGroupName: String
+        let currentGroupIcon: String
+        if let targetID = normalizedSelectedGroupID, let found = groups.first(where: { $0.categoryId == targetID }) {
+            currentGroupName = found.categoryName
+            currentGroupIcon = Self.groupIcon(for: found.categoryName)
+        } else {
+            currentGroupName = "Tutti"
+            currentGroupIcon = "square.grid.2x2"
+        }
+
+        return (groups, groupMemo.counts, currentGroupName, currentGroupIcon)
+    }
+
+    private func computeGroupBase(categories: [XtreamCategory]) -> (groups: [XtreamCategory], counts: [String: Int]) {
         var counts: [String: Int] = [:]
         var seenIDs = Set<String>()
         var orderedIDs: [String] = []
@@ -420,23 +673,16 @@ struct EPGGridView: View {
             }
         }
 
+        // `uniquingKeysWith`: due categorie con lo stesso id non fanno più crashare
+        // (`uniqueKeysWithValues` va in trap sui duplicati).
         let categoryByID = Dictionary(
-            uniqueKeysWithValues: liveCategories.map { ($0.categoryId, $0) }
+            categories.map { ($0.categoryId, $0) },
+            uniquingKeysWith: { first, _ in first }
         )
 
         let groups = orderedIDs.compactMap { categoryByID[$0] }
 
-        let currentGroupName: String
-        let currentGroupIcon: String
-        if let targetID = normalizedSelectedGroupID, let found = groups.first(where: { $0.categoryId == targetID }) {
-            currentGroupName = found.categoryName
-            currentGroupIcon = Self.groupIcon(for: found.categoryName)
-        } else {
-            currentGroupName = "Tutti"
-            currentGroupIcon = "square.grid.2x2"
-        }
-
-        return (groups, counts, currentGroupName, currentGroupIcon)
+        return (groups, counts)
     }
 
     private var groupSelectionBinding: Binding<String?> {
@@ -453,7 +699,34 @@ struct EPGGridView: View {
         // automaticamente `scheduleReload(debounced: true)` tramite l'onChange dedicato.
     }
 
+    /// Elenco filtrato/paginato memorizzato: si ricalcola solo se cambiano
+    /// filtri, pagina, giorno, preferiti o catalogo (prima ad ogni render, con
+    /// filtro di testo su migliaia di nomi).
     private var streamData: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String) {
+        var hasher = Hasher()
+        hasher.combine(searchQuery)
+        hasher.combine(normalizedSelectedGroupID)
+        hasher.combine(showFavoritesOnly)
+        hasher.combine(renderLimit)
+        hasher.combine(selectedDayOffset)
+        hasher.combine(favorites.favoriteStreamIDs.count)
+        hasher.combine(favorites.favoriteStreamIDs.reduce(0, ^))
+        let sig = catalogSignature
+        hasher.combine(sig.count)
+        hasher.combine(sig.first)
+        hasher.combine(sig.middle)
+        hasher.combine(sig.last)
+        let key = hasher.finalize()
+
+        if streamMemo.key == key, let cached = streamMemo.value { return cached }
+
+        let computed = computeStreamData()
+        streamMemo.key = key
+        streamMemo.value = computed
+        return computed
+    }
+
+    private func computeStreamData() -> (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String) {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let groupID = normalizedSelectedGroupID
         let isFiltering = !query.isEmpty || groupID != nil || showFavoritesOnly
@@ -489,7 +762,7 @@ struct EPGGridView: View {
     /// Scope di cache che include anche il giorno selezionato, per evitare che dati
     /// di un giorno diverso vengano riusati/mostrati come validi per la finestra corrente.
     private var cacheScope: String {
-        "\(Self.scopeKey(for: credentials))|d\(selectedDayOffset)"
+        "\(scopeKeyValue)|d\(selectedDayOffset)"
     }
 
     // MARK: - Geometria Temporale
@@ -592,7 +865,11 @@ struct EPGGridView: View {
                     .presentationBackground(.thinMaterial)
                 }
                 .fullScreenCover(item: $livePlayback) { item in
-                    AdaptivePlayerView(url: item.url, title: item.stream.name)
+                    AdaptivePlayerView(
+                        url: item.url,
+                        title: item.stream.name,
+                        liveInfo: liveInfo(for: item.stream)
+                    )
                 }
                 .fullScreenCover(item: $catchupPlayback) { playback in
                     AdaptivePlayerView(url: playback.url, title: playback.title)
@@ -612,7 +889,7 @@ struct EPGGridView: View {
                     didAppear = true
                     scheduleReload()
                 }
-                .onChange(of: streams.map(\.streamId)) { _, _ in
+                .onChange(of: catalogSignature) { _, _ in
                     if currentStreamData.paged.isEmpty {
                         renderLimit = min(renderPageSize, max(streams.count, 1))
                     }
@@ -641,6 +918,11 @@ struct EPGGridView: View {
                 }
                 .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
                     now = date
+                }
+                // Playlist M3U: quando l'XMLTV arriva (o si aggiorna) i programmi
+                // si rileggono dallo store.
+                .onReceive(m3uEPGRevisionPublisher) { _ in
+                    scheduleReload(forceRefresh: true, debounced: true)
                 }
                 .onDisappear {
                     reloadTaskBox.task?.cancel()
@@ -783,10 +1065,44 @@ struct EPGGridView: View {
 
     // MARK: - Righe Canali e Tile Programmi
 
+    /// Chiave di ridisegno di una riga: tutto ciò da cui dipende il suo aspetto.
+    private func rowKey(for stream: XtreamStream, programs: [EPGProgram], extra: [Bool] = []) -> Int {
+        var hasher = Hasher()
+        hasher.combine(stream.streamId)
+        hasher.combine(stream.name)
+        hasher.combine(stream.streamIcon)
+        hasher.combine(layoutDensity.rawValue)
+        hasher.combine(channelCardStyle.rawValue)
+        hasher.combine(tileColorStyle.rawValue)
+        hasher.combine(Int(now.timeIntervalSince1970 / 60))
+        hasher.combine(selectedDayOffset)
+        hasher.combine(programs.count)
+        for program in programs {
+            hasher.combine(program.id)
+            hasher.combine(program.start)
+            hasher.combine(program.end)
+            hasher.combine(program.title)
+        }
+        for flag in extra { hasher.combine(flag) }
+        return hasher.finalize()
+    }
+
     private func timelineRow(for stream: XtreamStream) -> some View {
         let programs = visiblePrograms(for: stream)
+        let key = rowKey(
+            for: stream,
+            programs: programs,
+            extra: [loadingStreamIDs.contains(stream.streamId), failedStreamIDs.contains(stream.streamId)]
+        )
 
-        return ZStack(alignment: .leading) {
+        return EPGEquatableRow(key: key) {
+            timelineRowContent(for: stream, programs: programs)
+        }
+        .equatable()
+    }
+
+    private func timelineRowContent(for stream: XtreamStream, programs: [EPGProgram]) -> some View {
+        ZStack(alignment: .leading) {
             if programs.isEmpty {
                 unavailableBlock(for: stream)
             } else {
@@ -807,6 +1123,20 @@ struct EPGGridView: View {
 
     /// Banner Canale Adattivo con avvio immediato a latenza zero
     private func channelBanner(_ stream: XtreamStream) -> some View {
+        let programs = visiblePrograms(for: stream)
+        let key = rowKey(
+            for: stream,
+            programs: programs.filter(\.hasArchive),
+            extra: [favorites.isFavorite(stream.streamId)]
+        )
+
+        return EPGEquatableRow(key: key) {
+            channelBannerContent(stream)
+        }
+        .equatable()
+    }
+
+    private func channelBannerContent(_ stream: XtreamStream) -> some View {
         let channelColor = tileColorStyle == .dark ? Self.darkBannerColor : Self.adaptivePastelColor(for: stream)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 14 : 16
 
@@ -818,20 +1148,12 @@ struct EPGGridView: View {
                     .fill(channelColor)
 
                 if let icon = stream.streamIcon, !icon.isEmpty {
-                    AsyncImage(url: URL(string: icon)) { phase in
-                        if case .success(let image) = phase {
-                            image
-                                .renderingMode(.original)
-                                .resizable()
-                                .scaledToFit()
-                                .padding(layoutDensity == .compact ? 8 : 12)
-                        } else {
-                            Image(systemName: "play.tv.fill")
-                                .renderingMode(.original)
-                                .font(.system(size: layoutDensity == .compact ? 22 : 26))
-                                .foregroundStyle(.white)
-                        }
-                    }
+                    EPGBannerLogo(
+                        urlString: icon,
+                        baseHost: imageBaseHost,
+                        padding: layoutDensity == .compact ? 8 : 12,
+                        fallbackSize: layoutDensity == .compact ? 22 : 26
+                    )
                 } else {
                     Image(systemName: "play.tv.fill")
                         .renderingMode(.original)
@@ -1550,7 +1872,25 @@ struct EPGGridView: View {
         }
     }
 
+    /// Contesto del canale per il blocco informativo del player (logo,
+    /// programma in onda, badge): Xtream dalla breve EPG, M3U dall'XMLTV.
+    private func liveInfo(for stream: XtreamStream) -> PlayerLiveInfo? {
+        if let m3uSource {
+            guard let channel = m3uSource.channel(for: stream.streamId) else { return nil }
+            return .m3u(channel: channel, store: m3uSource.store, baseHost: m3uSource.baseHost)
+        }
+
+        guard let credentials else { return nil }
+        return .xtream(stream: stream, credentials: credentials)
+    }
+
     private func makeLiveStreamURL(for stream: XtreamStream) -> URL? {
+        if let m3uSource {
+            return m3uSource.channel(for: stream.streamId)?.streamURL
+        }
+
+        guard let credentials else { return nil }
+
         let rawHost = credentials.host
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -1582,6 +1922,12 @@ struct EPGGridView: View {
     }
 
     private func playCatchup(program: EPGProgram, stream: XtreamStream) {
+        // Le playlist M3U non hanno la riproduzione in differita.
+        guard let credentials else {
+            reminderToast = "La riproduzione in differita non è disponibile per questa playlist."
+            return
+        }
+
         let service = EPGService(credentials: credentials)
         let duration = max(1, Int(program.end.timeIntervalSince(program.start) / 60))
         let request = CatchupRequest(
@@ -1612,6 +1958,15 @@ struct EPGGridView: View {
     }
 
     private func refreshAll() async {
+        if let m3uSource {
+            // Playlist + XMLTV di nuovo; poi la guida si rilegge dai nuovi dati.
+            await m3uSource.store.reload(url: m3uSource.playlistURL)
+            self.m3uSource = EPGGridM3USource(store: m3uSource.store, playlistURL: m3uSource.playlistURL)
+            await reloadEPG(forceRefresh: true)
+            return
+        }
+
+        guard let credentials else { return }
         await xtreamCatalog.refresh(credentials: credentials, kind: kind)
         await reloadEPG(forceRefresh: true)
     }
@@ -1659,6 +2014,23 @@ struct EPGGridView: View {
             showLoadingIndicator = false
             return
         }
+
+        // Playlist M3U: i programmi sono già in memoria (XMLTV), nessuna rete.
+        if let m3uSource {
+            for stream in targets {
+                let programs = m3uSource.programs(for: stream.streamId)
+                programsByStream[stream.streamId] = programs
+                if programs.isEmpty {
+                    failedStreamIDs.insert(stream.streamId)
+                } else {
+                    failedStreamIDs.remove(stream.streamId)
+                }
+            }
+            showLoadingIndicator = false
+            return
+        }
+
+        guard let credentials else { return }
 
         hydrateVisibleProgramsFromCache(for: targets)
 
@@ -1713,31 +2085,62 @@ struct EPGGridView: View {
                     }
                 }
 
+                // Gli esiti si accumulano e si applicano a gruppi (al massimo ogni
+                // ~120 ms) invece di una scrittura di stato per canale: con 24
+                // richieste per batch erano fino a 72 rivalutazioni dell'intera
+                // griglia, percepite come scatti nello scroll mentre l'EPG si carica.
+                var pendingPrograms: [Int: [EPGProgram]] = [:]
+                var pendingFailed = Set<Int>()
+                var pendingSucceeded = Set<Int>()
+                var pendingDone = Set<Int>()
+                var lastFlush = Date()
+
+                func flush() {
+                    guard !pendingDone.isEmpty else { return }
+
+                    for (id, programs) in pendingPrograms {
+                        programsByStream[id] = programs
+                    }
+                    failedStreamIDs.formUnion(pendingFailed)
+                    failedStreamIDs.subtract(pendingSucceeded)
+                    loadingStreamIDs.subtract(pendingDone)
+
+                    pendingPrograms.removeAll(keepingCapacity: true)
+                    pendingFailed.removeAll(keepingCapacity: true)
+                    pendingSucceeded.removeAll(keepingCapacity: true)
+                    pendingDone.removeAll(keepingCapacity: true)
+                    lastFlush = Date()
+                }
+
                 for await (streamID, result) in group {
                     // Applichiamo SEMPRE il risultato ricevuto, anche se il Task esterno
                     // è stato nel frattempo cancellato: il fetch è già stato eseguito,
                     // scartarne l'esito lascerebbe lo stream bloccato in uno stato
                     // ambiguo (né loading, né failed, né caricato) — la causa esatta
                     // della regressione "Dati non disponibili" osservata in produzione.
-                    loadingStreamIDs.remove(streamID)
+                    pendingDone.insert(streamID)
 
                     switch result {
                     case .success(let programs):
-                        programsByStream[streamID] = programs
+                        pendingPrograms[streamID] = programs
                         EPGMemoryCache.shared.store(scope: scope, streamId: streamID, programs: programs)
                         if programs.isEmpty {
-                            failedStreamIDs.insert(streamID)
+                            pendingFailed.insert(streamID)
                         } else {
-                            failedStreamIDs.remove(streamID)
+                            pendingSucceeded.insert(streamID)
                         }
                     case .failure(let error):
-                        failedStreamIDs.insert(streamID)
+                        pendingFailed.insert(streamID)
                         DebugLogger.logAsync(
                             .warning,
                             "EPG: caricamento fallito per stream \(streamID): \(error.localizedDescription)"
                         )
                     }
+
+                    if Date().timeIntervalSince(lastFlush) >= 0.12 { flush() }
                 }
+
+                flush()
             }
         }
 

@@ -748,6 +748,7 @@ struct ChannelGridView: View {
                     AdaptivePlayerView(
                         url: url,
                         title: stream.name,
+                        liveInfo: kind == .live ? .xtream(stream: stream, credentials: credentials) : nil,
                         onPrevious: adjacentStream(to: stream, offset: -1).map { target in
                             { selectedStream = target }
                         },

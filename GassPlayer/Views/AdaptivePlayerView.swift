@@ -16,7 +16,20 @@ struct AdaptivePlayerView: View {
     var onPrevious: (() -> Void)? = nil
     var onNext: (() -> Void)? = nil
 
+    /// Rigo sopra il titolo ("Stagione 1 Episodio 3") e contesto canale live
+    /// (logo, nome, programma in onda): opzionali, i chiamanti che non li
+    /// passano vedono solo titolo e badge.
+    var subtitle: String? = nil
+    var liveInfo: PlayerLiveInfo? = nil
+
     var body: some View {
-        PlayerView(url: url, title: title, onPrevious: onPrevious, onNext: onNext)
+        PlayerView(
+            url: url,
+            title: title,
+            subtitle: subtitle,
+            liveInfo: liveInfo,
+            onPrevious: onPrevious,
+            onNext: onNext
+        )
     }
 }

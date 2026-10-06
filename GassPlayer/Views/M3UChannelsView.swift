@@ -5,6 +5,15 @@ struct M3UChannelsView: View {
     let kind: XtreamStreamKind
     @EnvironmentObject var store: M3UPlaylistStore
     @EnvironmentObject var contentManagement: ContentManagementService
+    @EnvironmentObject private var xtreamCatalog: XtreamCatalogStore
+
+    @State private var searchQuery = ""
+    @State private var searchResults: [M3UChannel] = []
+    @State private var showEPGGuide = false
+
+    private var trimmedQuery: String {
+        searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         NavigationStack {
@@ -33,6 +42,17 @@ struct M3UChannelsView: View {
                     }
                     .padding()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if !trimmedQuery.isEmpty {
+                    // Ricerca nei titoli di questa sezione (tutti i gruppi).
+                    if searchResults.isEmpty {
+                        ContentUnavailableView.search(text: trimmedQuery)
+                    } else {
+                        M3UGroupChannelsView(
+                            groupTitle: kind.displayName,
+                            channels: searchResults,
+                            sourceKey: playlistURL.absoluteString
+                        )
+                    }
                 } else {
                     List {
                         Section {
@@ -65,18 +85,74 @@ struct M3UChannelsView: View {
                 }
             }
             .navigationTitle(kind.displayName)
+            .searchable(text: $searchQuery, prompt: "Ricerca in \(kind.displayName)")
             .toolbar {
                 if #available(iOS 26.0, *) {
                     ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
                     ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
                     ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+
+                    if showsGuideButton {
+                        ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+                        ToolbarItem(placement: .navigationBarTrailing) { guideButton }
+                    }
                 } else {
                     ToolbarItem(placement: .navigationBarTrailing) { GlassSearchButton() }
                     ToolbarItem(placement: .navigationBarTrailing) { GlassSettingsButton() }
+
+                    if showsGuideButton {
+                        ToolbarItem(placement: .navigationBarTrailing) { guideButton }
+                    }
                 }
             }
             .task(id: playlistURL) { await store.loadIfNeeded(url: playlistURL) }
+            .task(id: trimmedQuery) { await runSearch() }
+            .fullScreenCover(isPresented: $showEPGGuide) {
+                EPGGridView(m3uSource: EPGGridM3USource(store: store, playlistURL: playlistURL))
+                    .environmentObject(xtreamCatalog)
+            }
         }
+    }
+}
+
+extension M3UChannelsView {
+    /// La guida programmi vale per i canali live con almeno un canale caricato.
+    fileprivate var showsGuideButton: Bool {
+        kind == .live && store.totalCount(for: .live) > 0
+    }
+
+    fileprivate var guideButton: some View {
+        GlassIconButton(
+            systemImage: "tv.badge.wifi",
+            size: 34,
+            isInSystemToolbar: true,
+            accessibilityLabel: "Apri guida TV"
+        ) {
+            showEPGGuide = true
+        }
+    }
+
+    /// Ricerca con piccolo debounce, fuori dal main thread.
+    fileprivate func runSearch() async {
+        let query = trimmedQuery
+
+        guard !query.isEmpty else {
+            searchResults = []
+            return
+        }
+
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        guard !Task.isCancelled else { return }
+
+        let tokens = CatalogSearch.tokens(query)
+        let pool = store.snapshot.channelsByKind[kind] ?? []
+
+        let found = await Task.detached(priority: .userInitiated) {
+            CatalogSearch.filter(pool, tokens: tokens) { $0.title }
+        }.value
+
+        guard !Task.isCancelled else { return }
+        searchResults = found
     }
 }
 
@@ -165,20 +241,45 @@ struct M3UGroupChannelsView: View {
         }
         .navigationTitle(groupTitle)
         .fullScreenCover(item: $selectedChannel) { channel in
-            PlayerView(url: channel.streamURL, title: channel.title)
-                .onAppear {
-                    recentlyWatched.record(
-                        id: "\(sourceKey)-\(channel.id)",
-                        title: channel.title,
-                        kind: channel.kind.rawValue,
-                        streamURL: channel.streamURL
-                    )
+            AdaptivePlayerView(
+                url: channel.streamURL,
+                title: channel.title,
+                liveInfo: channel.kind == .live
+                    ? .m3u(channel: channel, store: m3uStore, baseHost: sourceKey)
+                    : nil,
+                // Zapping precedente/successivo nella lista mostrata (stesso
+                // gruppo o risultati di ricerca), come per i canali Xtream.
+                onPrevious: adjacentChannel(to: channel, offset: -1).map { target in
+                    { selectedChannel = target }
+                },
+                onNext: adjacentChannel(to: channel, offset: 1).map { target in
+                    { selectedChannel = target }
                 }
+            )
+            // `.task(id:)` e non `.onAppear`: con lo zapping la vista resta la
+            // stessa, e ogni canale visto deve finire in "Continua a guardare".
+            .task(id: channel.id) {
+                recentlyWatched.record(
+                    id: "\(sourceKey)-\(channel.id)",
+                    title: channel.title,
+                    kind: channel.kind.rawValue,
+                    streamURL: channel.streamURL
+                )
+            }
         }
         .sheet(item: $guideChannel) { channel in
             M3UChannelGuideSheet(channel: channel)
                 .environmentObject(m3uStore)
         }
+    }
+
+    private func adjacentChannel(to channel: M3UChannel, offset: Int) -> M3UChannel? {
+        guard let index = channels.firstIndex(where: { $0.id == channel.id }) else { return nil }
+
+        let target = index + offset
+        guard channels.indices.contains(target) else { return nil }
+
+        return channels[target]
     }
 }
 

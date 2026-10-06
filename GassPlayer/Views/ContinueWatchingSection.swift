@@ -436,19 +436,18 @@ private struct SeriesResumePlayer: View {
     @State private var season: Int?
     @State private var currentEpisode: XtreamSeriesInfo.Episode?
     @State private var playingURL: URL
-    @State private var playingTitle: String
 
     init(request: SeriesResumeRequest, record: @escaping (XtreamSeriesInfo.Episode, URL) -> Void) {
         self.request = request
         self.record = record
         _playingURL = State(initialValue: request.item.streamURL)
-        _playingTitle = State(initialValue: request.initialEpisodeTitle)
     }
 
     var body: some View {
         AdaptivePlayerView(
             url: playingURL,
-            title: playingTitle,
+            title: request.seriesName,
+            subtitle: playingSubtitle,
             onPrevious: adjacentEpisode(offset: -1).map { target in
                 { select(target) }
             },
@@ -486,6 +485,13 @@ private struct SeriesResumePlayer: View {
         }
     }
 
+    /// "Stagione X Episodio Y": noto solo dopo il caricamento delle info
+    /// della serie (fino ad allora il player mostra solo il titolo).
+    private var playingSubtitle: String? {
+        guard let episode = currentEpisode else { return nil }
+        return "Stagione \(episode.season ?? season ?? 1) Episodio \(episode.episodeNum)"
+    }
+
     private func streamURL(for episode: XtreamSeriesInfo.Episode) -> URL? {
         let ext = episode.containerExtension?.isEmpty == false ? episode.containerExtension! : "mp4"
         return XtreamAPIService(credentials: request.credentials)
@@ -508,7 +514,6 @@ private struct SeriesResumePlayer: View {
         guard let url = streamURL(for: episode) else { return }
 
         playingURL = url
-        playingTitle = episode.title
         currentEpisode = episode
     }
 }
