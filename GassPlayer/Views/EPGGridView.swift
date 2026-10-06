@@ -2095,7 +2095,10 @@ struct EPGGridView: View {
                 var pendingDone = Set<Int>()
                 var lastFlush = Date()
 
-                func flush() {
+                // Closure e non `func` annidata: la closure eredita l'isolamento
+                // del chiamante (MainActor) e può quindi aggiornare lo stato
+                // `@State` della vista senza avvisi di concorrenza.
+                let flush: () -> Void = {
                     guard !pendingDone.isEmpty else { return }
 
                     for (id, programs) in pendingPrograms {

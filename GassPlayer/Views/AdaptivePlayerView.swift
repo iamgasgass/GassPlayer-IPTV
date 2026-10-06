@@ -9,18 +9,21 @@ struct AdaptivePlayerView: View {
     let url: URL
     let title: String
 
-    /// FEATURE MANCANTE aggiunta: precedente/successivo, inoltrati opzionalmente
-    /// dal chiamante (es. ChannelGridView per lo zapping canali, SeriesEpisodesView
-    /// per l'episodio successivo). `nil` di default: i chiamanti esistenti che non
-    /// li passano continuano a funzionare esattamente come prima, senza i pulsanti.
-    var onPrevious: (() -> Void)? = nil
-    var onNext: (() -> Void)? = nil
-
     /// Rigo sopra il titolo ("Stagione 1 Episodio 3") e contesto canale live
     /// (logo, nome, programma in onda): opzionali, i chiamanti che non li
-    /// passano vedono solo titolo e badge.
+    /// passano vedono solo titolo e badge. DICHIARATI PRIMA di
+    /// `onPrevious`/`onNext`: l'inizializzatore memberwise vuole gli
+    /// argomenti nell'ordine delle proprietà, e tutti i chiamanti passano
+    /// `subtitle`/`liveInfo` prima dello zapping.
     var subtitle: String? = nil
     var liveInfo: PlayerLiveInfo? = nil
+
+    /// Precedente/successivo, inoltrati opzionalmente dal chiamante (es.
+    /// ChannelGridView per lo zapping canali, SeriesEpisodesView per
+    /// l'episodio successivo). `nil` di default: i chiamanti che non li
+    /// passano continuano a funzionare senza i pulsanti.
+    var onPrevious: (() -> Void)? = nil
+    var onNext: (() -> Void)? = nil
 
     var body: some View {
         PlayerView(

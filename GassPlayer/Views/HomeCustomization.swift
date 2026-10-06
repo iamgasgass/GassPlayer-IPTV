@@ -76,7 +76,7 @@ final class HomeLayoutStore: ObservableObject {
     }
 
     /// Tutte le sezioni della panoramica Home, nell'ordine predefinito.
-    static let homeSections: [HomeSectionID] = [
+    nonisolated static let homeSections: [HomeSectionID] = [
         .heading, .search, .continueWatching, .sourceCard, .sources,
         .liveTV, .guidaTV, .onDemand, .favoriteChannels, .favoriteSeries,
         .favoriteMovies, .trendingSeries, .trendingMovies

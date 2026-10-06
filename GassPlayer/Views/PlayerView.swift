@@ -110,7 +110,23 @@ struct PlayerView: View {
         _controller = StateObject(wrappedValue: KSPlaybackController(url: url, title: title))
     }
 
+    /// `body` spezzato in 5 livelli: un'unica catena di decine di modificatori
+    /// (task, gesti, overlay, sheet, dialoghi) superava il limite del
+    /// type-checker ("unable to type-check this expression in reasonable
+    /// time"). Ogni livello è piccolo e con tipo esplicito, l'ordine dei
+    /// modificatori è identico a prima.
     var body: some View {
+        playerDialogs(
+            on: playerOverlays(
+                on: playerLifecycle(
+                    on: playerTasks(on: playerLayout)
+                )
+            )
+        )
+    }
+
+    /// Livello 1: scena (video, spinner, controlli) e misura del contenitore.
+    private var playerLayout: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
@@ -146,6 +162,11 @@ struct PlayerView: View {
                     .onChange(of: geo.size) { newValue in containerWidth = newValue.width }
             }
         )
+    }
+
+    /// Livello 2: avvio, scena attiva, fine riproduzione e task periodici.
+    private func playerTasks<Content: View>(on content: Content) -> some View {
+        content
         .onAppear {
             controller.resumeIfStopped()
             scheduleAutoHide()
@@ -189,6 +210,11 @@ struct PlayerView: View {
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
             }
         }
+    }
+
+    /// Livello 3: cambio contenuto, modali e chiusura.
+    private func playerLifecycle<Content: View>(on content: Content) -> some View {
+        content
         // Permette di aggiornare la STESSA schermata player con un nuovo
         // contenuto (usato da `GlobalSearchView` per non aprire un player
         // sopra l'altro): dato che `controller` è un `@StateObject`, creato
@@ -217,6 +243,11 @@ struct PlayerView: View {
             toastTask?.cancel()
             sleepTimerTask?.cancel()
         }
+    }
+
+    /// Livello 4: gesti, HUD e overlay dei controlli.
+    private func playerOverlays<Content: View>(on content: Content) -> some View {
+        content
         .simultaneousGesture(dragGesture)
         .onTapGesture(count: 2, coordinateSpace: .local) { location in
             handleDoubleTap(at: location)
@@ -239,6 +270,11 @@ struct PlayerView: View {
         .overlay { resumeConfirmationOverlay }
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: controller.pendingResume != nil)
         .statusBarHidden(true)
+    }
+
+    /// Livello 5: fogli e finestre di dialogo.
+    private func playerDialogs<Content: View>(on content: Content) -> some View {
+        content
         .sheet(isPresented: $showTrackPicker) {
             TrackPickerView(
                 controller: controller,
