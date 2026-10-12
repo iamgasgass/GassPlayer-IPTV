@@ -20,6 +20,10 @@ struct PlayerView: View {
     /// Logo/nome canale/programma in onda per la Live TV.
     var liveInfo: PlayerLiveInfo?
 
+    /// Rail "Categorie TV" (gruppi a sinistra con le tessere della sezione
+    /// Categorie, canali del gruppo a destra): solo Live TV, come su Android.
+    var channelBrowser: PlayerChannelBrowser?
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var controller: KSPlaybackController
@@ -38,6 +42,7 @@ struct PlayerView: View {
     @State private var showAspectPicker = false
     @State private var showChannelHistory = false
     @State private var showChannelSearch = false
+    @State private var showChannelRail = false
 
     // Selezioni correnti
     @State private var currentPlaybackRate: Double = 1.0
@@ -91,6 +96,7 @@ struct PlayerView: View {
         showTrackPicker || showAdvancedSettings || showQualityPicker
         || showExternalPlayerMenu || showSpeedPicker || showSleepTimerPicker
         || showAspectPicker || showChannelHistory || showChannelSearch
+        || showChannelRail
     }
 
     init(
@@ -99,7 +105,8 @@ struct PlayerView: View {
         subtitle: String? = nil,
         liveInfo: PlayerLiveInfo? = nil,
         onPrevious: (() -> Void)? = nil,
-        onNext: (() -> Void)? = nil
+        onNext: (() -> Void)? = nil,
+        channelBrowser: PlayerChannelBrowser? = nil
     ) {
         self.url = url
         self.title = title
@@ -107,6 +114,7 @@ struct PlayerView: View {
         self.liveInfo = liveInfo
         self.onPrevious = onPrevious
         self.onNext = onNext
+        self.channelBrowser = channelBrowser
         _controller = StateObject(wrappedValue: KSPlaybackController(url: url, title: title))
     }
 
@@ -267,6 +275,8 @@ struct PlayerView: View {
             }
         }
         .overlay { primaryControlsOverlay }
+        .overlay { channelRailOverlay }
+        .animation(.snappy(duration: 0.28), value: showChannelRail)
         .overlay { resumeConfirmationOverlay }
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: controller.pendingResume != nil)
         .statusBarHidden(true)
@@ -427,7 +437,8 @@ struct PlayerView: View {
                     currentPlaybackRate: currentPlaybackRate,
                     selectedVideoTrackName: selectedVideoTrackName,
                     sleepTimerMinutes: sleepTimerMinutes,
-                    isLive: controller.isLiveContent
+                    isLive: controller.isLiveContent,
+                    hasChannelRail: channelBrowser != nil
                 ),
                 actions: PlayerTopBar.Actions(
                     dismiss: { dismiss() },
@@ -452,7 +463,14 @@ struct PlayerView: View {
                     trackPicker: { presentAfterMenuDismiss { showTrackPicker = true } },
                     sleepTimerPicker: { presentAfterMenuDismiss { showSleepTimerPicker = true } },
                     airPlayCreate: { airPlayRoutePicker = $0 },
-                    airPlayTrigger: triggerAirPlayPicker
+                    airPlayTrigger: triggerAirPlayPicker,
+                    channelRail: {
+                        haptic()
+                        withAnimation(.snappy(duration: 0.28)) {
+                            showControls = false
+                            showChannelRail = true
+                        }
+                    }
                 )
             )
             .equatable()
@@ -672,6 +690,20 @@ struct PlayerView: View {
         }
     }
 
+    /// Rail "Categorie TV" sopra il video: la scelta di un canale cambia la
+    /// riproduzione nello stesso player (zapping in-place) e il rail resta
+    /// aperto sul gruppo scelto, come su Android. Nascosto con lo schermo
+    /// bloccato.
+    @ViewBuilder
+    private var channelRailOverlay: some View {
+        if showChannelRail, !isLocked, let channelBrowser {
+            PlayerChannelRail(browser: channelBrowser, programTitle: liveProgram?.title) {
+                withAnimation(.snappy(duration: 0.28)) { showChannelRail = false }
+            }
+            .transition(.move(edge: .leading).combined(with: .opacity))
+        }
+    }
+
     @ViewBuilder
     private var resumeConfirmationOverlay: some View {
         if let pendingResume = controller.pendingResume {
@@ -884,6 +916,7 @@ struct PlayerTopBarData: Equatable {
     var selectedVideoTrackName: String?
     var sleepTimerMinutes: Int?
     var isLive: Bool = true
+    var hasChannelRail: Bool = false
 }
 
 struct PlayerTopBar: View, Equatable {
@@ -903,6 +936,7 @@ struct PlayerTopBar: View, Equatable {
         var sleepTimerPicker: () -> Void
         var airPlayCreate: (AVRoutePickerView) -> Void
         var airPlayTrigger: () -> Void
+        var channelRail: () -> Void = {}
     }
 
     let data: PlayerTopBarData
@@ -915,6 +949,14 @@ struct PlayerTopBar: View, Equatable {
     var body: some View {
         HStack {
             GlassIconButton(systemImage: "xmark") { actions.dismiss() }
+
+            // Rail "Categorie TV" (solo Live TV): gruppi e canali senza
+            // uscire dal player.
+            if data.hasChannelRail && data.isLive {
+                GlassIconButton(systemImage: "sidebar.left", size: 34, accessibilityLabel: "Categorie TV") {
+                    actions.channelRail()
+                }
+            }
 
             // Il titolo non sta più qui (un titolo lungo copriva i tasti):
             // vive nel blocco in basso a sinistra, vedi `PlayerInfoBlock`.

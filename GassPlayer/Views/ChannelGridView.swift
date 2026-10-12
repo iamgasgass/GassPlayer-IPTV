@@ -158,6 +158,8 @@ struct ChannelGridView: View {
         case all
         case category(String)
         case uncategorized
+        /// Solo dal rail "Categorie TV" (voce "Preferiti", come su Android).
+        case favorites
     }
 
     /// Indice precalcolato del catalogo per il `kind` corrente. Costruito
@@ -292,6 +294,14 @@ struct ChannelGridView: View {
     private var groupUIStyle = "scorrevole"
 
     @State private var selectedCategory: CategorySelection = .all
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    /// iPhone (larghezza compatta): il rail "Categorie TV" è un pannello
+    /// sovrapposto, aperto all'ingresso nella sezione e chiuso dopo la scelta
+    /// di un gruppo, come il rail compatto Android; si riapre dalla pillola
+    /// del gruppo sotto il titolo.
+    @State private var showCompactCategoryRail = true
     @State private var selectedStream: XtreamStream?
     @State private var selectedSeries: XtreamSeriesItem?
     /// Film selezionato per la nuova scheda dettaglio (hero + valutazioni +
@@ -316,18 +326,22 @@ struct ChannelGridView: View {
     /// "Film/Serie di tendenza"): ordine e visibilità salvati per sezione.
     @StateObject private var movieSectionLayout = HomeLayoutStore(
         storageKey: "gassplayer.vod.sections",
-        sections: [.search, .continueWatching, .trendingMovies, .categories],
+        // "Categorie" non è più una sezione di "Modifica": è diventata la
+        // voce "Categorie TV" del menu "…" → "UI Gruppi" (rail a sinistra).
+        // Lo store scarta da solo la voce dai layout già salvati.
+        sections: [.search, .continueWatching, .trendingMovies],
         layoutVersion: 3
     )
     @StateObject private var seriesSectionLayout = HomeLayoutStore(
         storageKey: "gassplayer.series.sections",
-        sections: [.search, .continueWatching, .trendingSeries, .categories],
+        sections: [.search, .continueWatching, .trendingSeries],
         layoutVersion: 3
     )
-    /// Live TV: l'unica sezione configurabile è "Categorie".
+    /// Live TV: l'unica sezione configurabile è "Ricerca" ("Categorie" è ora
+    /// la voce "Categorie TV" del menu "…").
     @StateObject private var liveSectionLayout = HomeLayoutStore(
         storageKey: "gassplayer.live.sections",
-        sections: [.search, .categories],
+        sections: [.search],
         layoutVersion: 2
     )
 
@@ -553,6 +567,10 @@ struct ChannelGridView: View {
 
         case .uncategorized:
             return catalogIndex.uncategorizedStreams
+
+        case .favorites:
+            let ids = favoriteContentIDs
+            return ids.isEmpty ? [] : allStreams.filter { ids.contains($0.streamId) }
         }
     }
 
@@ -568,7 +586,204 @@ struct ChannelGridView: View {
 
         case .uncategorized:
             return catalogIndex.uncategorizedSeries
+
+        case .favorites:
+            let ids = favoriteContentIDs
+            return ids.isEmpty ? [] : allSeries.filter { ids.contains($0.seriesId) }
         }
+    }
+
+    /// Id numerici (streamId / seriesId) dei preferiti di questa sezione e
+    /// sorgente, ricavati una volta dagli id salvati (`host|utente|tipo|id`):
+    /// il filtro "Preferiti" confronta poi solo interi, senza ricostruire una
+    /// stringa per ogni elemento del catalogo.
+    private var favoriteContentIDs: Set<Int> {
+        let prefix = String(credentials.favoriteID(kind: kind, streamId: 0).dropLast())
+        var ids = Set<Int>()
+        for favorite in contentManagement.favorites where favorite.id.hasPrefix(prefix) {
+            if let id = Int(favorite.id.dropFirst(prefix.count)) { ids.insert(id) }
+        }
+        return ids
+    }
+
+    // MARK: - Rail "Categorie TV"
+
+    private var isCategoryTVMode: Bool {
+        groupUIStyle == "categorie_tv"
+    }
+
+    /// Live TV in "Categorie TV": come su Android la sezione è la vista Guida
+    /// (`EPGGridView`) con rail dei gruppi e pannello di anteprima.
+    private var isLiveCategoryGuide: Bool {
+        kind == .live && isCategoryTVMode
+    }
+
+    /// Guida "Categorie TV" della Live TV: gruppi, preferiti e player (con il
+    /// rail "Categorie TV" nel player) sono quelli di questa sezione.
+    private var liveCategoryGuide: some View {
+        EPGGridView(
+            credentials: credentials,
+            categoryTV: EPGCategoryTVContext(
+                railItems: categoryRailItems,
+                favoriteStreamIDs: favoriteContentIDs,
+                isPlayerActive: selectedStream != nil,
+                play: { stream in selectedStream = stream },
+                toggleFavorite: { stream in
+                    contentManagement.toggleFavorite(
+                        id: favoriteID(for: stream),
+                        title: stream.name,
+                        kind: kind.rawValue
+                    )
+                }
+            )
+        )
+    }
+
+    /// Voci del rail, come il rail Android: "Preferiti", "Tutti", "Senza
+    /// categoria" (se serve) e i gruppi della playlist con almeno un contenuto.
+    private var categoryRailItems: [CategoryRailItem] {
+        var items = [
+            CategoryRailItem(id: CategoryRailKey.favorites, name: "Preferiti"),
+            CategoryRailItem(id: CategoryRailKey.all, name: "Tutti")
+        ]
+        if uncategorizedCount > 0 {
+            items.append(CategoryRailItem(id: CategoryRailKey.uncategorized, name: "Senza categoria"))
+        }
+        items += visibleCategories.map { CategoryRailItem(id: $0.categoryId, name: $0.categoryName) }
+        return items
+    }
+
+    private var selectedRailID: String {
+        switch selectedCategory {
+        case .all: return CategoryRailKey.all
+        case .favorites: return CategoryRailKey.favorites
+        case .uncategorized: return CategoryRailKey.uncategorized
+        case .category(let id): return id
+        }
+    }
+
+    private func selection(forRailID id: String) -> CategorySelection {
+        switch id {
+        case CategoryRailKey.all: return .all
+        case CategoryRailKey.favorites: return .favorites
+        case CategoryRailKey.uncategorized: return .uncategorized
+        default: return .category(id)
+        }
+    }
+
+    private func selectRailItem(_ id: String) {
+        let newSelection = selection(forRailID: id)
+        if selectedCategory != newSelection {
+            selectedCategory = newSelection
+            // Come il tocco su una tessera "Categorie": la griglia filtrata
+            // torna in vista (sopra possono esserci Ricerca e Tendenze).
+            pendingScrollToGrid = true
+        }
+        if horizontalSizeClass != .regular {
+            withAnimation(.snappy(duration: 0.25)) { showCompactCategoryRail = false }
+        }
+    }
+
+    /// Larghezza del rail sovrapposto su iPhone (come Android: larghezza
+    /// schermo − 136, fra 160 e 236 pt).
+    private var compactCategoryRailWidth: CGFloat {
+        guard gridContainerWidth > 0 else { return 236 }
+        return min(236, max(160, gridContainerWidth - 136))
+    }
+
+    /// Avvolge il contenuto della sezione: in "Categorie TV" aggiunge il rail
+    /// (fisso a sinistra su schermi larghi, pannello sovrapposto su iPhone);
+    /// nelle altre modalità restituisce il contenuto invariato.
+    @ViewBuilder
+    private func categoryTVLayout<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        if !isCategoryTVMode {
+            content()
+        } else if isLiveCategoryGuide {
+            liveCategoryGuide
+        } else if horizontalSizeClass == .regular {
+            HStack(alignment: .top, spacing: 12) {
+                // Pannello Liquid Glass 236 pt (Android `TvCategoryRail`).
+                CategoryRail(items: categoryRailItems, selectedID: selectedRailID, width: 236) { id in
+                    selectRailItem(id)
+                }
+                .padding(.leading, 16)
+                .padding(.vertical, 8)
+
+                content()
+            }
+        } else {
+            ZStack(alignment: .topLeading) {
+                content()
+
+                if showCompactCategoryRail {
+                    // Velo: un tocco fuori dal pannello lo chiude.
+                    Color.black.opacity(0.30)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.snappy(duration: 0.25)) { showCompactCategoryRail = false }
+                        }
+                        .transition(.opacity)
+
+                    CategoryRail(items: categoryRailItems, selectedID: selectedRailID, width: compactCategoryRailWidth, showsPanel: true) { id in
+                        selectRailItem(id)
+                    }
+                    .padding(.leading, 8)
+                    .padding(.vertical, 8)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                }
+            }
+        }
+    }
+
+    /// iPhone in "Categorie TV": pillola Liquid Glass (stessa del selettore
+    /// "Espansibile") col gruppo corrente, che riapre il rail.
+    private var compactCategoryRailButton: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.25)) { showCompactCategoryRail = true }
+        } label: {
+            groupPillLabel(name: currentGroupName, icon: "sidebar.left")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityLabel("Categorie TV: \(currentGroupName)")
+        .accessibilityHint("Tocca per scegliere il gruppo da visualizzare")
+    }
+
+    // MARK: - Rail "Categorie TV" nel player (Live TV)
+
+    /// Gruppi e canali per il rail del player, calcolati sull'indice già
+    /// pronto della sezione: il gruppo iniziale è quello del canale in onda.
+    private func makeChannelBrowser(current stream: XtreamStream) -> PlayerChannelBrowser {
+        let index = catalogIndex
+        let streams = allStreams
+        let favoriteIDs = favoriteContentIDs
+        let groupID: String = {
+            if let id = CatalogIndex.normalizedCategoryID(stream.categoryId),
+               (index.categoryCounts[id] ?? 0) > 0 {
+                return id
+            }
+            return CategoryRailKey.all
+        }()
+
+        return PlayerChannelBrowser(
+            groups: categoryRailItems,
+            initialGroupID: groupID,
+            currentChannelID: stream.streamId,
+            imageBaseHost: imageBaseHost,
+            channels: { id in
+                switch id {
+                case CategoryRailKey.all: return streams
+                case CategoryRailKey.favorites: return streams.filter { favoriteIDs.contains($0.streamId) }
+                case CategoryRailKey.uncategorized: return index.uncategorizedStreams
+                default: return index.streamsByCategory[id] ?? []
+                }
+            },
+            isFavorite: { favoriteIDs.contains($0.streamId) },
+            select: { target in selectedStream = target }
+        )
     }
 
     /// Categorie con almeno un contenuto, calcolate con un lookup O(1) sulla
@@ -636,6 +851,7 @@ struct ChannelGridView: View {
 
     var body: some View {
         NavigationStack {
+            categoryTVLayout {
             ScrollViewReader { scrollProxy in
             ScrollView {
                 // Il titolo grande manuale serve solo in "Espansibile": in
@@ -647,6 +863,10 @@ struct ChannelGridView: View {
                 // Titolo grande manuale in tutte le sezioni (Live TV, VOD,
                 // Serie TV): a fianco c'è il tasto "Modifica".
                 sectionTitleHeader
+
+                if isCategoryTVMode && horizontalSizeClass != .regular {
+                    compactCategoryRailButton
+                }
 
                 if groupUIStyle == "scorrevole" && !isSearching && sectionLayout.order.first != .search {
                     categoryChips
@@ -703,6 +923,7 @@ struct ChannelGridView: View {
                 }
             }
             }
+            }
             // VOD/Serie TV: titolo grande manuale con "Modifica" a fianco,
             // quindi nessun titolo di sistema (resterebbe duplicato).
             .navigationTitle("")
@@ -717,6 +938,9 @@ struct ChannelGridView: View {
             .toolbar {
                 toolbarContent
             }
+            // Live TV "Categorie TV": la guida occupa tutta la sezione e ha il
+            // proprio menu "…" nel pannello di anteprima (come Android).
+            .toolbar(isLiveCategoryGuide ? .hidden : .automatic, for: .navigationBar)
             .task(id: sourceIdentity) {
                 // Se il catalogo e' stato svuotato (es. "Svuota cache
                 // catalogo" nelle Impostazioni) mentre questa vista era
@@ -732,12 +956,13 @@ struct ChannelGridView: View {
 
                 rebuildIndexIfNeeded()
 
-                guard kind == .live else { return }
+                // La guida "Categorie TV" carica da sé la propria EPG.
+                guard kind == .live, !isLiveCategoryGuide else { return }
 
                 await loadEPGForVisibleStreams()
             }
             .onChange(of: selectedCategory) { _, _ in
-                guard kind == .live else { return }
+                guard kind == .live, !isLiveCategoryGuide else { return }
 
                 Task {
                     await loadEPGForVisibleStreams()
@@ -754,7 +979,9 @@ struct ChannelGridView: View {
                         },
                         onNext: adjacentStream(to: stream, offset: 1).map { target in
                             { selectedStream = target }
-                        }
+                        },
+                        // Rail "Categorie TV" nel player (solo Live TV, come su Android).
+                        channelBrowser: kind == .live ? makeChannelBrowser(current: stream) : nil
                     )
                     // FIX (zapping "senza uscire e riaprire il player"):
                     // `PlayerView` ora resta la STESSA istanza per tutta la
@@ -847,6 +1074,16 @@ struct ChannelGridView: View {
         // Gruppi" cambia: il titolo grande compare ora correttamente
         // subito dopo lo switch.
         .id(groupUIStyle)
+        // Fuori dal NavigationStack ricreato da `.id(groupUIStyle)`: qui la
+        // vista resta la stessa e il cambio di "UI Gruppi" viene osservato.
+        // "Preferiti" esiste solo nel rail "Categorie TV": uscendo si torna a
+        // "Tutti"; rientrando il rail compatto è di nuovo aperto.
+        .onChange(of: groupUIStyle) { _, newStyle in
+            if newStyle != "categorie_tv" && selectedCategory == .favorites {
+                selectedCategory = .all
+            }
+            showCompactCategoryRail = true
+        }
     }
 
     @ViewBuilder
@@ -1119,6 +1356,9 @@ struct ChannelGridView: View {
 
                 Menu {
                     Picker("UI Gruppi", selection: $groupUIStyle) {
+                        // Come su Android: i gruppi (ex sezione "Categorie" di
+                        // "Modifica") in un rail Liquid Glass a sinistra.
+                        Text("Categorie TV").tag("categorie_tv")
                         Text("Scorrevole").tag("scorrevole")
                         Text("Espansibile").tag("espansibile")
                     }
@@ -1188,6 +1428,9 @@ struct ChannelGridView: View {
         case .uncategorized:
             return "Senza categoria"
 
+        case .favorites:
+            return "Preferiti"
+
         case .category(let categoryID):
             return categories.first(where: { $0.categoryId == categoryID })?.categoryName ?? "Tutti"
         }
@@ -1200,6 +1443,9 @@ struct ChannelGridView: View {
 
         case .uncategorized:
             return "tray"
+
+        case .favorites:
+            return "star.fill"
 
         case .category(let categoryID):
             guard let name = categories.first(where: { $0.categoryId == categoryID })?.categoryName else {
@@ -2472,7 +2718,7 @@ struct CachedPosterImage: View {
 /// tasto "Modifica" (`glassEffect` nativo su iOS 26+, materiale sottile con
 /// filo di bordo prima). 68 pt di altezza, nome in alto a sinistra con 16 pt
 /// di margine, massimo 2 righe; la tessera selezionata ha una tinta d'accento.
-private struct CategoryTile: View, Equatable {
+struct CategoryTile: View, Equatable {
     let name: String
     let isSelected: Bool
     let action: () -> Void
@@ -2501,13 +2747,40 @@ private struct CategoryTile: View, Equatable {
     }
 }
 
-private struct CategoryGlassTile: ViewModifier {
+struct CategoryGlassTile: ViewModifier {
     let isSelected: Bool
+    /// 16 pt per le tessere della sezione Categorie (invariato); il rail
+    /// "Categorie TV" usa i raggi delle righe Android (14/13/12 pt).
+    var cornerRadius: CGFloat = 16
+    /// Rail nel player: vetro trasparente (il video resta visibile sotto le
+    /// righe), come le superfici Liquid Glass del rail Android.
+    var isTransparent = false
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
-        if #available(iOS 26.0, *) {
+        if isTransparent {
+            if #available(iOS 26.0, *) {
+                content.glassEffect(
+                    isSelected
+                        ? .clear.tint(Color.accentColor.opacity(0.45)).interactive()
+                        : .clear.interactive(),
+                    in: shape
+                )
+            } else {
+                content
+                    .background(
+                        isSelected ? Color.accentColor.opacity(0.30) : Color.white.opacity(0.06),
+                        in: shape
+                    )
+                    .overlay {
+                        shape.strokeBorder(
+                            isSelected ? Color.accentColor : Color.white.opacity(0.16),
+                            lineWidth: isSelected ? 1.2 : 0.5
+                        )
+                    }
+            }
+        } else if #available(iOS 26.0, *) {
             content.glassEffect(
                 isSelected
                     ? .regular.tint(Color.accentColor.opacity(0.45)).interactive()

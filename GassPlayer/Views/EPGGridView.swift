@@ -120,6 +120,25 @@ enum EPGChannelCardStyle: String, CaseIterable, Identifiable {
 ///   (case-insensitive) come sinonimo di "FHD": viene estratto e mostrato con la stessa
 ///   identica pillola (bordo sottile, nessun riempimento) usata per 4K/FHD/HD/SD, invece di
 ///   restare testo semplice in coda al nome canale. Nessun'altra logica è stata toccata.
+// MARK: - Live TV "Categorie TV"
+
+/// Live TV con "UI Gruppi: Categorie TV": come `EpgGridScreen(tvCategoryMode
+/// = true)` Android la sezione diventa la guida EPG con il rail dei gruppi a
+/// sinistra, il pannello di anteprima (video muto, programma in onda,
+/// prossimo programma) in alto e banner canale larghi con numero, logo,
+/// nome, qualità, preferito e differita. I gruppi, i preferiti e il player
+/// (con il rail "Categorie TV") sono quelli della sezione Live TV.
+struct EPGCategoryTVContext {
+    /// Voci del rail: "Preferiti", "Tutti", "Senza categoria", gruppi.
+    let railItems: [CategoryRailItem]
+    /// Preferiti della sezione Live TV (stessi del rail e della griglia).
+    let favoriteStreamIDs: Set<Int>
+    /// Player della Live TV aperto: l'anteprima chiude il proprio flusso.
+    let isPlayerActive: Bool
+    let play: (XtreamStream) -> Void
+    let toggleFavorite: (XtreamStream) -> Void
+}
+
 // MARK: - Playlist M3U come sorgente della guida
 
 /// Una playlist M3U/M3U8 vista dalla guida EPG: i canali live diventano
@@ -281,6 +300,9 @@ struct EPGGridView: View {
     let credentials: XtreamCredentials?
     let kind: XtreamStreamKind
     var onPlayLive: ((XtreamStream) -> Void)? = nil
+    /// Non `nil` solo per la Live TV in "Categorie TV" (vedi
+    /// `EPGCategoryTVContext`); la Guida resta invariata.
+    private var categoryTV: EPGCategoryTVContext? = nil
     /// Sorgente M3U: ricostruita dopo "Ricarica" (i canali possono cambiare).
     @State private var m3uSource: EPGGridM3USource?
     private let scopeKeyValue: String
@@ -313,6 +335,20 @@ struct EPGGridView: View {
     @State private var groupMemo = GroupMemo()
     @State private var streamMemo = StreamMemo()
 
+    // MARK: - Stato "Categorie TV" (solo Live TV)
+
+    /// Stessa preferenza del menu "…" → "UI Gruppi" della Live TV.
+    @AppStorage("gassplayer.grid.groupUIStyle") private var groupUIStyle = "scorrevole"
+    /// Canale mostrato nel pannello di anteprima (Android `previewChannelId`).
+    @State private var previewStreamID: Int?
+    /// Larghezza della schermata: sotto 700 pt layout "telefono" (Android
+    /// `screenWidthDp < 700`).
+    @State private var categoryScreenWidth: CGFloat = 0
+    /// Rail sovrapposto su telefono: aperto all'ingresso, chiuso dopo la
+    /// scelta di un gruppo (Android `categoryRailExpanded`).
+    @State private var showCompactCategoryRail = true
+    @State private var isCategoryScreenVisible = false
+
     // MARK: - Parametri di tempo & concorrenza (INVARIATI)
     private let renderPageSize = 32
     private let hardRenderCap = 250
@@ -328,7 +364,26 @@ struct EPGGridView: View {
     }
 
     private var channelBannerWidth: CGFloat {
-        layoutDensity == .compact ? 80 : 86
+        // "Categorie TV": banner largo 324 pt (Android `bannerW`), su telefono
+        // ricavato dalla colonna responsiva perché la timeline resti visibile.
+        if isCategoryTVMode {
+            return isCompactCategoryLayout ? max(mobileBannerColumnWidth - 4, 100) : 324
+        }
+        return layoutDensity == .compact ? 80 : 86
+    }
+
+    private var isCategoryTVMode: Bool {
+        categoryTV != nil
+    }
+
+    private var isCompactCategoryLayout: Bool {
+        isCategoryTVMode && categoryScreenWidth > 0 && categoryScreenWidth < 700
+    }
+
+    /// Android `mobileBannerColumnW`: 48% di (larghezza − 136), fra 112 e 170 pt.
+    private var mobileBannerColumnWidth: CGFloat {
+        let contentWidth = max(categoryScreenWidth - 136, 180)
+        return min(max(contentWidth * 0.48, 112), 170)
     }
 
     private var bannerHeight: CGFloat {
@@ -368,6 +423,10 @@ struct EPGGridView: View {
     /// - "Griglia" (INVARIATA): inset simmetrico bannerInset su entrambi i lati del banner.
     /// - "Scheda": solo inset sinistro, il banner tocca il bordo destro della colonna.
     private var bannerColumnWidth: CGFloat {
+        // "Categorie TV": colonna 348 pt (telefono: colonna responsiva).
+        if isCategoryTVMode {
+            return isCompactCategoryLayout ? mobileBannerColumnWidth : 348
+        }
         switch channelCardStyle {
         case .grid:
             return bannerInset + channelBannerWidth + bannerInset
@@ -389,14 +448,15 @@ struct EPGGridView: View {
     /// "Griglia" (comportamento originale invariato), a sinistra in "Scheda" (nessun inset
     /// a destra del banner nella colonna canale).
     private var channelBannerColumnAlignment: Alignment {
-        channelCardStyle == .grid ? .center : .leading
+        // "Categorie TV": banner sempre centrato (Android `centered = true`).
+        (isCategoryTVMode || channelCardStyle == .grid) ? .center : .leading
     }
 
     /// Padding sinistro aggiuntivo applicato al banner prima del frame di colonna: zero in
     /// "Griglia" (il centering storico genera già l'inset simmetrico), pari a `bannerInset`
     /// in "Scheda" per mantenere l'inset sinistro mentre quello destro viene eliminato.
     private var channelBannerLeadingPadding: CGFloat {
-        channelCardStyle == .grid ? 0 : bannerInset
+        (isCategoryTVMode || channelCardStyle == .grid) ? 0 : bannerInset
     }
 
     /// Ampiezza aggiuntiva (verso sinistra, oltre il normale bordo della colonna fissa) fino
@@ -407,6 +467,8 @@ struct EPGGridView: View {
     ///   così la tile non prosegue mai oltre il centro del banner (né, a maggior ragione, oltre
     ///   il suo bordo sinistro).
     private var tileBleedExtraWidth: CGFloat {
+        // "Categorie TV": nessuno sconfinamento (Android `bleed = 0`).
+        if isCategoryTVMode { return 0 }
         switch channelCardStyle {
         case .grid:
             return 0
@@ -438,6 +500,12 @@ struct EPGGridView: View {
         let scope = Self.scopeKey(for: credentials)
         scopeKeyValue = scope
         _favorites = StateObject(wrappedValue: EPGFavoritesStore(scopeKey: scope))
+    }
+
+    /// Live TV in "Categorie TV": guida con rail dei gruppi e anteprima.
+    init(credentials: XtreamCredentials, categoryTV: EPGCategoryTVContext) {
+        self.init(credentials: credentials, kind: .live, onPlayLive: categoryTV.play)
+        self.categoryTV = categoryTV
     }
 
     /// Guida di una playlist M3U/M3U8 (canali live con XMLTV).
@@ -709,8 +777,9 @@ struct EPGGridView: View {
         hasher.combine(showFavoritesOnly)
         hasher.combine(renderLimit)
         hasher.combine(selectedDayOffset)
-        hasher.combine(favorites.favoriteStreamIDs.count)
-        hasher.combine(favorites.favoriteStreamIDs.reduce(0, ^))
+        let favoriteIDs = activeFavoriteStreamIDs
+        hasher.combine(favoriteIDs.count)
+        hasher.combine(favoriteIDs.reduce(0, ^))
         let sig = catalogSignature
         hasher.combine(sig.count)
         hasher.combine(sig.first)
@@ -737,8 +806,15 @@ struct EPGGridView: View {
         } else {
             filtered = streams.filter { stream in
                 let categoryID = stream.categoryId?.trimmingCharacters(in: .whitespacesAndNewlines)
-                if let groupID, categoryID != groupID { return false }
-                if showFavoritesOnly && !favorites.isFavorite(stream.streamId) { return false }
+                if let groupID {
+                    // "Senza categoria" del rail "Categorie TV".
+                    if groupID == CategoryRailKey.uncategorized {
+                        if let categoryID, !categoryID.isEmpty { return false }
+                    } else if categoryID != groupID {
+                        return false
+                    }
+                }
+                if showFavoritesOnly && !isFavoriteStream(stream.streamId) { return false }
                 if !query.isEmpty && !stream.name.localizedCaseInsensitiveContains(query) { return false }
                 return true
             }
@@ -757,6 +833,17 @@ struct EPGGridView: View {
         let identity = "\(groupID ?? "all")|\(selectedDayOffset)|\(ids)"
 
         return (totalFiltered, paged, canMore, remaining, identity)
+    }
+
+    /// Preferiti in uso: quelli della Live TV in "Categorie TV", altrimenti
+    /// quelli della guida (invariato).
+    private var activeFavoriteStreamIDs: Set<Int> {
+        categoryTV?.favoriteStreamIDs ?? favorites.favoriteStreamIDs
+    }
+
+    private func isFavoriteStream(_ streamID: Int) -> Bool {
+        if let categoryTV { return categoryTV.favoriteStreamIDs.contains(streamID) }
+        return favorites.isFavorite(streamID)
     }
 
     /// Scope di cache che include anche il giorno selezionato, per evitare che dati
@@ -841,11 +928,34 @@ struct EPGGridView: View {
         let currentStreamData = streamData
         let currentGroupData = groupData
 
-        NavigationStack {
-            content(streamData: currentStreamData)
-                .background(Color.black.ignoresSafeArea())
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { toolbarContent(groupData: currentGroupData) }
+        if categoryTV != nil {
+            // Live TV "Categorie TV": niente NavigationStack/toolbar propri
+            // (la vista vive già nel NavigationStack della Live TV, con la
+            // barra nascosta); le opzioni sono nel pannello di anteprima.
+            guideLifecycle(
+                categoryTVScreen(streamData: currentStreamData),
+                streamData: currentStreamData
+            )
+        } else {
+            NavigationStack {
+                guideLifecycle(
+                    content(streamData: currentStreamData)
+                        .background(Color.black.ignoresSafeArea())
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { toolbarContent(groupData: currentGroupData) },
+                    streamData: currentStreamData
+                )
+            }
+        }
+    }
+
+    /// Presentazioni, caricamento EPG e timer della guida (invariati), comuni
+    /// alla Guida e alla Live TV "Categorie TV".
+    private func guideLifecycle<Base: View>(
+        _ base: Base,
+        streamData currentStreamData: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String)
+    ) -> some View {
+        base
                 .sheet(item: $selectedProgram) { selection in
                     ProgramDetailSheet(
                         program: selection.program,
@@ -928,7 +1038,6 @@ struct EPGGridView: View {
                     reloadTaskBox.task?.cancel()
                     loadingIndicatorTask?.cancel()
                 }
-        }
     }
 
     @ViewBuilder
@@ -1024,12 +1133,13 @@ struct EPGGridView: View {
             if pagedStreams.isEmpty {
                 Color.clear.frame(width: bannerColumnWidth, height: 1)
             } else {
-                ForEach(pagedStreams) { stream in
+                ForEach(Array(pagedStreams.enumerated()), id: \.element.id) { index, stream in
                     // Nessuno sfondo opaco qui: l'area della riga attorno al banner resta
                     // trasparente, in modo che l'eventuale margine di sovrapposizione della
                     // tile (`tileBleedExtraWidth`, comunque sempre nascosto sotto il banner
                     // stesso) non lasci mai vedere nero dietro ai bordi arrotondati del banner.
-                    channelBanner(stream)
+                    // "Categorie TV": numero canale = posizione nell'elenco (Android).
+                    channelBanner(stream, number: index + 1)
                 }
             }
         }
@@ -1092,7 +1202,11 @@ struct EPGGridView: View {
         let key = rowKey(
             for: stream,
             programs: programs,
-            extra: [loadingStreamIDs.contains(stream.streamId), failedStreamIDs.contains(stream.streamId)]
+            extra: [
+                loadingStreamIDs.contains(stream.streamId),
+                failedStreamIDs.contains(stream.streamId),
+                isPreviewSelected(stream)
+            ]
         )
 
         return EPGEquatableRow(key: key) {
@@ -1122,18 +1236,42 @@ struct EPGGridView: View {
     }
 
     /// Banner Canale Adattivo con avvio immediato a latenza zero
-    private func channelBanner(_ stream: XtreamStream) -> some View {
+    @ViewBuilder
+    private func channelBanner(_ stream: XtreamStream, number: Int) -> some View {
         let programs = visiblePrograms(for: stream)
-        let key = rowKey(
+
+        if isCategoryTVMode {
+            EPGEquatableRow(key: categoryBannerKey(stream, programs: programs, number: number)) {
+                categoryChannelBannerContent(stream, number: number)
+            }
+            .equatable()
+        } else {
+            let key = rowKey(
+                for: stream,
+                programs: programs.filter(\.hasArchive),
+                extra: [favorites.isFavorite(stream.streamId)]
+            )
+
+            EPGEquatableRow(key: key) {
+                channelBannerContent(stream)
+            }
+            .equatable()
+        }
+    }
+
+    /// Chiave di ridisegno del banner "Categorie TV": anche numero, misure,
+    /// preferito e selezione dell'anteprima.
+    private func categoryBannerKey(_ stream: XtreamStream, programs: [EPGProgram], number: Int) -> Int {
+        var hasher = Hasher()
+        hasher.combine(rowKey(
             for: stream,
             programs: programs.filter(\.hasArchive),
-            extra: [favorites.isFavorite(stream.streamId)]
-        )
-
-        return EPGEquatableRow(key: key) {
-            channelBannerContent(stream)
-        }
-        .equatable()
+            extra: [isFavoriteStream(stream.streamId), isPreviewSelected(stream), isCompactCategoryLayout]
+        ))
+        hasher.combine(number)
+        hasher.combine(channelBannerWidth)
+        hasher.combine(bannerColumnWidth)
+        return hasher.finalize()
     }
 
     private func channelBannerContent(_ stream: XtreamStream) -> some View {
@@ -1335,6 +1473,8 @@ struct EPGGridView: View {
         let width = max(32, endX - startX)
         let visibleWidth = max(0, width - tileHorizontalGap)
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
+        // "Categorie TV": programma in onda del canale in anteprima evidenziato.
+        let isSelectedTile = isPreviewSelected(stream) && program.isCurrent(at: now)
 
         return GeometryReader { geo in
             let tileMinX = geo.frame(in: .named("epgViewportCoordinateSpace")).minX
@@ -1345,6 +1485,8 @@ struct EPGGridView: View {
 
             Button {
                 selectedProgram = SelectedProgram(program: program, stream: stream)
+                // "Categorie TV": il canale del programma passa in anteprima.
+                if isCategoryTVMode { previewStreamID = stream.streamId }
             } label: {
                 let nameParts = Self.splitNameAndQualityBadge(stream.name)
 
@@ -1427,10 +1569,17 @@ struct EPGGridView: View {
                         stream: stream,
                         program: program,
                         tileStartX: startX,
-                        tileWidth: visibleWidth
+                        tileWidth: visibleWidth,
+                        isSelected: isSelectedTile
                     )
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay {
+                    if isSelectedTile {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .strokeBorder(Self.categorySelectedBorderColor, lineWidth: 1.2)
+                    }
+                }
             }
             .buttonStyle(.plain)
             .frame(width: width, height: blockHeight, alignment: .leading)
@@ -1606,11 +1755,29 @@ struct EPGGridView: View {
         stream: XtreamStream,
         program: EPGProgram,
         tileStartX: CGFloat,
-        tileWidth: CGFloat
+        tileWidth: CGFloat,
+        isSelected: Bool = false
     ) -> some View {
         let brightWidth = isToday ? min(max(liveAxisX - tileStartX, 0), tileWidth) : 0
         let cornerRadius: CGFloat = layoutDensity == .compact ? 12 : 18
 
+        if isSelected {
+            // "Categorie TV": tile selezionata come Android (0xFF5265BA al 48%,
+            // parte trascorsa 0xFF7487DF al 32%).
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color(white: 0.10))
+
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Self.categorySelectedColor.opacity(0.48))
+
+                if brightWidth > 0 {
+                    Rectangle()
+                        .fill(Self.categorySelectedProgressColor.opacity(0.32))
+                        .frame(width: brightWidth)
+                }
+            }
+        } else {
         switch tileColorStyle {
         case .dynamic:
             let channelColor = Self.adaptivePastelColor(for: stream)
@@ -1640,6 +1807,7 @@ struct EPGGridView: View {
                         .frame(width: brightWidth)
                 }
             }
+        }
         }
     }
 
@@ -1710,6 +1878,22 @@ struct EPGGridView: View {
 
         ToolbarItem(placement: .navigationBarTrailing) {
             Menu {
+                guideOptionsMenuItems
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 19, weight: .bold))
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Opzioni guida")
+        }
+    }
+
+    /// Voci del menu "…" della guida (Aspetto, Assetti, Colori, Aggiorna,
+    /// Solo preferiti, Ieri/Oggi/Domani): condivise dalla toolbar della Guida
+    /// e dal pannello di anteprima della Live TV "Categorie TV".
+    @ViewBuilder
+    private var guideOptionsMenuItems: some View {
                 Menu {
                     Picker("Aspetto EPG", selection: $layoutDensity) {
                         ForEach(EPGLayoutDensity.allCases) { density in
@@ -1786,14 +1970,6 @@ struct EPGGridView: View {
                 } label: {
                     Label("Domani", systemImage: "chevron.right")
                 }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 19, weight: .bold))
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Opzioni guida")
-        }
     }
 
     @ViewBuilder
@@ -1866,6 +2042,16 @@ struct EPGGridView: View {
     private func playLiveStream(_ stream: XtreamStream, dismissSheetFirst: Bool) {
         if dismissSheetFirst {
             selectedProgram = nil
+        }
+        // "Categorie TV": si apre il player della Live TV (con il rail
+        // "Categorie TV" e lo zapping), dopo la chiusura della scheda.
+        if let categoryTV {
+            if dismissSheetFirst {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { categoryTV.play(stream) }
+            } else {
+                categoryTV.play(stream)
+            }
+            return
         }
         if let streamURL = makeLiveStreamURL(for: stream) {
             self.livePlayback = LivePlaybackItem(stream: stream, url: streamURL)
@@ -2225,6 +2411,468 @@ struct EPGGridView: View {
             }
             UserDefaults.standard.set(Array(favoriteStreamIDs).sorted(), forKey: key)
         }
+    }
+}
+
+// MARK: - Live TV "Categorie TV" (vista Guida come Android)
+
+extension EPGGridView {
+    /// Colori della selezione Android (`ChannelBanner`/`EpgProgramTile`).
+    fileprivate static let categorySelectedColor = Color(red: 0x52 / 255, green: 0x65 / 255, blue: 0xBA / 255)
+    fileprivate static let categorySelectedProgressColor = Color(red: 0x74 / 255, green: 0x87 / 255, blue: 0xDF / 255)
+    fileprivate static let categorySelectedBorderColor = Color(red: 0x8F / 255, green: 0xB3 / 255, blue: 0xFF / 255)
+    fileprivate static let categoryFavoriteColor = Color(red: 0xFF / 255, green: 0xD6 / 255, blue: 0x0A / 255)
+    fileprivate static let categoryProgressColor = Color(red: 0x89 / 255, green: 0xA8 / 255, blue: 0xFF / 255)
+
+    fileprivate static let previewTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    /// Vero per il canale in anteprima (solo "Categorie TV").
+    fileprivate func isPreviewSelected(_ stream: XtreamStream) -> Bool {
+        isCategoryTVMode && previewStreamID == stream.streamId
+    }
+
+    /// Voce del rail selezionata (Android `selectedTvRailId`).
+    fileprivate var selectedCategoryRailID: String {
+        if showFavoritesOnly { return CategoryRailKey.favorites }
+        return normalizedSelectedGroupID ?? CategoryRailKey.all
+    }
+
+    /// Scelta dal rail (Android `onSelect` di `TvCategoryRail`).
+    fileprivate func selectCategoryRailItem(_ id: String) {
+        let favoritesOnly = id == CategoryRailKey.favorites
+        let groupID: String? = (id == CategoryRailKey.all || favoritesOnly) ? nil : id
+
+        if groupID != normalizedSelectedGroupID || favoritesOnly != showFavoritesOnly {
+            selectedGroupID = groupID
+            showFavoritesOnly = favoritesOnly
+            searchQuery = ""
+            renderLimit = renderPageSize
+            previewStreamID = nil
+        }
+        if isCompactCategoryLayout {
+            withAnimation(.snappy(duration: 0.25)) { showCompactCategoryRail = false }
+        }
+    }
+
+    /// Canale in anteprima: quello scelto se ancora nell'elenco, altrimenti
+    /// il primo (Android `previewChannel`).
+    fileprivate func syncPreviewSelection(_ paged: [XtreamStream]) {
+        if let previewStreamID, paged.contains(where: { $0.streamId == previewStreamID }) { return }
+        previewStreamID = paged.first?.streamId
+    }
+
+    fileprivate func previewStream(in paged: [XtreamStream]) -> XtreamStream? {
+        guard let previewStreamID else { return paged.first }
+        return paged.first { $0.streamId == previewStreamID } ?? paged.first
+    }
+
+    /// URL dell'anteprima muta: nessun flusso col player aperto, con una
+    /// differita in corso o con la schermata non visibile.
+    fileprivate func previewURL(for stream: XtreamStream?) -> URL? {
+        guard let stream, let categoryTV,
+              !categoryTV.isPlayerActive,
+              isCategoryScreenVisible,
+              livePlayback == nil,
+              catchupPlayback == nil
+        else { return nil }
+        return makeLiveStreamURL(for: stream)
+    }
+
+    // MARK: Schermata
+
+    @ViewBuilder
+    fileprivate func categoryTVScreen(
+        streamData: (filteredCount: Int, paged: [XtreamStream], canLoadMore: Bool, remainingCount: Int, identity: String)
+    ) -> some View {
+        GeometryReader { geo in
+            let compact = geo.size.width < 700
+            let railItems = categoryTV?.railItems ?? []
+
+            ZStack(alignment: .topLeading) {
+                HStack(alignment: .top, spacing: compact ? 0 : 12) {
+                    if !compact {
+                        CategoryRail(items: railItems, selectedID: selectedCategoryRailID, width: 236) { id in
+                            selectCategoryRailItem(id)
+                        }
+                        .padding(.leading, 8)
+                        .padding(.vertical, 8)
+                    }
+
+                    VStack(spacing: 0) {
+                        categoryPreviewPanel(stream: previewStream(in: streamData.paged), compact: compact)
+                        content(streamData: streamData)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                }
+
+                if compact && showCompactCategoryRail {
+                    // Rail sovrapposto (Android: `TvCategoryRail` a sinistra,
+                    // largo schermo − 136, fra 160 e 236 pt). Il velo lo chiude.
+                    Color.black.opacity(0.30)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.snappy(duration: 0.25)) { showCompactCategoryRail = false }
+                        }
+                        .transition(.opacity)
+
+                    CategoryRail(
+                        items: railItems,
+                        selectedID: selectedCategoryRailID,
+                        width: min(236, max(160, geo.size.width - 136)),
+                        showsPanel: true
+                    ) { id in
+                        selectCategoryRailItem(id)
+                    }
+                    .padding(.leading, 8)
+                    .padding(.vertical, 8)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                }
+            }
+            .onAppear {
+                categoryScreenWidth = geo.size.width
+            }
+            .onChange(of: geo.size.width) { _, width in
+                categoryScreenWidth = width
+            }
+        }
+        // La guida è sempre scura (sfondo nero, testo bianco): rail e
+        // pannello seguono lo stesso aspetto anche col tema chiaro.
+        .environment(\.colorScheme, .dark)
+        .background(Color.black.ignoresSafeArea())
+        .onAppear {
+            isCategoryScreenVisible = true
+            syncPreviewSelection(streamData.paged)
+        }
+        .onDisappear {
+            isCategoryScreenVisible = false
+        }
+        .onChange(of: streamData.identity) { _, _ in
+            syncPreviewSelection(streamData.paged)
+        }
+        // Chiuso il player il rail torna aperto (Android: `!playerActive`).
+        .onChange(of: categoryTV?.isPlayerActive ?? false) { _, isActive in
+            if !isActive { showCompactCategoryRail = true }
+        }
+    }
+
+    // MARK: Pannello di anteprima (Android `TvEpgPreviewPanel`)
+
+    fileprivate func categoryPreviewPanel(stream: XtreamStream?, compact: Bool) -> some View {
+        let programs = stream.map { (programsByStream[$0.streamId] ?? []).sorted { $0.start < $1.start } } ?? []
+        let current = programs.first { $0.isCurrent(at: now) }
+        let next = programs.first { $0.start >= (current?.end ?? now) && $0.start > now }
+        let panelHeight: CGFloat = compact ? 154 : 212
+        let verticalPadding: CGFloat = compact ? 6 : 12
+        let videoWidth: CGFloat = compact ? 108 : (panelHeight - verticalPadding * 2) * 16 / 9
+
+        return HStack(alignment: .center, spacing: compact ? 8 : 18) {
+            previewVideo(stream: stream, width: videoWidth)
+
+            VStack(alignment: .leading, spacing: compact ? 1 : 4) {
+                previewTopBar(compact: compact)
+
+                Text(stream?.name ?? "Seleziona un canale")
+                    .font(.system(size: compact ? 13 : 22, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                if let current {
+                    Text("\(Self.previewTimeFormatter.string(from: current.start))–\(Self.previewTimeFormatter.string(from: current.end))   \(current.title)")
+                        .font(.system(size: compact ? 10 : 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    previewProgressBar(current.progress(at: now))
+
+                    Text(current.description.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 } ?? "Descrizione del programma non disponibile.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white.opacity(0.76))
+                        .lineLimit(2)
+                } else {
+                    Text("Programma in onda non disponibile")
+                        .font(.system(size: compact ? 10 : 15))
+                        .foregroundStyle(.white.opacity(0.74))
+                        .lineLimit(1)
+                }
+
+                Text(next.map { "Prossimo \(Self.previewTimeFormatter.string(from: $0.start))  \($0.title)" } ?? "Prossimo programma non disponibile")
+                    .font(.system(size: compact ? 9 : 13))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .padding(.horizontal, compact ? 4 : 16)
+        .padding(.vertical, verticalPadding)
+        .frame(height: panelHeight)
+    }
+
+    /// Riquadro 16:9: logo del canale, video muto sopra, "Guarda" in basso.
+    fileprivate func previewVideo(stream: XtreamStream?, width: CGFloat) -> some View {
+        let height = width * 9 / 16
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+
+        return Button {
+            if let stream { playLiveStream(stream, dismissSheetFirst: false) }
+        } label: {
+            ZStack(alignment: .bottomLeading) {
+                Color.black
+
+                Group {
+                    if let icon = stream?.streamIcon, !icon.isEmpty {
+                        EPGBannerLogo(urlString: icon, baseHost: imageBaseHost, padding: 0, fallbackSize: 36)
+                            .id(stream?.streamId)
+                            .frame(width: width * 0.6, height: height * 0.6)
+                    } else {
+                        Image(systemName: "tv")
+                            .font(.system(size: 30))
+                            .foregroundStyle(.white.opacity(0.75))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                EPGLivePreviewPlayer(url: previewURL(for: stream))
+                    .allowsHitTesting(false)
+
+                HStack(spacing: 4) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Guarda")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .padding(9)
+            }
+            .frame(width: width, height: height)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(Color.white.opacity(0.16), lineWidth: 0.8) }
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .disabled(stream == nil)
+        .accessibilityLabel(stream.map { "Guarda \($0.name)" } ?? "Nessun canale")
+    }
+
+    /// Riga superiore del pannello (Android `EpgTopBar` in "Categorie TV":
+    /// solo il menu "…"); su telefono anche il tasto che riapre il rail.
+    fileprivate func previewTopBar(compact: Bool) -> some View {
+        HStack(spacing: 4) {
+            if compact {
+                Button {
+                    withAnimation(.snappy(duration: 0.25)) { showCompactCategoryRail = true }
+                } label: {
+                    Image(systemName: "sidebar.left")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Categorie TV")
+            }
+
+            Spacer(minLength: 0)
+
+            Menu {
+                Menu {
+                    Picker("UI Gruppi", selection: $groupUIStyle) {
+                        Text("Categorie TV").tag("categorie_tv")
+                        Text("Scorrevole").tag("scorrevole")
+                        Text("Espansibile").tag("espansibile")
+                    }
+                } label: {
+                    Label("UI Gruppi", systemImage: "rectangle.grid.1x2")
+                }
+
+                Divider()
+
+                guideOptionsMenuItems
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 19, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Altre opzioni")
+        }
+        .frame(height: 44)
+        .padding(.bottom, 8)
+    }
+
+    fileprivate func previewProgressBar(_ progress: Double) -> some View {
+        Capsule()
+            .fill(Color.white.opacity(0.18))
+            .frame(height: 4)
+            .overlay(alignment: .leading) {
+                GeometryReader { geo in
+                    Capsule()
+                        .fill(Self.categoryProgressColor)
+                        .frame(width: geo.size.width * min(max(progress, 0), 1))
+                }
+            }
+            .frame(maxWidth: .infinity)
+    }
+
+    // MARK: Banner canale con dettagli (Android `ChannelBanner(showChannelDetails)`)
+
+    fileprivate func categoryChannelBannerContent(_ stream: XtreamStream, number: Int) -> some View {
+        let compact = layoutDensity == .compact
+        let cornerRadius: CGFloat = compact ? 14 : 16
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let isSelected = isPreviewSelected(stream)
+        let isFavorite = isFavoriteStream(stream.streamId)
+        let tint: Color = isSelected
+            ? Self.categorySelectedColor.opacity(0.48)
+            : (tileColorStyle == .dark ? Self.darkBannerColor.opacity(0.30) : Self.adaptivePastelColor(for: stream).opacity(0.33))
+
+        return Button {
+            playLiveStream(stream, dismissSheetFirst: false)
+        } label: {
+            Group {
+                if isCompactCategoryLayout {
+                    compactBannerDetails(stream, number: number, isFavorite: isFavorite)
+                } else {
+                    bannerDetails(stream, number: number, isFavorite: isFavorite, compact: compact)
+                }
+            }
+            .frame(width: channelBannerWidth, height: bannerHeight)
+            .background {
+                // Superficie vetrosa leggera + tinta (Android `LiquidGlassSurface`).
+                ZStack {
+                    shape.fill(Color.white.opacity(0.07))
+                    shape.fill(tint)
+                }
+            }
+            .clipShape(shape)
+            .overlay {
+                shape.strokeBorder(
+                    isSelected ? Self.categorySelectedBorderColor : Color.white.opacity(0.12),
+                    lineWidth: isSelected ? 1.2 : 0.5
+                )
+            }
+            .padding(.leading, channelBannerLeadingPadding)
+            .frame(width: bannerColumnWidth, height: rowHeight, alignment: channelBannerColumnAlignment)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // Android: pressione prolungata = preferito.
+        .contextMenu {
+            Button {
+                categoryTV?.toggleFavorite(stream)
+            } label: {
+                Label(
+                    isFavorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti",
+                    systemImage: isFavorite ? "star.slash" : "star"
+                )
+            }
+        }
+        .accessibilityLabel("Guarda \(stream.name) in diretta")
+    }
+
+    fileprivate func bannerDetails(_ stream: XtreamStream, number: Int, isFavorite: Bool, compact: Bool) -> some View {
+        let nameParts = Self.splitNameAndQualityBadge(stream.name)
+        let logoSize: CGFloat = compact ? 36 : 44
+
+        return HStack(spacing: 9) {
+            Text("\(number)")
+                .font(.system(size: compact ? 12 : 14, weight: .medium))
+                .foregroundStyle(.white.opacity(0.68))
+                .lineLimit(1)
+                .frame(minWidth: 25, alignment: .leading)
+
+            bannerLogo(stream, size: logoSize, cornerRadius: 8, fallbackSize: 22, padding: 2)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(nameParts.name)
+                    .font(.system(size: compact ? 13 : 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                if let badge = nameParts.badge {
+                    qualityBadge(badge, fontSize: compact ? 10 : 11)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(spacing: 2) {
+                Image(systemName: isFavorite ? "star.fill" : "star")
+                    .font(.system(size: compact ? 15 : 18, weight: .semibold))
+                    .foregroundStyle(isFavorite ? Self.categoryFavoriteColor : .white.opacity(0.58))
+                    .frame(width: compact ? 18 : 22, height: compact ? 18 : 22)
+
+                if hasVisibleCatchup(for: stream) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .frame(width: 14, height: 14)
+                        .accessibilityLabel("Catch-up disponibile")
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+    }
+
+    fileprivate func compactBannerDetails(_ stream: XtreamStream, number: Int, isFavorite: Bool) -> some View {
+        let nameParts = Self.splitNameAndQualityBadge(stream.name)
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Spacer(minLength: 0)
+
+            HStack(spacing: 4) {
+                Text("\(number)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.68))
+                    .lineLimit(1)
+
+                bannerLogo(stream, size: 23, cornerRadius: 5, fallbackSize: 13, padding: 1)
+
+                Spacer(minLength: 0)
+
+                Image(systemName: isFavorite ? "star.fill" : "star")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(isFavorite ? Self.categoryFavoriteColor : .white.opacity(0.58))
+                    .frame(width: 13, height: 13)
+            }
+
+            Spacer(minLength: 0)
+
+            Text(nameParts.name + (nameParts.badge.map { " \($0)" } ?? ""))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+    }
+
+    fileprivate func bannerLogo(_ stream: XtreamStream, size: CGFloat, cornerRadius: CGFloat, fallbackSize: CGFloat, padding: CGFloat) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Color.white.opacity(0.10))
+
+            if let icon = stream.streamIcon, !icon.isEmpty {
+                EPGBannerLogo(urlString: icon, baseHost: imageBaseHost, padding: padding, fallbackSize: fallbackSize)
+            } else {
+                Image(systemName: "tv")
+                    .font(.system(size: fallbackSize))
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
 

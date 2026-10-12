@@ -25,6 +25,10 @@ struct AdaptivePlayerView: View {
     var onPrevious: (() -> Void)? = nil
     var onNext: (() -> Void)? = nil
 
+    /// Rail "Categorie TV" (gruppi e canali live) nel player, come su Android:
+    /// passato solo dalla Live TV, `nil` per tutti gli altri chiamanti.
+    var channelBrowser: PlayerChannelBrowser? = nil
+
     var body: some View {
         PlayerView(
             url: url,
@@ -32,7 +36,8 @@ struct AdaptivePlayerView: View {
             subtitle: subtitle,
             liveInfo: liveInfo,
             onPrevious: onPrevious,
-            onNext: onNext
+            onNext: onNext,
+            channelBrowser: channelBrowser
         )
     }
 }
