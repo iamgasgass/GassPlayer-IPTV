@@ -26,7 +26,11 @@ settings:
 packages:
   KSPlayer:
     url: https://github.com/kingslay/KSPlayer.git
-    branch: main
+    # Fissato all'ultimo commit con i SORGENTI (2026-10-05). Dall'8 ottobre
+    # 2026 il ramo `main` distribuisce KSPlayer.xcframework binario SENZA la
+    # slice iOS per dispositivo (solo simulatore/macOS/tvOS): "While building
+    # for iOS, no library for this platform was found" in archiviazione.
+    revision: be7f60d3b94a0941c643fe8699113cfce4f08e83
   WireGuardKit:
     # Fork di terze parti (non il repo ufficiale WireGuard/wireguard-apple)
     # che distribuisce il backend Go precompilato come XCFramework binario
