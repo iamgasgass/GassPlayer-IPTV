@@ -467,8 +467,8 @@ struct EPGGridView: View {
     ///   così la tile non prosegue mai oltre il centro del banner (né, a maggior ragione, oltre
     ///   il suo bordo sinistro).
     private var tileBleedExtraWidth: CGFloat {
-        // "Categorie TV": nessuno sconfinamento (Android `bleed = 0`).
-        if isCategoryTVMode { return 0 }
+        // "Categorie TV" segue l'assetto come la Guida: in "Scheda" la tile passa sotto il banner fino
+        // alla sua metà (niente bordi destri neri attorno al banner), in "Griglia" nessuno sconfinamento.
         switch channelCardStyle {
         case .grid:
             return 0
