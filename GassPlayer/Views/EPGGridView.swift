@@ -2747,8 +2747,11 @@ extension EPGGridView {
             }
             .frame(width: channelBannerWidth, height: bannerHeight)
             .background {
-                // Superficie vetrosa leggera + tinta (Android `LiquidGlassSurface`).
+                // Superficie vetrosa leggera + tinta (Android `LiquidGlassSurface`) su base NERA OPACA: la tile
+                // che scorre sotto il banner (`tileBleedExtraWidth`) resta visibile solo attorno ai bordi
+                // arrotondati, mai attraverso il banner.
                 ZStack {
+                    shape.fill(Color.black)
                     shape.fill(Color.white.opacity(0.07))
                     shape.fill(tint)
                 }
