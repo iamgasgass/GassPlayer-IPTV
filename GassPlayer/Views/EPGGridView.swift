@@ -327,6 +327,8 @@ struct EPGGridView: View {
     @State private var selectedGroupID: String?
     @State private var selectedProgram: SelectedProgram?
     @State private var reminderToast: String?
+    /// "Aggiorna Live TV" (Categorie TV) in corso: il pulsante resta disattivato fino alla fine.
+    @State private var isRefreshingLive = false
     @State private var catchupPlayback: CatchupPlayback?
     @State private var livePlayback: LivePlaybackItem?
     @State private var renderLimit = 32
@@ -1934,9 +1936,23 @@ struct EPGGridView: View {
 
                 Button {
                     reminderToast = "Aggiornamento guida in corso…"
-                    Task { await refreshAll() }
+                    Task {
+                        // In Categorie TV l'aggiornamento dei canali ha la sua voce ("Aggiorna Live TV"): qui si
+                        // riscarica SOLO la guida, senza riscaricare la playlist.
+                        if isCategoryTVMode { await refreshGuideOnly() } else { await refreshAll() }
+                    }
                 } label: {
                     Label("Aggiorna guida", systemImage: "arrow.clockwise")
+                }
+
+                if isCategoryTVMode {
+                    Button {
+                        reminderToast = "Aggiornamento Live TV in corso…"
+                        Task { await refreshLiveTV() }
+                    } label: {
+                        Label(isRefreshingLive ? "Aggiornamento Live TV…" : "Aggiorna Live TV", systemImage: "tv")
+                    }
+                    .disabled(isRefreshingLive)
                 }
 
                 Button {
@@ -2141,6 +2157,44 @@ struct EPGGridView: View {
         ReminderService.shared.scheduleReminder(for: program, minutesBefore: 5)
         reminderToast = "Promemoria impostato per \"\(program.title)\""
         selectedProgram = nil
+    }
+
+    /// "Aggiorna Live TV": riscarica SOLO i canali live (Xtream: `refresh(kind: .live)`, Film e Serie restano dalla
+    /// cache; M3U: la playlist). La guida poi si rilegge per i canali visibili usando la cache già valida (nessun
+    /// download forzato dell'EPG: per quello c'è "Aggiorna guida").
+    private func refreshLiveTV() async {
+        guard !isRefreshingLive else { return }
+        isRefreshingLive = true
+        defer { isRefreshingLive = false }
+
+        var failure: String?
+        if let m3uSource {
+            await m3uSource.store.reload(url: m3uSource.playlistURL)
+            self.m3uSource = EPGGridM3USource(store: m3uSource.store, playlistURL: m3uSource.playlistURL)
+            failure = m3uSource.store.errorMessage
+        } else if let credentials {
+            await xtreamCatalog.refresh(credentials: credentials, kind: .live)
+            if case .failed(let message) = xtreamCatalog.state { failure = message }
+        } else {
+            return
+        }
+
+        scheduleReload()
+        if let failure, !failure.isEmpty {
+            reminderToast = "Aggiornamento Live TV non riuscito: \(failure)"
+        } else {
+            reminderToast = "Live TV aggiornata"
+        }
+    }
+
+    /// Solo la guida (EPG), senza riscaricare la playlist.
+    private func refreshGuideOnly() async {
+        if let m3uSource, m3uSource.store.hasEPGSource {
+            // L'XMLTV si riscarica in background; `epgRevision` fa rileggere la guida a fine download.
+            m3uSource.store.refreshEPG()
+            return
+        }
+        await reloadEPG(forceRefresh: true)
     }
 
     private func refreshAll() async {
