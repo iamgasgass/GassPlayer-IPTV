@@ -27,6 +27,8 @@ struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var controller: KSPlaybackController
+    /// Miniature della timeline (solo Film / Serie TV).
+    @StateObject private var thumbnails = PlayerThumbnailProvider()
 
     // Environment objects per cronologia canali e ricerca globale
     @EnvironmentObject private var recentlyWatched: RecentlyWatchedStore
@@ -232,6 +234,7 @@ struct PlayerView: View {
         // il caricamento già fatto da `KSPlaybackController.init`.
         .onChange(of: url) { newURL in
             hasAdvancedToNextEpisode = false
+            thumbnails.reset()
             controller.load(url: newURL, title: title)
         }
         .onChange(of: isAnyModalPresented) { presented in
@@ -246,6 +249,7 @@ struct PlayerView: View {
             // provider (altrimenti resta uno slot occupato) e salva la
             // posizione per la ripresa.
             controller.stop()
+            thumbnails.reset()
             hideControlsTask?.cancel()
             hudHideTask?.cancel()
             toastTask?.cancel()
@@ -553,22 +557,24 @@ struct PlayerView: View {
     private var progressBar: some View {
         VStack(spacing: 8) {
             if controller.duration > 0 {
-                Slider(
-                    value: Binding(
-                        get: { controller.currentTime },
-                        set: { controller.seek(to: $0) }
-                    ),
-                    in: 0...max(controller.duration, 1),
-                    onEditingChanged: { editing in
+                // Parte già scaricata visibile sulla traccia e anteprima del
+                // punto scelto durante il trascinamento (seek al rilascio).
+                PlayerScrubBar(
+                    currentTime: controller.currentTime,
+                    duration: controller.duration,
+                    bufferedTime: controller.bufferedTime,
+                    thumbnailSource: controller.isLiveContent ? nil : controller.thumbnailSource,
+                    thumbnails: thumbnails,
+                    onScrubbingChanged: { editing in
                         isScrubbing = editing
                         if editing {
                             hideControlsTask?.cancel()
                         } else {
                             scheduleAutoHide()
                         }
-                    }
+                    },
+                    onSeek: { controller.seek(to: $0) }
                 )
-                .tint(.white)
             }
 
             // CORREZIONE MANIACALE HSTACK TRASPORTO / ZAPPING:

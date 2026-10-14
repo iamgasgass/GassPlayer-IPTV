@@ -231,35 +231,47 @@ struct ContinueWatchingSection: View {
     /// e info serie caricate in background); tutto il resto (film, live)
     /// riapre direttamente lo stream salvato, come prima.
     private func resume(_ item: RecentlyWatchedItem) {
-        if item.kind == XtreamStreamKind.series.rawValue,
-           let credentials = sourceManager.activeSource?.xtreamCredentials {
-            let parts = item.id.components(separatedBy: "|")
-            let host = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-
-            if parts.count >= 5,
-               parts[0] == host,
-               parts[1] == credentials.username,
-               let seriesId = Int(parts[3]) {
-                seriesResume = SeriesResumeRequest(
-                    item: item,
-                    credentials: credentials,
-                    seriesId: seriesId,
-                    seriesName: Self.displayTitle(for: item),
-                    episodeStreamId: parts[4],
-                    idPrefix: parts[0..<4].joined(separator: "|")
-                )
-                return
-            }
+        if let credentials = sourceManager.activeSource?.xtreamCredentials,
+           let request = Self.seriesResumeRequest(for: item, credentials: credentials) {
+            seriesResume = request
+            return
         }
 
         resumeItem = item
+    }
+
+    /// Richiesta di ripresa di un episodio (`host|utente|series|idSerie|idEpisodio`)
+    /// per la sorgente attiva; `nil` per film, live o episodi di un'altra
+    /// sorgente. Condivisa con la sezione "In evidenza" della Home, che riprende
+    /// la serie esattamente come la card di "Continua a guardare".
+    static func seriesResumeRequest(for item: RecentlyWatchedItem, credentials: XtreamCredentials) -> SeriesResumeRequest? {
+        guard item.kind == XtreamStreamKind.series.rawValue else { return nil }
+
+        let parts = item.id.components(separatedBy: "|")
+        let host = credentials.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        guard parts.count >= 5,
+              parts[0] == host,
+              parts[1] == credentials.username,
+              let seriesId = Int(parts[3]) else {
+            return nil
+        }
+
+        return SeriesResumeRequest(
+            item: item,
+            credentials: credentials,
+            seriesId: seriesId,
+            seriesName: displayTitle(for: item),
+            episodeStreamId: parts[4],
+            idPrefix: parts[0..<4].joined(separator: "|")
+        )
     }
 
     // MARK: - Titolo e identità
 
     /// Per le serie il titolo registrato è "Serie · Episodio": la card
     /// mostra solo il nome della serie, come nel riferimento.
-    private static func displayTitle(for item: RecentlyWatchedItem) -> String {
+    static func displayTitle(for item: RecentlyWatchedItem) -> String {
         guard item.kind == XtreamStreamKind.series.rawValue,
               let name = item.title.components(separatedBy: " · ").first?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -272,7 +284,7 @@ struct ContinueWatchingSection: View {
 
     /// `host|utente|series|idSerie` (l'id registrato ha in coda l'id
     /// dell'episodio): identifica la serie a prescindere dall'episodio.
-    private static func seriesKey(for item: RecentlyWatchedItem) -> String? {
+    static func seriesKey(for item: RecentlyWatchedItem) -> String? {
         let parts = item.id.components(separatedBy: "|")
         guard parts.count >= 4 else { return nil }
         return parts[0..<4].joined(separator: "|")
@@ -401,7 +413,7 @@ struct ClearGlassCapsule: ViewModifier {
 // MARK: - Ripresa di un episodio con precedente/successivo
 
 /// Dati per riprendere un episodio da "Continua a guardare".
-private struct SeriesResumeRequest: Identifiable {
+struct SeriesResumeRequest: Identifiable {
     let id = UUID()
     let item: RecentlyWatchedItem
     let credentials: XtreamCredentials
@@ -428,7 +440,7 @@ private struct SeriesResumeRequest: Identifiable {
 /// precedente/successivo e "Prossimo Episodio" (tasto negli ultimi 60 s e
 /// avanzamento automatico a fine episodio, se attivo in Impostazioni),
 /// navigando gli episodi della stessa stagione.
-private struct SeriesResumePlayer: View {
+struct SeriesResumePlayer: View {
     let request: SeriesResumeRequest
     let record: (XtreamSeriesInfo.Episode, URL) -> Void
 

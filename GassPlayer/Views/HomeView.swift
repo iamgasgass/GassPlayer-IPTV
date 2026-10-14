@@ -88,6 +88,10 @@ struct HomeView: View {
     @State private var homeSearchM3UMovies: [M3UChannel] = []
     @State private var homeSearchM3USeries: [M3UChannel] = []
     @State private var homeM3UTarget: M3UChannel?
+    /// Sezione "In evidenza": contenuti del carosello e riprese avviate da lì.
+    @StateObject private var featuredModel = HomeFeaturedModel()
+    @State private var featuredResumeItem: RecentlyWatchedItem?
+    @State private var featuredSeriesResume: SeriesResumeRequest?
 
     var body: some View {
         NavigationStack {
@@ -196,6 +200,11 @@ struct HomeView: View {
             } message: {
                 Text("Questo titolo di tendenza non è presente nella sorgente attiva.")
             }
+            .modifier(HomeFeaturedPresenter(
+                resumeItem: $featuredResumeItem,
+                seriesResume: $featuredSeriesResume,
+                recentlyWatched: recentlyWatched
+            ))
             .sheet(isPresented: $showManageActiveSource) {
                 if let activeSource = sourceManager.activeSource {
                     SourceManageView(source: activeSource)
@@ -220,6 +229,10 @@ struct HomeView: View {
                     // risultati.
                     if !isHomeSearching || section == .heading || section == .search {
                         sectionView(section)
+                            // "In evidenza" disegna la sua immagine anche
+                            // sotto le sezioni che la precedono (ricerca,
+                            // intestazione): deve stare dietro di loro.
+                            .zIndex(section == .featured ? -1 : 0)
                     }
                 }
 
@@ -232,12 +245,20 @@ struct HomeView: View {
                     }
                 }
             }
+            .coordinateSpace(name: HomeFeaturedSection.coordinateSpaceName)
             .animation(.snappy(duration: 0.25), value: homeLayout.order)
             .padding(.horizontal, 20)
             .padding(.top, 12)
             .padding(.bottom, 32)
         }
         .scrollDismissesKeyboard(.interactively)
+        // Con "In evidenza" l'immagine arriva fino al bordo dello schermo,
+        // sotto la barra di navigazione (trasparente) come nel riferimento.
+        .toolbarBackground(showsFeatured ? .hidden : .automatic, for: .navigationBar)
+        .modifier(HomeFeaturedScrollEdge(isActive: showsFeatured))
+        .task(id: featuredSignature) {
+            reloadFeatured()
+        }
         .task(id: homeSearchQuery) {
             await runHomeSearch()
         }
@@ -610,6 +631,63 @@ struct HomeView: View {
         case .categories:
             // Solo nelle sezioni Live TV / VOD / Serie TV.
             EmptyView()
+
+        case .featured:
+            // A tutta larghezza: il contenitore ha 20 pt di margine.
+            HomeFeaturedSection(
+                model: featuredModel,
+                baseHost: sourceManager.activeSource?.host ?? "",
+                onSelect: openFeatured
+            )
+            .padding(.horizontal, -20)
+        }
+    }
+
+    // MARK: - In evidenza
+
+    private var showsFeatured: Bool {
+        homeLayout.order.contains(.featured) && !isHomeSearching && !featuredModel.entries.isEmpty
+    }
+
+    /// Cambia quando cambiano sorgente, cronologia, catalogo o chiave TMDB:
+    /// il carosello viene ricostruito solo allora.
+    private var featuredSignature: String {
+        guard homeLayout.order.contains(.featured) else { return "off" }
+        return [
+            sourceManager.activeSourceId?.uuidString ?? "none",
+            recentlyWatched.items.prefix(6).map(\.id).joined(separator: ","),
+            String(xtreamCatalog.vodStreams.count),
+            String(xtreamCatalog.seriesItems.count),
+            TMDBService.hasAPIKey ? "tmdb" : "-"
+        ].joined(separator: "|")
+    }
+
+    private func reloadFeatured() {
+        guard homeLayout.order.contains(.featured) else { return }
+        featuredModel.reload(
+            signature: featuredSignature,
+            recent: recentlyWatched.items,
+            movies: xtreamCatalog.vodStreams,
+            series: xtreamCatalog.seriesItems,
+            credentials: sourceManager.activeSource?.xtreamCredentials
+        )
+    }
+
+    /// "Continua a guardare" riprende come la card della sezione omonima;
+    /// "Maggiori informazioni" apre la scheda del film o della serie.
+    private func openFeatured(_ entry: HomeFeaturedEntry) {
+        switch entry.action {
+        case .resume(let item):
+            if let credentials = sourceManager.activeSource?.xtreamCredentials,
+               let request = ContinueWatchingSection.seriesResumeRequest(for: item, credentials: credentials) {
+                featuredSeriesResume = request
+            } else {
+                featuredResumeItem = item
+            }
+        case .movie(let stream):
+            homeMovieTarget = stream
+        case .series(let series):
+            homeSeriesTarget = series
         }
     }
 

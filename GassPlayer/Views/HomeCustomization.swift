@@ -9,6 +9,10 @@ import UIKit
 /// preferiti, tendenza, On demand, Sorgenti), così il foglio "Sezioni home"
 /// mostra e controlla esattamente ciò che c'è in Home.
 enum HomeSectionID: String, CaseIterable, Codable, Identifiable {
+    /// Sezione "In evidenza": carosello a tutta larghezza in cima alla Home
+    /// con i contenuti più rilevanti della libreria (continua a guardare,
+    /// consigliati per te, di tendenza). Regolabile e rimovibile da qui.
+    case featured
     case heading
     case continueWatching
     case sourceCard
@@ -32,6 +36,7 @@ enum HomeSectionID: String, CaseIterable, Codable, Identifiable {
 
     var title: String {
         switch self {
+        case .featured: return "In evidenza"
         case .heading: return "Intestazione"
         case .continueWatching: return "Continua a guardare"
         case .sourceCard: return "Sorgente"
@@ -77,7 +82,7 @@ final class HomeLayoutStore: ObservableObject {
 
     /// Tutte le sezioni della panoramica Home, nell'ordine predefinito.
     nonisolated static let homeSections: [HomeSectionID] = [
-        .heading, .search, .continueWatching, .sourceCard, .sources,
+        .search, .featured, .heading, .continueWatching, .sourceCard, .sources,
         .liveTV, .guidaTV, .onDemand, .favoriteChannels, .favoriteSeries,
         .favoriteMovies, .trendingSeries, .trendingMovies
     ]
@@ -114,9 +119,16 @@ final class HomeLayoutStore: ObservableObject {
                 .filter { sections.contains($0) }
             let hidden = Set(stored.hidden.compactMap(HomeSectionID.init(rawValue:)))
 
-            // Sezioni nate dopo il salvataggio: in coda, visibili.
+            // Sezioni nate dopo il salvataggio: in coda, visibili. "In
+            // evidenza" invece va in cima (subito dopo la ricerca, se c'è),
+            // dove la Home la mostra a tutta larghezza.
             for section in sections where !visible.contains(section) && !hidden.contains(section) {
-                visible.append(section)
+                if section == .featured {
+                    let index = visible.firstIndex(of: .search).map { $0 + 1 } ?? 0
+                    visible.insert(section, at: index)
+                } else {
+                    visible.append(section)
+                }
             }
 
             order = visible
