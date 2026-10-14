@@ -97,6 +97,10 @@ struct TMDBImageLogo: Decodable {
 
 struct TMDBImages: Decodable {
     let logos: [TMDBImageLogo]
+    /// Locandine e immagini orizzontali (stessa forma dei loghi): servono
+    /// alla sezione "In evidenza" della Home per l'immagine senza testo.
+    let posters: [TMDBImageLogo]?
+    let backdrops: [TMDBImageLogo]?
 }
 
 struct TMDBExternalIDs: Decodable {
@@ -181,6 +185,25 @@ struct TMDBDetails: Decodable {
 
     var genreNames: [String] {
         (genres ?? []).map(\.name)
+    }
+
+    /// Locandina verticale SENZA testo (`iso_639_1` nullo), come l'immagine
+    /// a tutto schermo della sezione "In evidenza": il titolo è già il logo
+    /// disegnato sopra. Ripiega sulla locandina normale.
+    var textlessPosterURL: URL? {
+        if let path = images?.posters?.first(where: { $0.iso6391 == nil })?.filePath {
+            return URL(string: "https://image.tmdb.org/t/p/w780\(path)")
+        }
+        guard let posterPath, !posterPath.isEmpty else { return nil }
+        return URL(string: "https://image.tmdb.org/t/p/w780\(posterPath)")
+    }
+
+    /// Immagine orizzontale senza testo (schermi larghi: iPad orizzontale).
+    var textlessBackdropURL: URL? {
+        if let path = images?.backdrops?.first(where: { $0.iso6391 == nil })?.filePath {
+            return URL(string: "https://image.tmdb.org/t/p/w1280\(path)")
+        }
+        return backdropURL
     }
 
     func topCast(_ limit: Int = 12) -> [TMDBCastMember] {
@@ -847,6 +870,56 @@ extension TMDBService {
         trendingCache[key] = (Date(), items)
 
         return Array(items.prefix(limit))
+    }
+
+    /// Titoli consigliati da TMDB a partire da un titolo già visto
+    /// (`{movie|tv}/{id}/recommendations`): alimentano "Per te" nella sezione
+    /// "In evidenza" della Home (solo quelli presenti nella sorgente attiva).
+    func recommendations(id: Int, isSeries: Bool, limit: Int = 20) async throws -> [TMDBTrendingItem] {
+        guard let apiKey = UserDefaults.standard.string(forKey: Self.apiKeyDefaultsKey), !apiKey.isEmpty else {
+            throw TMDBError.missingAPIKey
+        }
+
+        let key = isSeries ? "tv" : "movie"
+        let cacheKey = "rec::\(key)::\(id)"
+        if let cached = trendingCache[cacheKey], Date().timeIntervalSince(cached.date) < 1800 {
+            return Array(cached.items.prefix(limit))
+        }
+
+        let genres = await genreNames(isSeries: isSeries, apiKey: apiKey)
+        var components = URLComponents(string: "https://api.themoviedb.org/3/\(key)/\(id)/recommendations")!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "language", value: "it-IT")
+        ]
+        guard let url = components.url else { throw TMDBError.noResults }
+
+        do {
+            let (data, _) = try await session.data(from: url)
+            let decoded = try JSONDecoder().decode(TMDBTrendingResponse.self, from: data)
+            var seen = Set<Int>()
+            let items: [TMDBTrendingItem] = decoded.results.compactMap { raw in
+                guard seen.insert(raw.id).inserted,
+                      let title = (raw.title ?? raw.name)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !title.isEmpty else { return nil }
+                let date = raw.releaseDate ?? raw.firstAirDate
+                return TMDBTrendingItem(
+                    id: raw.id,
+                    title: title,
+                    originalTitle: raw.originalTitle ?? raw.originalName,
+                    genre: raw.genreIds?.lazy.compactMap { genres[$0] }.first,
+                    backdropURL: raw.backdropPath.flatMap { URL(string: "https://image.tmdb.org/t/p/w780\($0)") },
+                    year: date.flatMap { $0.count >= 4 ? String($0.prefix(4)) : nil },
+                    isSeries: isSeries
+                )
+            }
+            trendingCache[cacheKey] = (Date(), items)
+            return Array(items.prefix(limit))
+        } catch let error as TMDBError {
+            throw error
+        } catch {
+            throw TMDBError.network(error)
+        }
     }
 
     private func genreNames(isSeries: Bool, apiKey: String) async -> [Int: String] {

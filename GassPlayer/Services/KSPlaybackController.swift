@@ -173,6 +173,9 @@ final class KSPlaybackController: NSObject, ObservableObject {
     @Published var state: KSPlayerState = .initialized
     @Published var currentTime: TimeInterval = 0
     @Published var duration: TimeInterval = 0
+    /// Fin dove il contenuto è già scaricato (`playableTime` del motore):
+    /// la timeline lo mostra come parte chiara oltre la posizione.
+    @Published private(set) var bufferedTime: TimeInterval = 0
     @Published var lastError: String?
     @Published var bufferingProgress: Int = 0
     /// Testo mostrato sotto lo spinner mentre il controller diagnostica il
@@ -238,6 +241,12 @@ final class KSPlaybackController: NSObject, ObservableObject {
     }
 
     /// `true` per Live TV (nessuna durata, URL non film/serie).
+    /// Indirizzo e User-Agent realmente in uso: le miniature della timeline
+    /// li usano per leggere lo stesso flusso del player.
+    var thumbnailSource: (url: URL, userAgent: String) {
+        (activeURL, activeUserAgent)
+    }
+
     var isLiveContent: Bool {
         PlaybackPositionStore.identity(for: currentURL) == nil && duration <= 0
     }
@@ -499,6 +508,7 @@ final class KSPlaybackController: NSObject, ObservableObject {
         lastError = nil
         currentTime = 0
         duration = 0
+        bufferedTime = 0
         bufferingProgress = 0
         hasEverStartedPlaying = false
         didAttemptSoftwareFallback = false
@@ -840,6 +850,10 @@ extension KSPlaybackController: KSPlayerLayerDelegate {
 
     func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
         guard layer === self.layer else { return }
+        let playable = layer.player.playableTime
+        if playable.isFinite, abs(playable - bufferedTime) >= 0.5 {
+            bufferedTime = max(0, playable)
+        }
         let durationChanged = totalTime != duration
         guard durationChanged || abs(currentTime - self.currentTime) >= 0.2 else { return }
         self.currentTime = currentTime
