@@ -317,6 +317,7 @@ struct HomeFeaturedSection: View {
         static let logoMaxWidth: CGFloat = 270
         static let logoMaxHeight: CGFloat = 86
         static let dotSize: CGFloat = 7
+        static let buttonHeight: CGFloat = 46
     }
 
     var body: some View {
@@ -385,21 +386,25 @@ struct HomeFeaturedSection: View {
                     .padding(.bottom, 13)
             }
 
-            // Pulsante Liquid Glass identico al tasto "Modifica" (ClearGlassCapsule).
+            // Vetro del tasto "Modifica" con le dimensioni del pulsante bianco
+            // di prima (testo 17, altezza 46, margini 22).
             Button {
                 onSelect(entry)
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     Image(systemName: entry.isResume ? "play.fill" : "info.circle")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                     Text(entry.isResume ? "Continua a guardare" : "Maggiori informazioni")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                         .lineLimit(1)
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 22)
+                .frame(height: Metrics.buttonHeight)
+                .modifier(HomeFeaturedGlassCapsule())
+                .contentShape(Capsule())
             }
-            .modifier(ClearGlassCapsule())
+            .buttonStyle(.plain)
             .accessibilityLabel("\(entry.isResume ? "Continua a guardare" : "Maggiori informazioni"): \(entry.title)")
         }
         .frame(maxWidth: .infinity)
@@ -603,5 +608,21 @@ struct HomeFeaturedPresenter: ViewModifier {
                     )
                 }
             }
+    }
+}
+
+/// Capsula Liquid Glass del pulsante "In evidenza": stesso vetro del tasto
+/// "Modifica" (`ClearGlassCapsule`) applicato a un'etichetta a misura fissa.
+private struct HomeFeaturedGlassCapsule: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            content
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
+                }
+        }
     }
 }
