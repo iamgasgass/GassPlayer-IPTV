@@ -316,10 +316,7 @@ struct HomeFeaturedSection: View {
         static let topBleed: CGFloat = 220
         static let logoMaxWidth: CGFloat = 270
         static let logoMaxHeight: CGFloat = 86
-        static let buttonHeight: CGFloat = 46
         static let dotSize: CGFloat = 7
-        /// Avanzamento automatico, come nel riferimento.
-        static let autoAdvanceNanoseconds: UInt64 = 2_500_000_000
     }
 
     var body: some View {
@@ -356,13 +353,8 @@ struct HomeFeaturedSection: View {
             }
             .contentShape(Rectangle())
             .simultaneousGesture(swipeGesture(count: entries.count, index: index))
+            // Nessun cambio automatico: si scorre solo col dito o toccando i puntini.
             .animation(.easeInOut(duration: 0.6), value: index)
-            .task(id: "\(index)|\(entries.count)") {
-                guard entries.count > 1 else { return }
-                try? await Task.sleep(nanoseconds: Metrics.autoAdvanceNanoseconds)
-                guard !Task.isCancelled else { return }
-                selection = (index + 1) % entries.count
-            }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("In evidenza")
         }
@@ -393,23 +385,21 @@ struct HomeFeaturedSection: View {
                     .padding(.bottom, 13)
             }
 
+            // Pulsante Liquid Glass identico al tasto "Modifica" (ClearGlassCapsule).
             Button {
                 onSelect(entry)
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: entry.isResume ? "play.fill" : "info.circle")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                     Text(entry.isResume ? "Continua a guardare" : "Maggiori informazioni")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .lineLimit(1)
                 }
-                .foregroundStyle(.black)
-                .padding(.horizontal, 22)
-                .frame(height: Metrics.buttonHeight)
-                .background(Color.white, in: Capsule())
-                .contentShape(Capsule())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
             }
-            .buttonStyle(.plain)
+            .modifier(ClearGlassCapsule())
             .accessibilityLabel("\(entry.isResume ? "Continua a guardare" : "Maggiori informazioni"): \(entry.title)")
         }
         .frame(maxWidth: .infinity)

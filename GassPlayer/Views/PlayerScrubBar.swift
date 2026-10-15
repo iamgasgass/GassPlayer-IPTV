@@ -136,92 +136,81 @@ struct PlayerScrubBar: View {
     let onSeek: (TimeInterval) -> Void
 
     @State private var scrubTime: TimeInterval?
+    @State private var isEditing = false
 
     private enum Metrics {
-        static let barHeight: CGFloat = 30
-        static let trackHeight: CGFloat = 5
-        static let activeTrackHeight: CGFloat = 8
-        static let thumbSize: CGFloat = 16
-        static let activeThumbSize: CGFloat = 22
+        static let bufferedTrackHeight: CGFloat = 4
         static let previewWidth: CGFloat = 176
         static let previewHeight: CGFloat = 99
         static let previewCornerRadius: CGFloat = 16
         static let previewSpacing: CGFloat = 6
-        static let previewGap: CGFloat = 12
+        static let previewGap: CGFloat = 10
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            let width = max(proxy.size.width, 1)
-            let shown = scrubTime ?? currentTime
-            let progress = fraction(shown)
-            let buffered = fraction(max(bufferedTime, currentTime))
-            let isScrubbing = scrubTime != nil
-            let trackHeight = isScrubbing ? Metrics.activeTrackHeight : Metrics.trackHeight
-            let thumbSize = isScrubbing ? Metrics.activeThumbSize : Metrics.thumbSize
-
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.white.opacity(0.22))
-                    .frame(height: trackHeight)
-
-                Capsule()
-                    .fill(Color.white.opacity(0.45))
-                    .frame(width: width * buffered, height: trackHeight)
-
-                Capsule()
-                    .fill(Color.white)
-                    .frame(width: width * progress, height: trackHeight)
-
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: thumbSize, height: thumbSize)
-                    .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
-                    .offset(x: width * progress - thumbSize / 2)
-            }
-            .frame(width: width, height: Metrics.barHeight)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        if scrubTime == nil { onScrubbingChanged(true) }
-                        let time = timeAt(value.location.x, width: width)
+        // Lo stesso `Slider` nativo bianco di prima (Liquid Glass su iOS 26):
+        // dietro la traccia la parte già scaricata, sopra l'anteprima.
+        Slider(
+            value: Binding(
+                get: { scrubTime ?? currentTime },
+                set: { time in
+                    if isEditing {
                         scrubTime = time
                         if thumbnailSource != nil { thumbnails.request(at: time) }
-                    }
-                    .onEnded { value in
-                        let time = timeAt(value.location.x, width: width)
-                        scrubTime = nil
+                    } else {
                         onSeek(time)
-                        onScrubbingChanged(false)
                     }
-            )
-            .overlay(alignment: .topLeading) {
-                if let scrubTime {
+                }
+            ),
+            in: 0...max(duration, 1),
+            onEditingChanged: { editing in
+                isEditing = editing
+                if editing {
+                    scrubTime = currentTime
+                    onScrubbingChanged(true)
+                } else {
+                    if let scrubTime { onSeek(scrubTime) }
+                    scrubTime = nil
+                    onScrubbingChanged(false)
+                }
+            }
+        )
+        .tint(.white)
+        .background {
+            GeometryReader { proxy in
+                Capsule()
+                    .fill(Color.white.opacity(0.35))
+                    .frame(
+                        width: proxy.size.width * fraction(max(bufferedTime, currentTime)),
+                        height: Metrics.bufferedTrackHeight
+                    )
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .leading)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+        // Anteprima SOPRA la barra: il fondo della card resta a `previewGap`
+        // dal bordo superiore dello slider, centrata sul punto scelto.
+        .overlay {
+            GeometryReader { proxy in
+                if isEditing, let scrubTime {
                     preview(time: scrubTime)
                         .fixedSize()
-                        .alignmentGuide(.top) { dimensions in dimensions.height + Metrics.previewGap }
-                        .offset(x: previewX(progress: progress, width: width))
-                        .allowsHitTesting(false)
+                        .offset(
+                            x: previewX(progress: fraction(scrubTime), width: proxy.size.width),
+                            y: -(proxy.size.height + Metrics.previewGap)
+                        )
+                        .frame(width: proxy.size.width, height: proxy.size.height, alignment: .bottomLeading)
                         .transition(.opacity)
                 }
             }
-            .animation(.easeOut(duration: 0.15), value: isScrubbing)
+            .allowsHitTesting(false)
         }
-        .frame(height: Metrics.barHeight)
+        .zIndex(1)
+        .animation(.easeOut(duration: 0.15), value: isEditing)
         .task(id: thumbnailSource?.url.absoluteString) {
             guard let source = thumbnailSource, duration > 0 else { return }
             thumbnails.prepare(url: source.url, userAgent: source.userAgent)
-        }
-        .accessibilityElement()
-        .accessibilityLabel("Posizione")
-        .accessibilityValue("\(Self.formatted(currentTime)) di \(Self.formatted(duration))")
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment: onSeek(min(duration, currentTime + 15))
-            case .decrement: onSeek(max(0, currentTime - 15))
-            @unknown default: break
-            }
         }
     }
 
