@@ -163,6 +163,29 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         if ffThumbnails.isEmpty, wantedTime != nil, image == nil { image = thumbnail }
     }
 
+    // MARK: Anteprima in tempo reale
+
+    /// Player nascosto dell'anteprima: si sposta mentre si trascina e si vede
+    /// SOLO dentro la card (il video principale dietro resta fermo).
+    let previewEngine = PlayerScrubPreviewEngine()
+
+    /// Mostra subito un fotogramma (quello a schermo all'inizio del trascinamento).
+    func showLive(_ cgImage: CGImage) {
+        image = Self.scaledThumbnail(cgImage)
+    }
+
+    private static func scaledThumbnail(_ cgImage: CGImage) -> UIImage {
+        let source = UIImage(cgImage: cgImage)
+        let width: CGFloat = 360
+        let scale = width / max(source.size.width, 1)
+        let size = CGSize(width: width, height: max(1, (source.size.height * scale).rounded()))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            source.draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+
     /// Anteprima del punto `time` (chiamata a ogni movimento del dito).
     func request(at time: TimeInterval) {
         wantedTime = max(0, time)
@@ -174,6 +197,8 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
     /// Fine dello scrubbing: nessun'altra richiesta per il punto lasciato.
     func finishRequests() {
         wantedTime = nil
+        // La prossima anteprima riparte dal fotogramma a schermo, non dall'ultima di questa volta.
+        image = nil
     }
 
     /// Mostra subito il fotogramma pronto più vicino al punto richiesto
@@ -257,6 +282,7 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         image = nil
         sourceKey = nil
         sourceURL = nil
+        previewEngine.teardown()
     }
 }
 
@@ -297,7 +323,10 @@ struct PlayerScrubBar: View {
                 set: { time in
                     if !isEditing { beginScrub() }
                     scrubTime = time
-                    if thumbnailSource != nil { thumbnails.request(at: time) }
+                    if let source = thumbnailSource {
+                        // Tempo reale: si sposta SOLO il player nascosto dell'anteprima.
+                        thumbnails.previewEngine.scrub(url: source.url, userAgent: source.userAgent, to: time)
+                    }
                     armReleaseWatchdog()
                 }
             ),
@@ -348,6 +377,7 @@ struct PlayerScrubBar: View {
             isEditing = false
             scrubTime = nil
             thumbnails.finishRequests()
+            thumbnails.previewEngine.endSession()
             onScrubbingChanged(false)
         }
     }
@@ -357,19 +387,16 @@ struct PlayerScrubBar: View {
     private func beginScrub() {
         isEditing = true
         scrubTime = currentTime
-        // Le anteprime si preparano solo da qui, al primo trascinamento.
         if let source = thumbnailSource, duration > 0 {
-            thumbnails.prepare(url: source.url, userAgent: source.userAgent, duration: duration)
-            // Subito il fotogramma a schermo, intanto arrivano quelli del punto scelto.
-            let playbackTime = currentTime
+            // Subito il fotogramma a schermo; intanto il player nascosto dell'anteprima
+            // (aperto solo da qui, al primo trascinamento) va sul punto scelto.
+            thumbnails.previewEngine.beginSession()
             if let currentFrame {
                 Task { @MainActor in
-                    if let frame = await currentFrame() {
-                        thumbnails.seed(currentFrame: frame, at: playbackTime)
-                    }
+                    if let frame = await currentFrame(), isEditing { thumbnails.showLive(frame) }
                 }
             }
-            thumbnails.request(at: currentTime)
+            thumbnails.previewEngine.scrub(url: source.url, userAgent: source.userAgent, to: currentTime)
         }
         onScrubbingChanged(true)
         armReleaseWatchdog()
@@ -385,6 +412,7 @@ struct PlayerScrubBar: View {
         isEditing = false
         scrubTime = nil
         thumbnails.finishRequests()
+        thumbnails.previewEngine.endSession()
         if let target { onSeek(target) }
         onScrubbingChanged(false)
     }
@@ -402,10 +430,18 @@ struct PlayerScrubBar: View {
 
     private func preview(time: TimeInterval) -> some View {
         VStack(spacing: Metrics.previewSpacing) {
-            if thumbnailSource != nil, let image = thumbnails.image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
+            if thumbnailSource != nil {
+                ZStack {
+                    Color.black
+                    // Sotto: il fotogramma a schermo all'inizio del trascinamento.
+                    if let image = thumbnails.image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    }
+                    // Sopra: il player nascosto che segue il dito in tempo reale.
+                    PlayerScrubPreviewSurface(engine: thumbnails.previewEngine)
+                }
                     .frame(width: Metrics.previewWidth, height: Metrics.previewHeight)
                     .clipShape(RoundedRectangle(cornerRadius: Metrics.previewCornerRadius, style: .continuous))
                     .overlay {
@@ -479,4 +515,183 @@ extension KSPlaybackController {
     func timelineCurrentFrame() async -> CGImage? {
         await layer.player.thumbnailImageAtCurrentTime()
     }
+}
+
+// MARK: - Player nascosto dell'anteprima (iOS)
+
+/// Secondo player KSPlayer MUTO che legge lo stesso flusso e si sposta
+/// mentre si trascina la barra: si vede solo nella card dell'anteprima, il
+/// video principale dietro non si muove fino al rilascio. Una ricerca alla
+/// volta: finita quella, parte subito l'ultimo punto richiesto. Aperto al
+/// primo trascinamento, riusato per i successivi; chiuso (connessione
+/// compresa) 30 s dopo l'ultimo trascinamento, cambiando contenuto o
+/// uscendo dal player.
+@MainActor
+final class PlayerScrubPreviewEngine: NSObject, ObservableObject, KSPlayerLayerDelegate {
+    /// Vero quando la card mostra un fotogramma del punto scelto.
+    @Published private(set) var hasFrame = false
+
+    let container: UIView = {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        view.clipsToBounds = true
+        return view
+    }()
+
+    private var layer: KSPlayerLayer?
+    private weak var playerView: UIView?
+    private var key: String?
+    private var seekInFlight = false
+    private var pending: TimeInterval?
+    private var idleTeardown: Task<Void, Never>?
+
+    func beginSession() {
+        idleTeardown?.cancel()
+        idleTeardown = nil
+        // Mai un fotogramma vecchio: la card mostra il fotogramma a schermo
+        // finché il player dell'anteprima non è sul nuovo punto.
+        hasFrame = false
+    }
+
+    func scrub(url: URL, userAgent: String, to time: TimeInterval) {
+        let target = max(0, time)
+        if url.absoluteString != key {
+            teardown()
+            key = url.absoluteString
+            start(url: url, userAgent: userAgent, at: target)
+            return
+        }
+        pending = target
+        pump()
+    }
+
+    func endSession() {
+        pending = nil
+        layer?.pause()
+        idleTeardown?.cancel()
+        idleTeardown = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.teardown()
+        }
+    }
+
+    func teardown() {
+        idleTeardown?.cancel()
+        idleTeardown = nil
+        if let old = layer {
+            old.delegate = nil
+            old.pause()
+            old.player.shutdown()
+        }
+        layer = nil
+        playerView?.removeFromSuperview()
+        playerView = nil
+        key = nil
+        seekInFlight = false
+        pending = nil
+        hasFrame = false
+    }
+
+    private func start(url: URL, userAgent: String, at time: TimeInterval) {
+        let options = KSOptions()
+        options.userAgent = userAgent
+        options.registerRemoteControll = false
+        options.canStartPictureInPictureAutomaticallyFromInline = false
+        options.isAccurateSeek = false
+        if time > 0 { options.startPlayTime = time }
+        if url.scheme == "http" || url.scheme == "https" {
+            options.formatContextOptions["user_agent"] = userAgent
+            options.formatContextOptions["reconnect"] = 1
+            options.formatContextOptions["reconnect_streamed"] = 1
+            options.formatContextOptions["reconnect_delay_max"] = 2
+            options.formatContextOptions["timeout"] = 15_000_000
+            options.formatContextOptions["rw_timeout"] = 15_000_000
+            // Stessa connessione HTTP per tutte le ricerche dell'anteprima.
+            options.formatContextOptions["multiple_requests"] = 1
+        }
+
+        let newLayer = KSPlayerLayer(url: url, isAutoPlay: true, options: options, delegate: nil)
+        newLayer.delegate = self
+        newLayer.player.isMuted = true
+        newLayer.player.contentMode = .scaleAspectFill
+        layer = newLayer
+
+        if let view = newLayer.player.view {
+            view.backgroundColor = .clear
+            view.isUserInteractionEnabled = false
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: container.topAnchor),
+                view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            ])
+            playerView = view
+        }
+        newLayer.play()
+    }
+
+    private func pump() {
+        guard let layer, layer.player.isReadyToPlay, !seekInFlight, let time = pending else { return }
+        pending = nil
+        seekInFlight = true
+        // In riproduzione (muta) il nuovo fotogramma compare subito dopo la ricerca.
+        layer.seek(time: time, autoPlay: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.seekInFlight = false
+                // Il tempo di disegnare il primo fotogramma dopo la ricerca.
+                try? await Task.sleep(nanoseconds: 80_000_000)
+                if self.layer != nil, self.key != nil { self.hasFrame = true }
+                self.pump()
+            }
+        }
+    }
+
+    // MARK: KSPlayerLayerDelegate
+
+    func player(layer: KSPlayerLayer, state: KSPlayerState) {
+        guard layer === self.layer else { return }
+        layer.player.isMuted = true
+        if state == .readyToPlay || state == .bufferFinished {
+            hasFrame = true
+            pump()
+        }
+    }
+
+    func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {}
+
+    func player(layer: KSPlayerLayer, finish error: Error?) {
+        guard layer === self.layer else { return }
+        hasFrame = false
+    }
+
+    func player(layer: KSPlayerLayer, bufferedCount: Int, consumeTime: TimeInterval) {}
+}
+
+/// Superficie del player dell'anteprima dentro la card: trasparente finché
+/// non c'è un fotogramma del punto scelto (sotto resta quello iniziale).
+private struct PlayerScrubPreviewSurface: View {
+    @ObservedObject var engine: PlayerScrubPreviewEngine
+
+    var body: some View {
+        PlayerScrubPreviewContainer(container: engine.container)
+            .opacity(engine.hasFrame ? 1 : 0)
+            .allowsHitTesting(false)
+    }
+}
+
+private struct PlayerScrubPreviewContainer: UIViewRepresentable {
+    let container: UIView
+
+    func makeUIView(context: Context) -> UIView {
+        // Lo stesso contenitore viene riusato a ogni comparsa della card.
+        container.removeFromSuperview()
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
 }
