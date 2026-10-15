@@ -573,7 +573,8 @@ struct PlayerView: View {
                             scheduleAutoHide()
                         }
                     },
-                    onSeek: { controller.seek(to: $0) }
+                    onSeek: { controller.seek(to: $0) },
+                    currentFrame: { await controller.currentFrameSnapshot() }
                 )
             }
 

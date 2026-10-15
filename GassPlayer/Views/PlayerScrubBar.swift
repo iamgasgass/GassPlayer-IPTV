@@ -118,22 +118,43 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         prefetchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.prefetchDelayNanoseconds)
             let step = max(duration / Double(Self.prefetchCount), Self.bucket)
-            var position = step / 2
-            while position < duration, !Task.isCancelled {
-                // Mentre si trascina (o è in corso una richiesta dell'utente) ha la precedenza l'utente.
-                while let self, self.requestInFlight || Date().timeIntervalSince(self.lastUserRequest) < 0.6, !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 120_000_000)
+            var grid: [Int] = stride(from: step / 2, to: duration, by: step).map { Int($0 / Self.bucket) }
+            while !grid.isEmpty, !Task.isCancelled {
+                // La richiesta esatta dell'utente ha la precedenza.
+                while let self, self.requestInFlight, !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 40_000_000)
                 }
                 guard let self, self.sourceKey == key, self.generator === generator, !Task.isCancelled else { return }
-                let bucket = Int(position / Self.bucket)
+                // Sempre il punto della griglia più vicino al dito: le miniature utili arrivano per prime.
+                let focus = self.wantedTime.map { Int($0 / Self.bucket) } ?? grid[0]
+                guard let index = grid.indices.min(by: { abs(grid[$0] - focus) < abs(grid[$1] - focus) }) else { return }
+                let bucket = grid.remove(at: index)
                 if self.cache[bucket] == nil, !self.failedBuckets.contains(bucket) {
                     if let result = try? await generator.image(at: Self.time(for: bucket)), self.sourceKey == key {
                         self.store(UIImage(cgImage: result.image), bucket: bucket)
                     }
                 }
-                position += step
             }
         }
+    }
+
+    /// Prima comparsa istantanea: il fotogramma a schermo entra in cache al
+    /// punto di riproduzione attuale (ridotto alle dimensioni delle miniature).
+    func seed(currentFrame cgImage: CGImage, at time: TimeInterval) {
+        guard sourceKey != nil else { return }
+        let bucket = Int(max(0, time) / Self.bucket)
+        guard cache[bucket] == nil else { return }
+        let source = UIImage(cgImage: cgImage)
+        let width: CGFloat = 360
+        let scale = width / max(source.size.width, 1)
+        let size = CGSize(width: width, height: max(1, (source.size.height * scale).rounded()))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let thumbnail = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            source.draw(in: CGRect(origin: .zero, size: size))
+        }
+        store(thumbnail, bucket: bucket)
+        if ffThumbnails.isEmpty, wantedTime != nil, image == nil { image = thumbnail }
     }
 
     /// Anteprima del punto `time` (chiamata a ogni movimento del dito).
@@ -240,6 +261,8 @@ struct PlayerScrubBar: View {
     @ObservedObject var thumbnails: PlayerThumbnailProvider
     let onScrubbingChanged: (Bool) -> Void
     let onSeek: (TimeInterval) -> Void
+    /// Fotogramma attualmente a schermo (prima anteprima istantanea).
+    var currentFrame: (() async -> CGImage?)? = nil
 
     @State private var scrubTime: TimeInterval?
     @State private var isEditing = false
@@ -329,6 +352,15 @@ struct PlayerScrubBar: View {
         // Le anteprime si preparano solo da qui, al primo trascinamento.
         if let source = thumbnailSource, duration > 0 {
             thumbnails.prepare(url: source.url, userAgent: source.userAgent, duration: duration)
+            // Subito il fotogramma a schermo, intanto arrivano quelli del punto scelto.
+            let playbackTime = currentTime
+            if let currentFrame {
+                Task { @MainActor in
+                    if let frame = await currentFrame() {
+                        thumbnails.seed(currentFrame: frame, at: playbackTime)
+                    }
+                }
+            }
             thumbnails.request(at: currentTime)
         }
         onScrubbingChanged(true)
