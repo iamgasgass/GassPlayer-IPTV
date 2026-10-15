@@ -32,15 +32,22 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
     private var ffThumbnails: [FFThumbnail] = []
     private var ffTask: Task<Void, Never>?
     private var requestTask: Task<Void, Never>?
+    private var prefetchTask: Task<Void, Never>?
+    private var lastUserRequest = Date.distantPast
     private var cache: [Int: UIImage] = [:]
 
     private static let bucket: TimeInterval = 5
     private static let ffmpegThumbnailCount = 48
+    /// Griglia preparata in background per i file mp4/mov: lo scrubbing trova
+    /// subito un fotogramma vicino, poi arriva quello esatto.
+    private static let prefetchCount = 40
+    private static let prefetchDelayNanoseconds: UInt64 = 2_500_000_000
+    private static let ffmpegDelayNanoseconds: UInt64 = 2_500_000_000
     private static let avFoundationExtensions: Set<String> = ["mp4", "m4v", "mov", "3gp"]
 
     var isAvailable: Bool { generator != nil || !ffThumbnails.isEmpty }
 
-    func prepare(url: URL, userAgent: String) {
+    func prepare(url: URL, userAgent: String, duration: TimeInterval) {
         let key = url.absoluteString
         guard key != sourceKey else { return }
         reset()
@@ -53,10 +60,11 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
             let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": userAgent]])
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 360, height: 202)
+            generator.maximumSize = CGSize(width: 320, height: 180)
             generator.requestedTimeToleranceBefore = CMTime(seconds: 4, preferredTimescale: 600)
             generator.requestedTimeToleranceAfter = CMTime(seconds: 4, preferredTimescale: 600)
             self.generator = generator
+            startPrefetch(generator: generator, duration: duration, key: key)
             return
         }
 
@@ -65,7 +73,7 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         controller.delegate = self
         thumbnailController = controller
         ffTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            try? await Task.sleep(nanoseconds: Self.ffmpegDelayNanoseconds)
             guard !Task.isCancelled else { return }
             let thumbnails = (try? await controller.generateThumbnail(for: url, thumbWidth: 240)) ?? []
             guard !Task.isCancelled, let self, self.sourceKey == key, !thumbnails.isEmpty else { return }
@@ -79,6 +87,30 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         Task { @MainActor [weak self] in
             guard let self, self.sourceKey == key else { return }
             self.ffThumbnails = snapshot.sorted { $0.time < $1.time }
+        }
+    }
+
+    /// Griglia di fotogrammi in background (si ferma mentre l'utente trascina).
+    private func startPrefetch(generator: AVAssetImageGenerator, duration: TimeInterval, key: String) {
+        guard duration > 0 else { return }
+        prefetchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.prefetchDelayNanoseconds)
+            let step = max(duration / Double(Self.prefetchCount), Self.bucket)
+            var position = step / 2
+            while position < duration, !Task.isCancelled {
+                while let self, Date().timeIntervalSince(self.lastUserRequest) < 0.6, !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 120_000_000)
+                }
+                guard let self, self.sourceKey == key, !Task.isCancelled else { return }
+                let bucket = Int(position / Self.bucket)
+                if self.cache[bucket] == nil {
+                    let target = CMTime(seconds: Double(bucket) * Self.bucket + Self.bucket / 2, preferredTimescale: 600)
+                    if let result = try? await generator.image(at: target), self.sourceKey == key {
+                        self.cache[bucket] = UIImage(cgImage: result.image)
+                    }
+                }
+                position += step
+            }
         }
     }
 
@@ -97,10 +129,15 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         }
 
         guard let generator else { return }
+        lastUserRequest = Date()
+        // Subito il fotogramma pronto più vicino, poi quello esatto.
+        if let nearest = cache.min(by: { abs($0.key - bucket) < abs($1.key - bucket) })?.value {
+            image = nearest
+        }
         requestTask?.cancel()
         requestTask = Task { [weak self] in
-            // Breve attesa: durante uno scorrimento veloce si chiede solo l'ultimo punto.
-            try? await Task.sleep(nanoseconds: 90_000_000)
+            // Attesa minima: durante uno scorrimento veloce si chiede solo l'ultimo punto.
+            try? await Task.sleep(nanoseconds: 30_000_000)
             guard !Task.isCancelled else { return }
             let target = CMTime(seconds: Double(bucket) * Self.bucket + Self.bucket / 2, preferredTimescale: 600)
             guard let result = try? await generator.image(at: target) else { return }
@@ -114,6 +151,8 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
     func reset() {
         ffTask?.cancel()
         requestTask?.cancel()
+        prefetchTask?.cancel()
+        lastUserRequest = .distantPast
         generator?.cancelAllCGImageGeneration()
         generator = nil
         thumbnailController?.delegate = nil
@@ -167,6 +206,7 @@ struct PlayerScrubBar: View {
                 isEditing = editing
                 if editing {
                     scrubTime = currentTime
+                    if thumbnailSource != nil { thumbnails.request(at: currentTime) }
                     onScrubbingChanged(true)
                 } else {
                     if let scrubTime { onSeek(scrubTime) }
@@ -210,7 +250,7 @@ struct PlayerScrubBar: View {
         .animation(.easeOut(duration: 0.15), value: isEditing)
         .task(id: thumbnailSource?.url.absoluteString) {
             guard let source = thumbnailSource, duration > 0 else { return }
-            thumbnails.prepare(url: source.url, userAgent: source.userAgent)
+            thumbnails.prepare(url: source.url, userAgent: source.userAgent, duration: duration)
         }
     }
 
