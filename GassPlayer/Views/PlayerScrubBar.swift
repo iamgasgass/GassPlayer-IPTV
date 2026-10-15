@@ -303,6 +303,11 @@ struct PlayerScrubBar: View {
     /// Rete di sicurezza: se il sistema non segnala il rilascio, lo scrubbing
     /// si chiude comunque dopo un breve periodo senza movimenti.
     @State private var releaseWatchdog: Task<Void, Never>?
+    /// Ultimo rilascio: lo `Slider` di sistema a volte invia un ultimo valore
+    /// subito DOPO il rilascio; prima riapriva l'anteprima (che restava a
+    /// schermo) e dopo qualche secondo faceva ripartire il video da un altro
+    /// punto. Quei valori ora vengono ignorati.
+    @State private var lastRelease = Date.distantPast
 
     private enum Metrics {
         static let bufferedTrackHeight: CGFloat = 4
@@ -321,7 +326,11 @@ struct PlayerScrubBar: View {
             value: Binding(
                 get: { scrubTime ?? currentTime },
                 set: { time in
-                    if !isEditing { beginScrub() }
+                    if !isEditing {
+                        // Valore arrivato a ridosso del rilascio: già applicato, si ignora.
+                        guard Date().timeIntervalSince(lastRelease) > 0.8 else { return }
+                        beginScrub()
+                    }
                     scrubTime = time
                     if let source = thumbnailSource {
                         // Tempo reale: si sposta SOLO il player nascosto dell'anteprima.
@@ -333,7 +342,10 @@ struct PlayerScrubBar: View {
             in: 0...max(duration, 1),
             onEditingChanged: { editing in
                 if editing {
-                    if !isEditing { beginScrub() }
+                    if !isEditing {
+                        lastRelease = .distantPast
+                        beginScrub()
+                    }
                 } else {
                     finishScrub()
                 }
@@ -409,6 +421,7 @@ struct PlayerScrubBar: View {
         releaseWatchdog = nil
         guard isEditing else { return }
         let target = scrubTime
+        lastRelease = Date()
         isEditing = false
         scrubTime = nil
         thumbnails.finishRequests()
