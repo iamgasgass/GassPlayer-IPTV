@@ -27,6 +27,7 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
     @Published private(set) var image: UIImage?
 
     private var sourceKey: String?
+    private var sourceURL: URL?
     private var generator: AVAssetImageGenerator?
     private var thumbnailController: ThumbnailController?
     private var ffThumbnails: [FFThumbnail] = []
@@ -35,14 +36,28 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
     private var prefetchTask: Task<Void, Never>?
     private var lastUserRequest = Date.distantPast
     private var cache: [Int: UIImage] = [:]
+    /// Punto richiesto dallo scrubbing in corso (nil = nessuno scrubbing).
+    private var wantedTime: TimeInterval?
+    /// Una sola generazione alla volta: finita quella, parte subito l'ultimo
+    /// punto richiesto (le anteprime continuano ad arrivare mentre si trascina,
+    /// invece di essere annullate a ogni movimento del dito).
+    private var requestInFlight = false
+    private var failedBuckets: Set<Int> = []
+    private var avFailures = 0
 
     private static let bucket: TimeInterval = 5
     private static let ffmpegThumbnailCount = 48
     /// Griglia preparata in background per i file mp4/mov: lo scrubbing trova
     /// subito un fotogramma vicino, poi arriva quello esatto.
     private static let prefetchCount = 40
-    private static let prefetchDelayNanoseconds: UInt64 = 2_500_000_000
-    private static let ffmpegDelayNanoseconds: UInt64 = 2_500_000_000
+    /// Tutto parte solo al primo trascinamento (nessuna connessione in più
+    /// al server finché non si usa la timeline).
+    private static let prefetchDelayNanoseconds: UInt64 = 0
+    private static let ffmpegDelayNanoseconds: UInt64 = 0
+    /// Dopo questi errori consecutivi senza alcun fotogramma, AVFoundation
+    /// lascia il posto a FFmpeg (server senza richieste parziali, codec non
+    /// supportati…).
+    private static let maxAVFailures = 3
     private static let avFoundationExtensions: Set<String> = ["mp4", "m4v", "mov", "3gp"]
 
     var isAvailable: Bool { generator != nil || !ffThumbnails.isEmpty }
@@ -52,6 +67,7 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         guard key != sourceKey else { return }
         reset()
         sourceKey = key
+        sourceURL = url
 
         let ext = url.pathExtension.lowercased()
         if ext == "m3u8" || ext == "m3u" { return }
@@ -60,7 +76,7 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
             let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": userAgent]])
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 320, height: 180)
+            generator.maximumSize = CGSize(width: 360, height: 202)
             generator.requestedTimeToleranceBefore = CMTime(seconds: 4, preferredTimescale: 600)
             generator.requestedTimeToleranceAfter = CMTime(seconds: 4, preferredTimescale: 600)
             self.generator = generator
@@ -68,7 +84,11 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
             return
         }
 
-        // FFmpeg: dopo qualche secondo di riproduzione, per non togliere banda all'avvio.
+        startFFmpeg(url: url, key: key)
+    }
+
+    /// Miniature FFmpeg (KSPlayer), mostrate man mano che arrivano.
+    private func startFFmpeg(url: URL, key: String) {
         let controller = ThumbnailController(thumbnailCount: Self.ffmpegThumbnailCount)
         controller.delegate = self
         thumbnailController = controller
@@ -78,6 +98,7 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
             let thumbnails = (try? await controller.generateThumbnail(for: url, thumbWidth: 240)) ?? []
             guard !Task.isCancelled, let self, self.sourceKey == key, !thumbnails.isEmpty else { return }
             self.ffThumbnails = thumbnails.sorted { $0.time < $1.time }
+            self.refreshImage()
         }
     }
 
@@ -87,6 +108,7 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         Task { @MainActor [weak self] in
             guard let self, self.sourceKey == key else { return }
             self.ffThumbnails = snapshot.sorted { $0.time < $1.time }
+            self.refreshImage()
         }
     }
 
@@ -98,15 +120,15 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
             let step = max(duration / Double(Self.prefetchCount), Self.bucket)
             var position = step / 2
             while position < duration, !Task.isCancelled {
-                while let self, Date().timeIntervalSince(self.lastUserRequest) < 0.6, !Task.isCancelled {
+                // Mentre si trascina (o è in corso una richiesta dell'utente) ha la precedenza l'utente.
+                while let self, self.requestInFlight || Date().timeIntervalSince(self.lastUserRequest) < 0.6, !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 120_000_000)
                 }
-                guard let self, self.sourceKey == key, !Task.isCancelled else { return }
+                guard let self, self.sourceKey == key, self.generator === generator, !Task.isCancelled else { return }
                 let bucket = Int(position / Self.bucket)
-                if self.cache[bucket] == nil {
-                    let target = CMTime(seconds: Double(bucket) * Self.bucket + Self.bucket / 2, preferredTimescale: 600)
-                    if let result = try? await generator.image(at: target), self.sourceKey == key {
-                        self.cache[bucket] = UIImage(cgImage: result.image)
+                if self.cache[bucket] == nil, !self.failedBuckets.contains(bucket) {
+                    if let result = try? await generator.image(at: Self.time(for: bucket)), self.sourceKey == key {
+                        self.store(UIImage(cgImage: result.image), bucket: bucket)
                     }
                 }
                 position += step
@@ -116,36 +138,76 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
 
     /// Anteprima del punto `time` (chiamata a ogni movimento del dito).
     func request(at time: TimeInterval) {
-        let bucket = Int(max(0, time) / Self.bucket)
-
-        if let cached = cache[bucket] {
-            image = cached
-            return
-        }
-
-        if !ffThumbnails.isEmpty {
-            image = ffThumbnails.min { abs($0.time - time) < abs($1.time - time) }?.image
-            return
-        }
-
-        guard let generator else { return }
+        wantedTime = max(0, time)
         lastUserRequest = Date()
-        // Subito il fotogramma pronto più vicino, poi quello esatto.
-        if let nearest = cache.min(by: { abs($0.key - bucket) < abs($1.key - bucket) })?.value {
+        refreshImage()
+        pump()
+    }
+
+    /// Fine dello scrubbing: nessun'altra richiesta per il punto lasciato.
+    func finishRequests() {
+        wantedTime = nil
+    }
+
+    /// Mostra subito il fotogramma pronto più vicino al punto richiesto
+    /// (quello esatto se c'è).
+    private func refreshImage() {
+        guard let time = wantedTime else { return }
+        if !ffThumbnails.isEmpty {
+            if let nearest = ffThumbnails.min(by: { abs($0.time - time) < abs($1.time - time) }) {
+                image = nearest.image
+            }
+            return
+        }
+        let bucket = Int(time / Self.bucket)
+        if let exact = cache[bucket] {
+            image = exact
+        } else if let nearest = cache.min(by: { abs($0.key - bucket) < abs($1.key - bucket) })?.value {
             image = nearest
         }
-        requestTask?.cancel()
+    }
+
+    /// Genera il fotogramma dell'ultimo punto richiesto, uno alla volta.
+    private func pump() {
+        guard !requestInFlight, let generator, let time = wantedTime, let key = sourceKey else { return }
+        let bucket = Int(time / Self.bucket)
+        guard cache[bucket] == nil, !failedBuckets.contains(bucket) else { return }
+        requestInFlight = true
         requestTask = Task { [weak self] in
-            // Attesa minima: durante uno scorrimento veloce si chiede solo l'ultimo punto.
-            try? await Task.sleep(nanoseconds: 30_000_000)
-            guard !Task.isCancelled else { return }
-            let target = CMTime(seconds: Double(bucket) * Self.bucket + Self.bucket / 2, preferredTimescale: 600)
-            guard let result = try? await generator.image(at: target) else { return }
-            let image = UIImage(cgImage: result.image)
-            guard let self else { return }
-            self.cache[bucket] = image
-            if !Task.isCancelled { self.image = image }
+            let result = try? await generator.image(at: Self.time(for: bucket))
+            guard let self, self.sourceKey == key, self.generator === generator else { return }
+            self.requestInFlight = false
+            if let result {
+                self.avFailures = 0
+                self.store(UIImage(cgImage: result.image), bucket: bucket)
+            } else {
+                self.failedBuckets.insert(bucket)
+                self.avFailures += 1
+                if self.avFailures >= Self.maxAVFailures, self.cache.isEmpty, let url = self.sourceURL {
+                    self.switchToFFmpeg(url: url, key: key)
+                    return
+                }
+            }
+            self.pump()
         }
+    }
+
+    private func store(_ image: UIImage, bucket: Int) {
+        cache[bucket] = image
+        failedBuckets.remove(bucket)
+        refreshImage()
+    }
+
+    private func switchToFFmpeg(url: URL, key: String) {
+        prefetchTask?.cancel()
+        generator?.cancelAllCGImageGeneration()
+        generator = nil
+        requestInFlight = false
+        startFFmpeg(url: url, key: key)
+    }
+
+    private static func time(for bucket: Int) -> CMTime {
+        CMTime(seconds: Double(bucket) * Self.bucket + Self.bucket / 2, preferredTimescale: 600)
     }
 
     func reset() {
@@ -159,8 +221,13 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         thumbnailController = nil
         ffThumbnails = []
         cache = [:]
+        failedBuckets = []
+        avFailures = 0
+        requestInFlight = false
+        wantedTime = nil
         image = nil
         sourceKey = nil
+        sourceURL = nil
     }
 }
 
@@ -176,6 +243,9 @@ struct PlayerScrubBar: View {
 
     @State private var scrubTime: TimeInterval?
     @State private var isEditing = false
+    /// Rete di sicurezza: se il sistema non segnala il rilascio, lo scrubbing
+    /// si chiude comunque dopo un breve periodo senza movimenti.
+    @State private var releaseWatchdog: Task<Void, Never>?
 
     private enum Metrics {
         static let bufferedTrackHeight: CGFloat = 4
@@ -184,6 +254,7 @@ struct PlayerScrubBar: View {
         static let previewCornerRadius: CGFloat = 16
         static let previewSpacing: CGFloat = 6
         static let previewGap: CGFloat = 10
+        static let releaseWatchdogNanoseconds: UInt64 = 4_000_000_000
     }
 
     var body: some View {
@@ -193,25 +264,18 @@ struct PlayerScrubBar: View {
             value: Binding(
                 get: { scrubTime ?? currentTime },
                 set: { time in
-                    if isEditing {
-                        scrubTime = time
-                        if thumbnailSource != nil { thumbnails.request(at: time) }
-                    } else {
-                        onSeek(time)
-                    }
+                    if !isEditing { beginScrub() }
+                    scrubTime = time
+                    if thumbnailSource != nil { thumbnails.request(at: time) }
+                    armReleaseWatchdog()
                 }
             ),
             in: 0...max(duration, 1),
             onEditingChanged: { editing in
-                isEditing = editing
                 if editing {
-                    scrubTime = currentTime
-                    if thumbnailSource != nil { thumbnails.request(at: currentTime) }
-                    onScrubbingChanged(true)
+                    if !isEditing { beginScrub() }
                 } else {
-                    if let scrubTime { onSeek(scrubTime) }
-                    scrubTime = nil
-                    onScrubbingChanged(false)
+                    finishScrub()
                 }
             }
         )
@@ -241,16 +305,56 @@ struct PlayerScrubBar: View {
                             y: -(proxy.size.height + Metrics.previewGap)
                         )
                         .frame(width: proxy.size.width, height: proxy.size.height, alignment: .bottomLeading)
-                        .transition(.opacity)
                 }
             }
             .allowsHitTesting(false)
         }
         .zIndex(1)
-        .animation(.easeOut(duration: 0.15), value: isEditing)
-        .task(id: thumbnailSource?.url.absoluteString) {
-            guard let source = thumbnailSource, duration > 0 else { return }
+        .onDisappear {
+            releaseWatchdog?.cancel()
+            releaseWatchdog = nil
+            guard isEditing else { return }
+            isEditing = false
+            scrubTime = nil
+            thumbnails.finishRequests()
+            onScrubbingChanged(false)
+        }
+    }
+
+    // MARK: Inizio / fine trascinamento
+
+    private func beginScrub() {
+        isEditing = true
+        scrubTime = currentTime
+        // Le anteprime si preparano solo da qui, al primo trascinamento.
+        if let source = thumbnailSource, duration > 0 {
             thumbnails.prepare(url: source.url, userAgent: source.userAgent, duration: duration)
+            thumbnails.request(at: currentTime)
+        }
+        onScrubbingChanged(true)
+        armReleaseWatchdog()
+    }
+
+    /// Rilascio: seek al punto scelto, anteprima e tempo spariscono subito e
+    /// riparte il timer che nasconde i controlli (`onScrubbingChanged(false)`).
+    private func finishScrub() {
+        releaseWatchdog?.cancel()
+        releaseWatchdog = nil
+        guard isEditing else { return }
+        let target = scrubTime
+        isEditing = false
+        scrubTime = nil
+        thumbnails.finishRequests()
+        if let target { onSeek(target) }
+        onScrubbingChanged(false)
+    }
+
+    private func armReleaseWatchdog() {
+        releaseWatchdog?.cancel()
+        releaseWatchdog = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Metrics.releaseWatchdogNanoseconds)
+            guard !Task.isCancelled else { return }
+            finishScrub()
         }
     }
 
