@@ -262,7 +262,7 @@ struct PlayerScrubBar: View {
     let onScrubbingChanged: (Bool) -> Void
     let onSeek: (TimeInterval) -> Void
     /// Fotogramma attualmente a schermo (prima anteprima istantanea).
-    var currentFrame: (() async -> CGImage?)? = nil
+    var currentFrame: (@MainActor () async -> CGImage?)? = nil
 
     @State private var scrubTime: TimeInterval?
     @State private var isEditing = false
@@ -460,5 +460,15 @@ private struct PlayerGlassCapsuleBackground: ViewModifier {
                     Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
                 }
         }
+    }
+}
+
+// MARK: - Fotogramma attuale per la timeline
+
+extension KSPlaybackController {
+    /// Fotogramma che il player sta mostrando adesso (già decodificato,
+    /// nessuna rete): prima anteprima istantanea della timeline.
+    func timelineCurrentFrame() async -> CGImage? {
+        await layer.player.thumbnailImageAtCurrentTime()
     }
 }

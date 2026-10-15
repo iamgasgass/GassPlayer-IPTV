@@ -574,7 +574,7 @@ struct PlayerView: View {
                         }
                     },
                     onSeek: { controller.seek(to: $0) },
-                    currentFrame: { await controller.currentFrameSnapshot() }
+                    currentFrame: { [controller] in await controller.timelineCurrentFrame() }
                 )
             }
 
