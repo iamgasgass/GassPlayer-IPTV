@@ -45,7 +45,11 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
     private var failedBuckets: Set<Int> = []
     private var avFailures = 0
 
-    private static let bucket: TimeInterval = 5
+    /// Blocchi da 5 s, più larghi sui contenuti lunghi (durata / 240): meno
+    /// letture e più miniature già pronte mentre il dito si muove.
+    private static let minimumBucket: TimeInterval = 5
+    private static let maxBuckets: Double = 240
+    private var bucketSize: TimeInterval = 5
     private static let ffmpegThumbnailCount = 48
     /// Griglia preparata in background per i file mp4/mov: lo scrubbing trova
     /// subito un fotogramma vicino, poi arriva quello esatto.
@@ -68,6 +72,7 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         reset()
         sourceKey = key
         sourceURL = url
+        bucketSize = max(Self.minimumBucket, duration / Self.maxBuckets)
 
         let ext = url.pathExtension.lowercased()
         if ext == "m3u8" || ext == "m3u" { return }
@@ -115,10 +120,11 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
     /// Griglia di fotogrammi in background (si ferma mentre l'utente trascina).
     private func startPrefetch(generator: AVAssetImageGenerator, duration: TimeInterval, key: String) {
         guard duration > 0 else { return }
+        let bucketSize = self.bucketSize
         prefetchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.prefetchDelayNanoseconds)
-            let step = max(duration / Double(Self.prefetchCount), Self.bucket)
-            var grid: [Int] = stride(from: step / 2, to: duration, by: step).map { Int($0 / Self.bucket) }
+            let step = max(duration / Double(Self.prefetchCount), bucketSize)
+            var grid: [Int] = stride(from: step / 2, to: duration, by: step).map { Int($0 / bucketSize) }
             while !grid.isEmpty, !Task.isCancelled {
                 // La richiesta esatta dell'utente ha la precedenza.
                 while let self, self.requestInFlight, !Task.isCancelled {
@@ -126,11 +132,11 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
                 }
                 guard let self, self.sourceKey == key, self.generator === generator, !Task.isCancelled else { return }
                 // Sempre il punto della griglia più vicino al dito: le miniature utili arrivano per prime.
-                let focus = self.wantedTime.map { Int($0 / Self.bucket) } ?? grid[0]
+                let focus = self.wantedTime.map { Int($0 / bucketSize) } ?? grid[0]
                 guard let index = grid.indices.min(by: { abs(grid[$0] - focus) < abs(grid[$1] - focus) }) else { return }
                 let bucket = grid.remove(at: index)
                 if self.cache[bucket] == nil, !self.failedBuckets.contains(bucket) {
-                    if let result = try? await generator.image(at: Self.time(for: bucket)), self.sourceKey == key {
+                    if let result = try? await generator.image(at: self.frameTime(for: bucket)), self.sourceKey == key {
                         self.store(UIImage(cgImage: result.image), bucket: bucket)
                     }
                 }
@@ -142,7 +148,7 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
     /// punto di riproduzione attuale (ridotto alle dimensioni delle miniature).
     func seed(currentFrame cgImage: CGImage, at time: TimeInterval) {
         guard sourceKey != nil else { return }
-        let bucket = Int(max(0, time) / Self.bucket)
+        let bucket = Int(max(0, time) / bucketSize)
         guard cache[bucket] == nil else { return }
         let source = UIImage(cgImage: cgImage)
         let width: CGFloat = 360
@@ -180,7 +186,7 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
             }
             return
         }
-        let bucket = Int(time / Self.bucket)
+        let bucket = Int(time / bucketSize)
         if let exact = cache[bucket] {
             image = exact
         } else if let nearest = cache.min(by: { abs($0.key - bucket) < abs($1.key - bucket) })?.value {
@@ -191,11 +197,12 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
     /// Genera il fotogramma dell'ultimo punto richiesto, uno alla volta.
     private func pump() {
         guard !requestInFlight, let generator, let time = wantedTime, let key = sourceKey else { return }
-        let bucket = Int(time / Self.bucket)
+        let bucket = Int(time / bucketSize)
         guard cache[bucket] == nil, !failedBuckets.contains(bucket) else { return }
         requestInFlight = true
+        let target = frameTime(for: bucket)
         requestTask = Task { [weak self] in
-            let result = try? await generator.image(at: Self.time(for: bucket))
+            let result = try? await generator.image(at: target)
             guard let self, self.sourceKey == key, self.generator === generator else { return }
             self.requestInFlight = false
             if let result {
@@ -227,8 +234,8 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         startFFmpeg(url: url, key: key)
     }
 
-    private static func time(for bucket: Int) -> CMTime {
-        CMTime(seconds: Double(bucket) * Self.bucket + Self.bucket / 2, preferredTimescale: 600)
+    private func frameTime(for bucket: Int) -> CMTime {
+        CMTime(seconds: Double(bucket) * bucketSize + bucketSize / 2, preferredTimescale: 600)
     }
 
     func reset() {
@@ -244,6 +251,7 @@ final class PlayerThumbnailProvider: ObservableObject, ThumbnailControllerDelega
         cache = [:]
         failedBuckets = []
         avFailures = 0
+        bucketSize = Self.minimumBucket
         requestInFlight = false
         wantedTime = nil
         image = nil
