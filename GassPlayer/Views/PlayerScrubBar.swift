@@ -308,6 +308,9 @@ struct PlayerScrubBar: View {
     /// schermo) e dopo qualche secondo faceva ripartire il video da un altro
     /// punto. Quei valori ora vengono ignorati.
     @State private var lastRelease = Date.distantPast
+    /// Punto lasciato in sospeso dalla rete di sicurezza: se poi arriva il
+    /// rilascio vero, la ricerca parte da lì.
+    @State private var orphanTarget: TimeInterval?
 
     private enum Metrics {
         static let bufferedTrackHeight: CGFloat = 4
@@ -328,7 +331,7 @@ struct PlayerScrubBar: View {
                 set: { time in
                     if !isEditing {
                         // Valore arrivato a ridosso del rilascio: già applicato, si ignora.
-                        guard Date().timeIntervalSince(lastRelease) > 0.8 else { return }
+                        guard !justReleased else { return }
                         beginScrub()
                     }
                     scrubTime = time
@@ -342,10 +345,10 @@ struct PlayerScrubBar: View {
             in: 0...max(duration, 1),
             onEditingChanged: { editing in
                 if editing {
-                    if !isEditing {
-                        lastRelease = .distantPast
-                        beginScrub()
-                    }
+                    // Su iOS 26 lo Slider può segnalare un nuovo "inizio" subito dopo il
+                    // rilascio senza mai chiuderlo: riapriva l'anteprima, che restava a
+                    // schermo, e dopo qualche secondo il video ripartiva da un altro punto.
+                    if !isEditing, !justReleased { beginScrub() }
                 } else {
                     finishScrub()
                 }
@@ -397,6 +400,7 @@ struct PlayerScrubBar: View {
     // MARK: Inizio / fine trascinamento
 
     private func beginScrub() {
+        orphanTarget = nil
         isEditing = true
         scrubTime = currentTime
         if let source = thumbnailSource, duration > 0 {
@@ -419,7 +423,14 @@ struct PlayerScrubBar: View {
     private func finishScrub() {
         releaseWatchdog?.cancel()
         releaseWatchdog = nil
-        guard isEditing else { return }
+        guard isEditing else {
+            if let orphan = orphanTarget {
+                orphanTarget = nil
+                onSeek(orphan)
+            }
+            return
+        }
+        orphanTarget = nil
         let target = scrubTime
         lastRelease = Date()
         isEditing = false
@@ -430,13 +441,32 @@ struct PlayerScrubBar: View {
         onScrubbingChanged(false)
     }
 
+    /// Subito dopo un rilascio (1,5 s): segnali e valori dello Slider ignorati.
+    private var justReleased: Bool {
+        Date().timeIntervalSince(lastRelease) < 1.5
+    }
+
     private func armReleaseWatchdog() {
         releaseWatchdog?.cancel()
         releaseWatchdog = Task { @MainActor in
             try? await Task.sleep(nanoseconds: Metrics.releaseWatchdogNanoseconds)
             guard !Task.isCancelled else { return }
-            finishScrub()
+            // Rete di sicurezza: chiude anteprima e tempo SENZA spostare il video
+            // (la ricerca vera parte solo dal rilascio).
+            closeWithoutSeeking()
         }
+    }
+
+    private func closeWithoutSeeking() {
+        releaseWatchdog?.cancel()
+        releaseWatchdog = nil
+        guard isEditing else { return }
+        orphanTarget = scrubTime
+        isEditing = false
+        scrubTime = nil
+        thumbnails.finishRequests()
+        thumbnails.previewEngine.endSession()
+        onScrubbingChanged(false)
     }
 
     // MARK: Anteprima
