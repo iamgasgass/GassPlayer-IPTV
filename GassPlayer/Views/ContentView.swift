@@ -9,6 +9,7 @@ enum MainTab: Hashable {
 
 struct ContentView: View {
     @State private var showSplash = true
+    @State private var didLoadInitialSource = false
     @State private var credentials: XtreamCredentials?
     @State private var m3uPlaylistURL: URL?
     @State private var selectedTab: MainTab = .home
@@ -25,14 +26,20 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if showSplash {
-                SplashScreenView {
-                    loadActiveSource()
-                    showSplash = false
+            mainTabs
+                .overlay {
+                    if showSplash {
+                        SplashScreenView {
+                            showSplash = false
+                        }
+                        .zIndex(1)
+                    }
                 }
-            } else {
-                mainTabs
-            }
+        }
+        .onAppear {
+            guard !didLoadInitialSource else { return }
+            didLoadInitialSource = true
+            loadActiveSource()
         }
         .preferredColorScheme(themeManager.theme.colorScheme)
         .environmentObject(sourceManager)

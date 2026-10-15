@@ -1,90 +1,120 @@
 import SwiftUI
 import UIKit
 
-/// FIX "splash screen con l'icona reale dell'app": prima veniva mostrato
-/// un SF Symbol generico (antenna.radiowaves...) al posto dell'icona vera
-/// del progetto. Duplicare il PNG dell'AppIcon in un nuovo image set
-/// separato e' la via "standard" ma rischiosa da fare qui: richiederebbe
-/// trasferire un file binario come se fosse testo, con rischio reale di
-/// corromperlo. La tecnica corretta e documentata da Apple per accedere
-/// in modo affidabile all'icona effettivamente installata, senza toccare
-/// alcun asset binario, e' leggerla a runtime da Info.plist
-/// (CFBundleIcons -> CFBundlePrimaryIcon -> CFBundleIconFiles), che punta
-/// esattamente ai file gia' generati da Xcode a partire da AppIcon-1024.png.
+/// Loads the icon selected by the active Xcode build configuration.
+///
+/// The build-generated CFBundleIconName points to the primary AppIcon set in
+/// Assets.xcassets. Reading that asset at runtime means the splash always uses
+/// the same image as the installed app icon, without keeping a second PNG copy
+/// that could become outdated. CFBundleIconFiles and the conventional AppIcon
+/// asset name are compatibility fallbacks for older or custom build setups.
 private extension UIApplication {
     var primaryAppIcon: UIImage? {
-        guard let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any],
-              let primaryIcon = icons["CFBundlePrimaryIcon"] as? [String: Any],
-              let iconFiles = primaryIcon["CFBundleIconFiles"] as? [String],
-              let lastIconName = iconFiles.last
-        else { return nil }
-        return UIImage(named: lastIconName)
+        let bundle = Bundle.main
+        let primaryIcon = (bundle.infoDictionary?["CFBundleIcons"] as? [String: Any])?["CFBundlePrimaryIcon"] as? [String: Any]
+
+        // Prefer the exact primary icon asset selected by Xcode for this build.
+        if let assetName = primaryIcon?["CFBundleIconName"] as? String,
+           let image = UIImage(named: assetName, in: bundle, compatibleWith: nil) {
+            return image
+        }
+
+        // Older build configurations may expose only generated icon filenames.
+        var iconNames = Array((primaryIcon?["CFBundleIconFiles"] as? [String] ?? []).reversed())
+        if !iconNames.contains("AppIcon") {
+            iconNames.append("AppIcon")
+        }
+
+        // Pick the highest-resolution image available instead of arbitrarily
+        // selecting a small device-specific icon variant.
+        let candidates = iconNames.compactMap {
+            UIImage(named: $0, in: bundle, compatibleWith: nil)
+        }
+        return candidates.max { pixelArea(of: $0) < pixelArea(of: $1) }
+    }
+
+    private func pixelArea(of image: UIImage) -> CGFloat {
+        let pixelWidth = image.size.width * image.scale
+        let pixelHeight = image.size.height * image.scale
+        return pixelWidth * pixelHeight
     }
 }
 
+/// Minimal, X-inspired launch animation:
+/// the app icon settles in the centre, briefly pulls back, then zooms forward
+/// as the splash layer fades away to reveal the app underneath.
 struct SplashScreenView: View {
     var onFinished: () -> Void
 
-    @State private var scale: CGFloat = 0.7
-    @State private var opacity: Double = 0
-    @State private var glowRadius: CGFloat = 8
+    @State private var iconScale: CGFloat = 0.78
+    @State private var splashOpacity: Double = 1
+    @State private var hasStarted = false
+    @State private var hasFinished = false
 
-    private static let iconCornerRadiusRatio: CGFloat = 0.2237
-    private let iconSize: CGFloat = 120
+    private let iconSize: CGFloat = 108
+    private let iconCornerRadius: CGFloat = 24
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color.accentColor.opacity(0.12),
-                    Color(uiColor: .systemBackground),
-                    Color.purple.opacity(0.08)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+        GeometryReader { geometry in
+            let zoomScale = max(geometry.size.width, geometry.size.height) / iconSize * 1.2
 
-            VStack(spacing: 20) {
-                ZStack {
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: iconSize + 20, height: iconSize + 20)
-                        .shadow(color: Color.accentColor.opacity(0.6), radius: glowRadius)
+            ZStack {
+                Color.black
+                    .ignoresSafeArea()
 
-                    appIconView
-                        .frame(width: iconSize, height: iconSize)
-                        .clipShape(RoundedRectangle(cornerRadius: iconSize * Self.iconCornerRadiusRatio, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: iconSize * Self.iconCornerRadiusRatio, style: .continuous)
-                                .strokeBorder(.white.opacity(0.25), lineWidth: 1)
-                        }
-                        .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
-                }
-                .scaleEffect(scale)
-
-                Text("GassPlayer")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-
-                Text("IPTV · Xtream Codes · VPN integrata")
-                    .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.7))
-
-                ProgressView().tint(.white).padding(.top, 12)
+                appIconView
+                    .frame(width: iconSize, height: iconSize)
+                    .clipShape(
+                        RoundedRectangle(cornerRadius: iconCornerRadius, style: .continuous)
+                    )
+                    .scaleEffect(iconScale)
+                    .accessibilityHidden(true)
             }
-            .opacity(opacity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+            .opacity(splashOpacity)
+            .onAppear {
+                guard !hasStarted else { return }
+                hasStarted = true
+                startAnimation(zoomScale: zoomScale)
+            }
         }
-        .onAppear {
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) {
-                scale = 1.0; opacity = 1.0
+        .ignoresSafeArea()
+        .accessibilityLabel("GassPlayer")
+    }
+
+    private func startAnimation(zoomScale: CGFloat) {
+        // 1. The icon appears with a soft spring, like the app launch icon.
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) {
+            iconScale = 1
+        }
+
+        // 2. A short pull-back gives the animation its characteristic rhythm.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.40) {
+            guard !hasFinished else { return }
+            withAnimation(.easeInOut(duration: 0.14)) {
+                iconScale = 0.92
             }
-            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
-                glowRadius = 20
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                withAnimation(.easeOut(duration: 0.4)) { opacity = 0 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { onFinished() }
+
+            // 3. The icon rushes forward; the splash then fades to reveal the app.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+                guard !hasFinished else { return }
+                withAnimation(.easeInOut(duration: 0.56)) {
+                    iconScale = zoomScale
+                }
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.38) {
+                    guard !hasFinished else { return }
+                    withAnimation(.easeOut(duration: 0.26)) {
+                        splashOpacity = 0
+                    }
+
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.26) {
+                        guard !hasFinished else { return }
+                        hasFinished = true
+                        onFinished()
+                    }
+                }
             }
         }
     }
@@ -97,12 +127,12 @@ struct SplashScreenView: View {
                 .scaledToFill()
         } else {
             ZStack {
-                Color.accentColor.opacity(0.25)
-                Image(systemName: "antenna.radiowaves.left.and.right.circle.fill")
+                Color.black
+                Image(systemName: "play.rectangle.fill")
                     .resizable()
                     .scaledToFit()
-                    .padding(20)
-                    .foregroundStyle(.white, Color.accentColor)
+                    .padding(18)
+                    .foregroundStyle(.white)
             }
         }
     }
