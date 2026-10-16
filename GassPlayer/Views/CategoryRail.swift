@@ -61,9 +61,10 @@ struct CategoryRailMetrics: Equatable {
     }
 }
 
-/// Riga del rail: stessa tessera della sezione "Categorie" (testo in
-/// grassetto, colore primario, vetro `CategoryGlassTile`), misure del rail.
+/// Riga del rail: stile di navigazione con icona, titolo e pillola Liquid Glass;
+/// il rail del player conserva il proprio stile testuale compatto.
 struct CategoryRailTile: View, Equatable {
+    let id: String
     let name: String
     let isSelected: Bool
     let metrics: CategoryRailMetrics
@@ -72,14 +73,59 @@ struct CategoryRailTile: View, Equatable {
     let action: () -> Void
 
     // Le closure non entrano nel confronto: la riga si ridisegna solo se
-    // cambiano nome, selezione, misure o vetro.
+    // cambiano identificatore, nome, selezione, misure o vetro.
     static func == (lhs: CategoryRailTile, rhs: CategoryRailTile) -> Bool {
-        lhs.name == rhs.name && lhs.isSelected == rhs.isSelected
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.isSelected == rhs.isSelected
             && lhs.metrics == rhs.metrics && lhs.isTransparent == rhs.isTransparent
     }
 
-    var body: some View {
-        Button(action: action) {
+    /// Le categorie usano lo stesso linguaggio della navigazione principale:
+    /// icona + titolo e pillola Liquid Glass selezionabile. Le voci del rail
+    /// interno al player mantengono invece il rendering testuale originale.
+    private var usesNavigationStyle: Bool { metrics == .rail }
+
+    private var symbolName: String {
+        switch id {
+        case CategoryRailKey.favorites: return "star.fill"
+        case CategoryRailKey.all: return "square.grid.2x2.fill"
+        case CategoryRailKey.uncategorized: return "tray.fill"
+        default: break
+        }
+
+        let key = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).lowercased()
+        if key.contains("home") || key.contains("inizio") { return "house.fill" }
+        if key.contains("live") || key == "tv" || key.contains("televis") { return "tv.fill" }
+        if key.contains("film") || key.contains("movie") || key.contains("cinema") || key.contains("vod") { return "film.fill" }
+        if key.contains("serie") || key.contains("series") { return "rectangle.stack.fill" }
+        if key.contains("sport") || key.contains("calcio") { return "sportscourt.fill" }
+        if key.contains("news") || key.contains("notizie") || key.contains("informazione") { return "newspaper.fill" }
+        if key.contains("music") || key.contains("musica") || key.contains("radio") { return "music.note" }
+        if key.contains("bambin") || key.contains("kids") || key.contains("cartoon") { return "figure.2" }
+        if key.contains("natura") || key.contains("nature") || key.contains("document") { return "leaf.fill" }
+        if key.contains("game") || key.contains("giochi") { return "gamecontroller.fill" }
+        return "folder.fill"
+    }
+
+    @ViewBuilder
+    private var rowLabel: some View {
+        if usesNavigationStyle {
+            HStack(spacing: 11) {
+                Image(systemName: symbolName)
+                    .font(.system(size: 17, weight: isSelected ? .semibold : .medium))
+                    .frame(width: 22, height: 22)
+                    .accessibilityHidden(true)
+
+                Text(name)
+                    .font(.system(size: metrics.fontSize, weight: isSelected ? .semibold : .medium))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            .padding(.horizontal, metrics.horizontalPadding)
+            .frame(maxWidth: .infinity, minHeight: metrics.rowHeight, maxHeight: metrics.rowHeight, alignment: .leading)
+            .contentShape(Capsule())
+        } else {
             Text(name)
                 .font(.system(size: metrics.fontSize, weight: .semibold))
                 .foregroundStyle(.primary)
@@ -89,10 +135,44 @@ struct CategoryRailTile: View, Equatable {
                 .frame(maxWidth: .infinity, minHeight: metrics.rowHeight, maxHeight: metrics.rowHeight, alignment: .leading)
                 .contentShape(RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous))
         }
+    }
+
+    var body: some View {
+        Button(action: action) {
+            rowLabel
+        }
         .buttonStyle(.plain)
-        .modifier(CategoryGlassTile(isSelected: isSelected, cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
+        .modifier(CategoryRailTileStyle(
+            isSelected: isSelected,
+            cornerRadius: metrics.cornerRadius,
+            isTransparent: isTransparent,
+            usesNavigationStyle: usesNavigationStyle
+        ))
         .accessibilityLabel(name)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+/// Nel rail "Categorie TV" le singole voci riutilizzano la pillola Liquid
+/// Glass dei controlli di navigazione dell'app. Il pannello esterno resta
+/// `CategoryRailPanel`, quindi il vetro di fondo non cambia.
+private struct CategoryRailTileStyle: ViewModifier {
+    let isSelected: Bool
+    let cornerRadius: CGFloat
+    let isTransparent: Bool
+    let usesNavigationStyle: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if usesNavigationStyle {
+            content.modifier(GlassOrMaterial(isSelected: isSelected))
+        } else {
+            content.modifier(CategoryGlassTile(
+                isSelected: isSelected,
+                cornerRadius: cornerRadius,
+                isTransparent: isTransparent
+            ))
+        }
     }
 }
 
@@ -156,6 +236,7 @@ struct CategoryRail: View {
                         }
 
                         CategoryRailTile(
+                            id: item.id,
                             name: item.name,
                             isSelected: item.id == selectedID,
                             metrics: metrics,
