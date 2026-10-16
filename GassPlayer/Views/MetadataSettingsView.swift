@@ -23,6 +23,8 @@ struct MetadataSettingsView: View {
         }
         .background(background)
         .navigationTitle("TMDB e OMDb")
+        // Chiave svuotata: torna quella predefinita (come Android, `ifBlank`).
+        .onDisappear { DefaultAPIKeys.apply() }
         .navigationBarTitleDisplayMode(.inline)
     }
 

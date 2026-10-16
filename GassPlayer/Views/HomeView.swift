@@ -666,6 +666,7 @@ struct HomeView: View {
         guard homeLayout.order.contains(.featured) else { return }
         featuredModel.reload(
             signature: featuredSignature,
+            sourceKey: sourceManager.activeSourceId?.uuidString ?? "none",
             recent: recentlyWatched.items,
             movies: xtreamCatalog.vodStreams,
             series: xtreamCatalog.seriesItems,

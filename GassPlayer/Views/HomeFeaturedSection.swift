@@ -68,6 +68,32 @@ struct HomeFeaturedEntry: Identifiable, Equatable {
     }
 }
 
+/// Memoria di processo della sezione (come `HomeFeaturedMemory` su Android):
+/// tornando alla Home le schede e i dettagli TMDB già scaricati compaiono
+/// SUBITO, senza attendere la rete; poi si aggiornano in silenzio.
+@MainActor
+enum HomeFeaturedMemory {
+    static var sourceKey: String?
+    static var entries: [HomeFeaturedEntry] = []
+    /// Schede già arricchite con i dettagli TMDB, per id.
+    static var enriched: [String: HomeFeaturedEntry] = [:]
+
+    /// La scheda appena costruita con i dettagli TMDB già noti (immagini,
+    /// logo, generi, anno, voto, episodio), senza perdere i suoi dati freschi.
+    static func merged(_ fresh: HomeFeaturedEntry) -> HomeFeaturedEntry {
+        guard let cached = enriched[fresh.id] else { return fresh }
+        var entry = fresh
+        entry.posterURL = cached.posterURL ?? fresh.posterURL
+        entry.backdropURL = cached.backdropURL ?? fresh.backdropURL
+        entry.logoURL = cached.logoURL ?? fresh.logoURL
+        if !cached.genres.isEmpty { entry.genres = cached.genres }
+        entry.year = cached.year ?? fresh.year
+        entry.rating = cached.rating ?? fresh.rating
+        entry.episodeLabel = cached.episodeLabel ?? fresh.episodeLabel
+        return entry
+    }
+}
+
 @MainActor
 final class HomeFeaturedModel: ObservableObject {
     @Published private(set) var entries: [HomeFeaturedEntry] = []
@@ -78,6 +104,8 @@ final class HomeFeaturedModel: ObservableObject {
 
     private var lastSignature = ""
     private var loadTask: Task<Void, Never>?
+    /// Schede di cui è in corso il caricamento dei dettagli TMDB.
+    private var enriching = Set<String>()
 
     /// Indici normalizzati del catalogo (nome → contenuto), costruiti fuori
     /// dal main thread e riusati finché il catalogo non cambia.
@@ -87,48 +115,78 @@ final class HomeFeaturedModel: ObservableObject {
 
     func reload(
         signature: String,
+        sourceKey: String,
         recent: [RecentlyWatchedItem],
         movies: [XtreamStream],
         series: [XtreamSeriesItem],
         credentials: XtreamCredentials?
     ) {
+        // Comparsa istantanea: le schede dell'ultima volta (con immagini e
+        // dettagli già pronti), mentre si ricostruiscono quelle aggiornate.
+        if entries.isEmpty, HomeFeaturedMemory.sourceKey == sourceKey, !HomeFeaturedMemory.entries.isEmpty {
+            entries = HomeFeaturedMemory.entries.map(HomeFeaturedMemory.merged)
+        }
         guard signature != lastSignature else { return }
         lastSignature = signature
         loadTask?.cancel()
         loadTask = Task { [weak self] in
-            await self?.build(recent: recent, movies: movies, series: series, credentials: credentials)
+            await self?.build(sourceKey: sourceKey, recent: recent, movies: movies, series: series, credentials: credentials)
+        }
+    }
+
+    /// Mostra le schede pronte finora e avvia, per quelle nuove, i dettagli
+    /// TMDB in parallelo (ognuna si aggiorna appena i suoi arrivano).
+    private func publish(_ list: [HomeFeaturedEntry], sourceKey: String, credentials: XtreamCredentials?) {
+        guard !Task.isCancelled else { return }
+        // Mai svuotare la sezione mentre si ricarica.
+        if list.isEmpty, !entries.isEmpty { return }
+        let shown = list.map(HomeFeaturedMemory.merged)
+        if shown != entries { entries = shown }
+        HomeFeaturedMemory.sourceKey = sourceKey
+        HomeFeaturedMemory.entries = shown
+
+        for (index, entry) in shown.enumerated() {
+            guard HomeFeaturedMemory.enriched[entry.id] == nil, enriching.insert(entry.id).inserted else { continue }
+            Task { [weak self] in
+                let done = await Self.enrich(entry, credentials: credentials)
+                guard let self else { return }
+                self.enriching.remove(entry.id)
+                guard let done else { return }
+                HomeFeaturedMemory.enriched[entry.id] = done
+                Self.prefetchImages(of: done, eager: index < 3)
+                if let position = self.entries.firstIndex(where: { $0.id == entry.id }) {
+                    self.entries[position] = HomeFeaturedMemory.merged(self.entries[position])
+                    HomeFeaturedMemory.entries = self.entries
+                }
+            }
+        }
+    }
+
+    /// Scarica in anticipo sfondi e logo (stessa cache delle copertine):
+    /// scorrendo le schede compaiono subito.
+    private static func prefetchImages(of entry: HomeFeaturedEntry, eager: Bool) {
+        var targets: [(URL, CGFloat)] = []
+        if let logo = entry.logoURL { targets.append((logo, homeFeaturedLogoMaxPixel)) }
+        if eager {
+            if let backdrop = entry.backdropURL { targets.append((backdrop, HomeFeaturedArtwork.maxPixel)) }
+            if let poster = entry.posterURL { targets.append((poster, HomeFeaturedArtwork.maxPixel)) }
+        } else if let first = entry.backdropURL ?? entry.posterURL {
+            targets.append((first, HomeFeaturedArtwork.maxPixel))
+        }
+        for (url, maxPixel) in targets where PosterImageStore.cachedImage(for: url, maxPixel: maxPixel) == nil {
+            Task.detached(priority: .utility) {
+                _ = await PosterDownloader.shared.image(for: url, maxPixel: maxPixel)
+            }
         }
     }
 
     private func build(
+        sourceKey: String,
         recent: [RecentlyWatchedItem],
         movies: [XtreamStream],
         series: [XtreamSeriesItem],
         credentials: XtreamCredentials?
     ) async {
-        let catalogSignature = "\(movies.count)|\(series.count)|\(movies.first?.streamId ?? 0)|\(series.first?.seriesId ?? 0)"
-        if catalogSignature != indexSignature {
-            let built = await Task.detached(priority: .utility) { () -> ([String: XtreamStream], [String: XtreamSeriesItem]) in
-                var movieMap: [String: XtreamStream] = [:]
-                movieMap.reserveCapacity(movies.count)
-                for stream in movies {
-                    let key = HomeTrendingMatcher.normalized(stream.name)
-                    if !key.isEmpty, movieMap[key] == nil { movieMap[key] = stream }
-                }
-                var seriesMap: [String: XtreamSeriesItem] = [:]
-                seriesMap.reserveCapacity(series.count)
-                for item in series {
-                    let key = HomeTrendingMatcher.normalized(item.name)
-                    if !key.isEmpty, seriesMap[key] == nil { seriesMap[key] = item }
-                }
-                return (movieMap, seriesMap)
-            }.value
-            guard !Task.isCancelled else { return }
-            movieIndex = built.0
-            seriesIndex = built.1
-            indexSignature = catalogSignature
-        }
-
         var result: [HomeFeaturedEntry] = []
         var usedKeys = Set<String>()
 
@@ -137,6 +195,7 @@ final class HomeFeaturedModel: ObservableObject {
         }
 
         // 1. Continua a guardare: film e serie (una scheda per serie).
+        //    Nessuna rete: compare subito.
         let movieByID = Dictionary(movies.map { ($0.streamId, $0) }, uniquingKeysWith: { first, _ in first })
         let seriesByID = Dictionary(series.map { ($0.seriesId, $0) }, uniquingKeysWith: { first, _ in first })
         var seenSeries = Set<String>()
@@ -165,59 +224,79 @@ final class HomeFeaturedModel: ObservableObject {
                 providerImage: image
             ))
         }
+        publish(result, sourceKey: sourceKey, credentials: credentials)
 
-        if TMDBService.hasAPIKey, !(movies.isEmpty && series.isEmpty) {
-            // 2. Per te: consigliati TMDB dall'ultimo film/serie visto.
-            if let seed = result.first {
-                if let found = try? await TMDBService.shared.lookup(title: seed.title, isSeries: seed.isSeries),
-                   let recommended = try? await TMDBService.shared.recommendations(id: found.id, isSeries: seed.isSeries) {
-                    var added = 0
-                    for item in recommended where added < Self.maxForYou && result.count < Self.maxEntries {
-                        if let entry = matchedEntry(item, badge: .forYou), usedKeys.insert(key(entry.title, isSeries: entry.isSeries)).inserted {
-                            result.append(entry)
-                            added += 1
-                        }
-                    }
+        guard TMDBService.hasAPIKey, !(movies.isEmpty && series.isEmpty) else { return }
+
+        // Tutte le richieste TMDB partono insieme (prima erano una dopo l'altra),
+        // mentre si costruiscono gli indici del catalogo.
+        async let trendingSeries = try? TMDBService.shared.trending(isSeries: true, limit: 20)
+        async let trendingMovies = try? TMDBService.shared.trending(isSeries: false, limit: 20)
+        let seedTitle = result.first?.title
+        let seedIsSeries = result.first?.isSeries ?? false
+        async let recommendedForSeed = Self.recommendations(seedTitle: seedTitle, isSeries: seedIsSeries)
+
+        let catalogSignature = "\(movies.count)|\(series.count)|\(movies.first?.streamId ?? 0)|\(series.first?.seriesId ?? 0)"
+        if catalogSignature != indexSignature {
+            let built = await Task.detached(priority: .userInitiated) { () -> ([String: XtreamStream], [String: XtreamSeriesItem]) in
+                var movieMap: [String: XtreamStream] = [:]
+                movieMap.reserveCapacity(movies.count)
+                for stream in movies {
+                    let key = HomeTrendingMatcher.normalized(stream.name)
+                    if !key.isEmpty, movieMap[key] == nil { movieMap[key] = stream }
                 }
-            }
+                var seriesMap: [String: XtreamSeriesItem] = [:]
+                seriesMap.reserveCapacity(series.count)
+                for item in series {
+                    let key = HomeTrendingMatcher.normalized(item.name)
+                    if !key.isEmpty, seriesMap[key] == nil { seriesMap[key] = item }
+                }
+                return (movieMap, seriesMap)
+            }.value
             guard !Task.isCancelled else { return }
-
-            // 3. Di tendenza: serie e film della settimana, alternati.
-            if result.count < Self.maxEntries {
-                async let trendingSeries = try? TMDBService.shared.trending(isSeries: true, limit: 20)
-                async let trendingMovies = try? TMDBService.shared.trending(isSeries: false, limit: 20)
-                let seriesList = await trendingSeries ?? []
-                let movieList = await trendingMovies ?? []
-                var mixed: [TMDBTrendingItem] = []
-                for index in 0..<max(seriesList.count, movieList.count) {
-                    if index < movieList.count { mixed.append(movieList[index]) }
-                    if index < seriesList.count { mixed.append(seriesList[index]) }
-                }
-                for item in mixed where result.count < Self.maxEntries {
-                    if let entry = matchedEntry(item, badge: .trending), usedKeys.insert(key(entry.title, isSeries: entry.isSeries)).inserted {
-                        result.append(entry)
-                    }
-                }
-            }
+            movieIndex = built.0
+            seriesIndex = built.1
+            indexSignature = catalogSignature
         }
 
+        // 2. Per te: consigliati TMDB dall'ultimo film/serie visto.
+        if let recommended = await recommendedForSeed {
+            var added = 0
+            for item in recommended where added < Self.maxForYou && result.count < Self.maxEntries {
+                if let entry = matchedEntry(item, badge: .forYou), usedKeys.insert(key(entry.title, isSeries: entry.isSeries)).inserted {
+                    result.append(entry)
+                    added += 1
+                }
+            }
+            publish(result, sourceKey: sourceKey, credentials: credentials)
+        }
         guard !Task.isCancelled else { return }
-        entries = result
 
-        // Dettagli TMDB (locandina senza testo, logo, generi, anno, voto) ed
-        // episodio della ripresa, aggiornati scheda per scheda appena pronti.
-        await withTaskGroup(of: (String, HomeFeaturedEntry?).self) { group in
-            for entry in result {
-                group.addTask {
-                    (entry.id, await Self.enrich(entry, credentials: credentials))
+        // 3. Di tendenza: serie e film della settimana, alternati. Ogni
+        //    scheda trovata compare subito.
+        if result.count < Self.maxEntries {
+            let seriesList = await trendingSeries ?? []
+            let movieList = await trendingMovies ?? []
+            var mixed: [TMDBTrendingItem] = []
+            for index in 0..<max(seriesList.count, movieList.count) {
+                if index < movieList.count { mixed.append(movieList[index]) }
+                if index < seriesList.count { mixed.append(seriesList[index]) }
+            }
+            for item in mixed where result.count < Self.maxEntries {
+                if let entry = matchedEntry(item, badge: .trending), usedKeys.insert(key(entry.title, isSeries: entry.isSeries)).inserted {
+                    result.append(entry)
+                    publish(result, sourceKey: sourceKey, credentials: credentials)
                 }
             }
-            for await (id, enriched) in group {
-                guard !Task.isCancelled, let enriched,
-                      let index = entries.firstIndex(where: { $0.id == id }) else { continue }
-                entries[index] = enriched
-            }
         }
+        publish(result, sourceKey: sourceKey, credentials: credentials)
+    }
+
+    /// "Per te": consigliati TMDB a partire dall'ultimo titolo visto.
+    private nonisolated static func recommendations(seedTitle: String?, isSeries: Bool) async -> [TMDBTrendingItem]? {
+        guard let seedTitle,
+              let found = try? await TMDBService.shared.lookup(title: seedTitle, isSeries: isSeries) else { return nil }
+        return try? await TMDBService.shared.recommendations(id: found.id, isSeries: isSeries)
     }
 
     private func matchedEntry(_ item: TMDBTrendingItem, badge: HomeFeaturedBadge) -> HomeFeaturedEntry? {
@@ -413,15 +492,9 @@ struct HomeFeaturedSection: View {
     @ViewBuilder
     private func titleView(_ entry: HomeFeaturedEntry) -> some View {
         if let logoURL = entry.logoURL {
-            AsyncImage(url: logoURL) { phase in
-                if case .success(let image) = phase {
-                    image
-                        .resizable()
-                        .scaledToFit()
-                        .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
-                } else {
-                    titleText(entry)
-                }
+            // Stessa cache delle copertine (scaricato in anticipo): niente attesa ogni volta.
+            HomeFeaturedLogo(url: logoURL) {
+                titleText(entry)
             }
             .frame(maxWidth: Metrics.logoMaxWidth, maxHeight: Metrics.logoMaxHeight)
         } else {
@@ -534,6 +607,8 @@ struct HomeFeaturedSection: View {
 /// riempimento; finché non c'è, l'immagine del provider. Usa lo stesso
 /// downloader tollerante delle griglie (nuovi tentativi, https → http).
 private struct HomeFeaturedArtwork: View {
+    static let maxPixel: CGFloat = 1400
+
     let url: URL?
     let providerImage: String?
     let baseHost: String
@@ -557,12 +632,12 @@ private struct HomeFeaturedArtwork: View {
         }
         .task(id: resolved?.absoluteString) {
             guard let target = resolved else { return }
-            if let cached = PosterImageStore.cachedImage(for: target, maxPixel: 1400) {
+            if let cached = PosterImageStore.cachedImage(for: target, maxPixel: Self.maxPixel) {
                 image = cached
                 loadedKey = target.absoluteString
                 return
             }
-            guard let loaded = await PosterDownloader.shared.image(for: target, maxPixel: 1400), !Task.isCancelled else { return }
+            guard let loaded = await PosterDownloader.shared.image(for: target, maxPixel: Self.maxPixel), !Task.isCancelled else { return }
             image = loaded
             loadedKey = target.absoluteString
         }
@@ -623,6 +698,40 @@ private struct HomeFeaturedGlassCapsule: ViewModifier {
                 .overlay {
                     Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
                 }
+        }
+    }
+}
+
+/// Lato massimo (pixel) del logo del titolo nella cache delle copertine.
+private let homeFeaturedLogoMaxPixel: CGFloat = 600
+
+/// Logo del titolo dalla cache delle copertine (scaricato in anticipo):
+/// compare subito invece di riscaricarlo con `AsyncImage` a ogni comparsa.
+private struct HomeFeaturedLogo<Placeholder: View>: View {
+    let url: URL
+    @ViewBuilder let placeholder: () -> Placeholder
+
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url) {
+            if let cached = PosterImageStore.cachedImage(for: url, maxPixel: homeFeaturedLogoMaxPixel) {
+                image = cached
+                return
+            }
+            image = nil
+            guard let loaded = await PosterDownloader.shared.image(for: url, maxPixel: homeFeaturedLogoMaxPixel), !Task.isCancelled else { return }
+            image = loaded
         }
     }
 }
