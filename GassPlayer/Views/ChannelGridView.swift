@@ -643,33 +643,14 @@ struct ChannelGridView: View {
     /// categoria" (se serve) e i gruppi della playlist con almeno un contenuto.
     private var categoryRailItems: [CategoryRailItem] {
         var items = [
-            CategoryRailItem(id: CategoryRailKey.favorites, name: "Preferiti", count: favoriteCategoryCount),
-            CategoryRailItem(id: CategoryRailKey.all, name: "Tutti", count: itemCount)
+            CategoryRailItem(id: CategoryRailKey.favorites, name: "Preferiti"),
+            CategoryRailItem(id: CategoryRailKey.all, name: "Tutti")
         ]
         if uncategorizedCount > 0 {
-            items.append(CategoryRailItem(
-                id: CategoryRailKey.uncategorized,
-                name: "Senza categoria",
-                count: uncategorizedCount
-            ))
+            items.append(CategoryRailItem(id: CategoryRailKey.uncategorized, name: "Senza categoria"))
         }
-        items += visibleCategories.map {
-            CategoryRailItem(
-                id: $0.categoryId,
-                name: $0.categoryName,
-                count: categoryCount(for: $0.categoryId)
-            )
-        }
+        items += visibleCategories.map { CategoryRailItem(id: $0.categoryId, name: $0.categoryName) }
         return items
-    }
-
-    /// Preferiti realmente presenti nel catalogo corrente, come il conteggio Android.
-    private var favoriteCategoryCount: Int {
-        let ids = favoriteContentIDs
-        if kind == .series {
-            return allSeries.lazy.filter { ids.contains($0.seriesId) }.count
-        }
-        return allStreams.lazy.filter { ids.contains($0.streamId) }.count
     }
 
     private var selectedRailID: String {
