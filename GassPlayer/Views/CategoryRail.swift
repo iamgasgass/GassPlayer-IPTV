@@ -5,9 +5,9 @@ import SwiftUI
 /// "Categorie TV" (menu "…" → "UI Gruppi", come nel progetto Android): i
 /// gruppi della playlist, che prima erano la sezione "Categorie" di
 /// "Modifica", diventano un rail verticale a sinistra dei contenuti. Il rail
-/// è ESATTAMENTE la vecchia sezione "Categorie" (intestazione grigia, tessere
-/// Liquid Glass `CategoryGlassTile` con nome in grassetto, tinta d'accento
-/// quando selezionata) su un pannello con lo STESSO vetro Liquid Glass delle
+/// usa righe con icona, nome e conteggio dei contenuti, come la rail Android;
+/// la selezione è una lente Liquid Glass neutra che si sposta fra i gruppi,
+/// senza la tinta accent statica, su un pannello con lo STESSO vetro Liquid Glass delle
 /// tessere, con le dimensioni attuali
 /// del rail: largo 236 pt, righe alte 48 pt, raggio 14, margine orizzontale
 /// 11, testo 14 pt, spaziatura 5. In cima, come su Android, "Preferiti" e
@@ -16,6 +16,10 @@ import SwiftUI
 struct CategoryRailItem: Identifiable, Hashable {
     let id: String
     let name: String
+    /// Stessa semantica delle icone della rail Android: preferiti, tutti e gruppi.
+    let icon: String
+    /// Contenuti effettivi della playlist appartenenti a questa voce.
+    let count: Int
 }
 
 /// Chiavi riservate delle voci fisse del rail (non collidono con i
@@ -61,37 +65,76 @@ struct CategoryRailMetrics: Equatable {
     }
 }
 
-/// Riga del rail: stessa tessera della sezione "Categorie" (testo in
-/// grassetto, colore primario, vetro `CategoryGlassTile`), misure del rail.
+/// Riga del rail: icona, nome e conteggio con lente Liquid Glass condivisa
+/// per la selezione e misure allineate alla rail Android.
 struct CategoryRailTile: View, Equatable {
     let name: String
+    let icon: String
+    let count: Int
     let isSelected: Bool
     let metrics: CategoryRailMetrics
+    let selectionNamespace: Namespace.ID
     /// Vetro trasparente (rail del player, come Android).
     var isTransparent = false
     let action: () -> Void
 
-    // Le closure non entrano nel confronto: la riga si ridisegna solo se
-    // cambiano nome, selezione, misure o vetro.
+    // Le closure e la namespace non entrano nel confronto: la riga si ridisegna
+    // quando cambiano dati, selezione, misure o superficie.
     static func == (lhs: CategoryRailTile, rhs: CategoryRailTile) -> Bool {
-        lhs.name == rhs.name && lhs.isSelected == rhs.isSelected
-            && lhs.metrics == rhs.metrics && lhs.isTransparent == rhs.isTransparent
+        lhs.name == rhs.name && lhs.icon == rhs.icon && lhs.count == rhs.count
+            && lhs.isSelected == rhs.isSelected && lhs.metrics == rhs.metrics
+            && lhs.isTransparent == rhs.isTransparent
     }
 
     var body: some View {
-        Button(action: action) {
-            Text(name)
-                .font(.system(size: metrics.fontSize, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
+        Button {
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) {
+                action()
+            }
+        } label: {
+            ZStack {
+                // Ogni riga mantiene il vetro neutro; la lente selezionata
+                // è un'unica superficie condivisa che si sposta tra le righe.
+                RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
+                    .fill(.clear)
+                    .modifier(CategoryGlassTile(isSelected: false, cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
+
+                if isSelected {
+                    RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
+                        .fill(.clear)
+                        .modifier(CategoryRailSelectionLens(cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
+                        .matchedGeometryEffect(id: "category-rail-selection-lens", in: selectionNamespace)
+                        .zIndex(1)
+                }
+
+                HStack(spacing: 9) {
+                    Image(systemName: icon)
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.70))
+                        .frame(width: 18)
+                        .accessibilityHidden(true)
+
+                    Text(name)
+                        .font(.system(size: metrics.fontSize, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text("\(count)")
+                        .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
                 .padding(.horizontal, metrics.horizontalPadding)
                 .frame(maxWidth: .infinity, minHeight: metrics.rowHeight, maxHeight: metrics.rowHeight, alignment: .leading)
-                .contentShape(RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous))
+                .zIndex(2)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
-        .modifier(CategoryGlassTile(isSelected: isSelected, cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
-        .accessibilityLabel(name)
+        .accessibilityLabel("\(name), \(count) contenuti")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
@@ -99,6 +142,7 @@ struct CategoryRailTile: View, Equatable {
 struct CategoryRail: View {
     let items: [CategoryRailItem]
     let selectedID: String
+    @Namespace private var selectionNamespace
     var width: CGFloat = 236
     /// Intestazione "Categorie TV" (stessa tipografia dell'intestazione
     /// "Categorie" della vecchia sezione). `false` nel player, dove sopra la
@@ -157,8 +201,11 @@ struct CategoryRail: View {
 
                         CategoryRailTile(
                             name: item.name,
+                            icon: item.icon,
+                            count: item.count,
                             isSelected: item.id == selectedID,
                             metrics: metrics,
+                            selectionNamespace: selectionNamespace,
                             isTransparent: isTransparent
                         ) {
                             onSelect(item.id)
@@ -179,6 +226,34 @@ struct CategoryRail: View {
                     proxy.scrollTo(newID, anchor: .center)
                 }
             }
+        }
+    }
+}
+
+/// Lente di selezione della rail: Liquid Glass neutro, senza tinta accent.
+/// `matchedGeometryEffect` la sposta tra i gruppi come la selezione della tab bar.
+private struct CategoryRailSelectionLens: ViewModifier {
+    let cornerRadius: CGFloat
+    var isTransparent = false
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        if #available(iOS 26.0, *) {
+            if isTransparent {
+                content.glassEffect(.clear.interactive(), in: shape)
+            } else {
+                content.glassEffect(.regular.interactive(), in: shape)
+            }
+        } else {
+            content
+                .background(
+                    isTransparent ? Color.white.opacity(0.12) : Color.white.opacity(0.10),
+                    in: shape
+                )
+                .overlay {
+                    shape.strokeBorder(Color.white.opacity(0.28), lineWidth: 0.75)
+                }
         }
     }
 }

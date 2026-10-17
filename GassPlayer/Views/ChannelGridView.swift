@@ -643,14 +643,49 @@ struct ChannelGridView: View {
     /// categoria" (se serve) e i gruppi della playlist con almeno un contenuto.
     private var categoryRailItems: [CategoryRailItem] {
         var items = [
-            CategoryRailItem(id: CategoryRailKey.favorites, name: "Preferiti"),
-            CategoryRailItem(id: CategoryRailKey.all, name: "Tutti")
+            CategoryRailItem(
+                id: CategoryRailKey.favorites,
+                name: "Preferiti",
+                icon: "star.fill",
+                count: favoriteRailCount
+            ),
+            CategoryRailItem(
+                id: CategoryRailKey.all,
+                name: "Tutti",
+                icon: "square.grid.2x2.fill",
+                count: itemCount
+            )
         ]
         if uncategorizedCount > 0 {
-            items.append(CategoryRailItem(id: CategoryRailKey.uncategorized, name: "Senza categoria"))
+            items.append(CategoryRailItem(
+                id: CategoryRailKey.uncategorized,
+                name: "Senza categoria",
+                icon: "folder.fill",
+                count: uncategorizedCount
+            ))
         }
-        items += visibleCategories.map { CategoryRailItem(id: $0.categoryId, name: $0.categoryName) }
+        items += visibleCategories.map {
+            CategoryRailItem(
+                id: $0.categoryId,
+                name: $0.categoryName,
+                icon: "folder.fill",
+                count: catalogIndex.categoryCounts[$0.categoryId] ?? 0
+            )
+        }
         return items
+    }
+
+    /// Come `items.countIds(favoriteIds)` su Android: conta solo i preferiti
+    /// che appartengono al catalogo attualmente caricato.
+    private var favoriteRailCount: Int {
+        if kind == .series {
+            return allSeries.reduce(into: 0) { count, item in
+                if favoriteContentIDs.contains(item.seriesId) { count += 1 }
+            }
+        }
+        return allStreams.reduce(into: 0) { count, item in
+            if favoriteContentIDs.contains(item.streamId) { count += 1 }
+        }
     }
 
     private var selectedRailID: String {
