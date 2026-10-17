@@ -16,6 +16,14 @@ import SwiftUI
 struct CategoryRailItem: Identifiable, Hashable {
     let id: String
     let name: String
+    /// Numero di contenuti nel gruppo, mostrato nel rail principale (come Android).
+    let count: Int
+
+    init(id: String, name: String, count: Int = 0) {
+        self.id = id
+        self.name = name
+        self.count = count
+    }
 }
 
 /// Chiavi riservate delle voci fisse del rail (non collidono con i
@@ -66,6 +74,7 @@ struct CategoryRailMetrics: Equatable {
 struct CategoryRailTile: View, Equatable {
     let id: String
     let name: String
+    let count: Int
     let isSelected: Bool
     let metrics: CategoryRailMetrics
     /// Vetro trasparente (rail del player, come Android).
@@ -79,7 +88,7 @@ struct CategoryRailTile: View, Equatable {
     // Le closure non entrano nel confronto: la riga si ridisegna solo se
     // cambiano identificatore, nome, selezione, misure o vetro.
     static func == (lhs: CategoryRailTile, rhs: CategoryRailTile) -> Bool {
-        lhs.id == rhs.id && lhs.name == rhs.name && lhs.isSelected == rhs.isSelected
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.count == rhs.count && lhs.isSelected == rhs.isSelected
             && lhs.metrics == rhs.metrics && lhs.isTransparent == rhs.isTransparent
     }
 
@@ -88,32 +97,19 @@ struct CategoryRailTile: View, Equatable {
     /// interno al player mantengono invece il rendering testuale originale.
     private var usesNavigationStyle: Bool { metrics == .rail }
 
+    /// Icone allineate alla rail Android: Preferiti, Tutti e cartella per i gruppi.
     private var symbolName: String {
         switch id {
         case CategoryRailKey.favorites: return "star.fill"
         case CategoryRailKey.all: return "square.grid.2x2.fill"
-        case CategoryRailKey.uncategorized: return "tray.fill"
-        default: break
+        default: return "folder"
         }
-
-        let key = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).lowercased()
-        if key.contains("home") || key.contains("inizio") { return "house.fill" }
-        if key.contains("live") || key == "tv" || key.contains("televis") { return "tv.fill" }
-        if key.contains("film") || key.contains("movie") || key.contains("cinema") || key.contains("vod") { return "film.fill" }
-        if key.contains("serie") || key.contains("series") { return "rectangle.stack.fill" }
-        if key.contains("sport") || key.contains("calcio") { return "sportscourt.fill" }
-        if key.contains("news") || key.contains("notizie") || key.contains("informazione") { return "newspaper.fill" }
-        if key.contains("music") || key.contains("musica") || key.contains("radio") { return "music.note" }
-        if key.contains("bambin") || key.contains("kids") || key.contains("cartoon") { return "figure.2" }
-        if key.contains("natura") || key.contains("nature") || key.contains("document") { return "leaf.fill" }
-        if key.contains("game") || key.contains("giochi") { return "gamecontroller.fill" }
-        return "folder.fill"
     }
 
     @ViewBuilder
     private var rowLabel: some View {
         if usesNavigationStyle {
-            HStack(spacing: 11) {
+            HStack(spacing: 9) {
                 Image(systemName: symbolName)
                     .font(.system(size: 17, weight: isSelected ? .semibold : .medium))
                     .frame(width: 22, height: 22)
@@ -121,9 +117,16 @@ struct CategoryRailTile: View, Equatable {
 
                 Text(name)
                     .font(.system(size: metrics.fontSize, weight: isSelected ? .semibold : .medium))
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("\(count)")
+                    .font(.system(size: 11, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.secondary.opacity(0.78))
+                    .lineLimit(1)
             }
             .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
             .padding(.horizontal, metrics.horizontalPadding)
@@ -290,6 +293,7 @@ struct CategoryRail: View {
                 CategoryRailTile(
                     id: item.id,
                     name: item.name,
+                    count: item.count,
                     isSelected: item.id == selectedID,
                     metrics: metrics,
                     isTransparent: isTransparent,
