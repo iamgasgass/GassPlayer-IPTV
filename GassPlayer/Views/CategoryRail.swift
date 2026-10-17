@@ -97,7 +97,10 @@ struct CategoryRailTile: View, Equatable {
                 // è un'unica superficie condivisa che si sposta tra le righe.
                 RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
                     .fill(.clear)
-                    .modifier(CategoryGlassTile(isSelected: false, cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
+                    // Le righe non selezionate usano vetro CLEAR, non REGULAR:
+                    // se avessero tutte lo stesso vetro della lente attiva,
+                    // la selezione mobile sarebbe praticamente indistinguibile.
+                    .modifier(CategoryRailInactiveSurface(cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
 
                 if isSelected {
                     RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
@@ -230,8 +233,33 @@ struct CategoryRail: View {
     }
 }
 
-/// Lente di selezione della rail: Liquid Glass neutro, senza tinta accent.
-/// `matchedGeometryEffect` la sposta tra i gruppi come la selezione della tab bar.
+/// Superficie delle righe non selezionate: vetro CLEAR per rendere distinguibile
+/// la lente REGULAR selezionata che si muove tra le voci.
+private struct CategoryRailInactiveSurface: ViewModifier {
+    let cornerRadius: CGFloat
+    var isTransparent = false
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.clear.interactive(), in: shape)
+        } else {
+            content
+                .background(
+                    Color.white.opacity(isTransparent ? 0.025 : 0.035),
+                    in: shape
+                )
+                .overlay {
+                    shape.strokeBorder(Color.white.opacity(isTransparent ? 0.10 : 0.12), lineWidth: 0.5)
+                }
+        }
+    }
+}
+
+/// Lente di selezione della rail: Liquid Glass REGULAR neutro, senza tinta accent.
+/// La stessa lente condivisa (`matchedGeometryEffect`) segue la voce selezionata,
+/// come l'indicatore Liquid Glass della barra inferiore.
 private struct CategoryRailSelectionLens: ViewModifier {
     let cornerRadius: CGFloat
     var isTransparent = false
@@ -240,11 +268,9 @@ private struct CategoryRailSelectionLens: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         if #available(iOS 26.0, *) {
-            if isTransparent {
-                content.glassEffect(.clear.interactive(), in: shape)
-            } else {
-                content.glassEffect(.regular.interactive(), in: shape)
-            }
+            // Anche nel rail trasparente del player la selezione deve essere
+            // visibile: la lente mantiene il Liquid Glass REGULAR e neutro.
+            content.glassEffect(.regular.interactive(), in: shape)
         } else {
             content
                 .background(
