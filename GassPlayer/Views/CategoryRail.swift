@@ -70,6 +70,10 @@ struct CategoryRailTile: View, Equatable {
     let metrics: CategoryRailMetrics
     /// Vetro trasparente (rail del player, come Android).
     var isTransparent = false
+    /// Namespace condiviso dal rail: su iOS 26 permette alla lente Liquid
+    /// Glass selezionata di spostarsi tra le voci, invece di creare pillole
+    /// indipendenti su ogni riga.
+    let glassNamespace: Namespace.ID
     let action: () -> Void
 
     // Le closure non entrano nel confronto: la riga si ridisegna solo se
@@ -146,7 +150,8 @@ struct CategoryRailTile: View, Equatable {
             isSelected: isSelected,
             cornerRadius: metrics.cornerRadius,
             isTransparent: isTransparent,
-            usesNavigationStyle: usesNavigationStyle
+            usesNavigationStyle: usesNavigationStyle,
+            glassNamespace: glassNamespace
         ))
         .accessibilityLabel(name)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -161,11 +166,28 @@ private struct CategoryRailTileStyle: ViewModifier {
     let cornerRadius: CGFloat
     let isTransparent: Bool
     let usesNavigationStyle: Bool
+    let glassNamespace: Namespace.ID
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if usesNavigationStyle {
-            content.modifier(GlassOrMaterial(isSelected: isSelected))
+            if #available(iOS 26.0, *) {
+                // Una sola identità vetrosa viene riutilizzata dalla riga
+                // selezionata: SwiftUI anima la lente da una voce all'altra.
+                // Le righe non selezionate restano trasparenti, così il
+                // pannello Liquid Glass di fondo rimane visibile.
+                if isSelected {
+                    content
+                        .glassEffect(.regular.tint(.accentColor).interactive(), in: .capsule)
+                        .glassEffectID("category-rail-selection-lens", in: glassNamespace)
+                        .glassEffectTransition(.matchedGeometry)
+                } else {
+                    content
+                }
+            } else {
+                // Fallback per iOS 17–25: conserva il trattamento esistente.
+                content.modifier(GlassOrMaterial(isSelected: isSelected))
+            }
         } else {
             content.modifier(CategoryGlassTile(
                 isSelected: isSelected,
@@ -179,6 +201,7 @@ private struct CategoryRailTileStyle: ViewModifier {
 struct CategoryRail: View {
     let items: [CategoryRailItem]
     let selectedID: String
+    @Namespace private var selectionLensNamespace
     var width: CGFloat = 236
     /// Intestazione "Categorie TV" (stessa tipografia dell'intestazione
     /// "Categorie" della vecchia sezione). `false` nel player, dove sopra la
@@ -221,34 +244,9 @@ struct CategoryRail: View {
     private var list: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
-                // `LazyVStack`: con centinaia di gruppi solo le righe visibili
-                // creano il proprio vetro Liquid Glass.
-                LazyVStack(spacing: metrics.spacing) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        // Filo fra le voci fisse ("Preferiti", "Tutti") e i gruppi.
-                        if index > 0,
-                           !CategoryRailKey.isPinned(item.id),
-                           CategoryRailKey.isPinned(items[index - 1].id) {
-                            Divider()
-                                .overlay(Color.white.opacity(0.14))
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, 7)
-                        }
-
-                        CategoryRailTile(
-                            id: item.id,
-                            name: item.name,
-                            isSelected: item.id == selectedID,
-                            metrics: metrics,
-                            isTransparent: isTransparent
-                        ) {
-                            onSelect(item.id)
-                        }
-                        .equatable()
-                        .id(item.id)
-                    }
-                }
-                .padding(.vertical, 2)
+                railRows
+                    .padding(.vertical, 2)
+                    .animation(.spring(response: 0.36, dampingFraction: 0.84), value: selectedID)
             }
             // Il gruppo selezionato è sempre visibile all'apertura e dopo
             // ogni cambio (anche se scelto altrove, es. dal player).
@@ -259,6 +257,48 @@ struct CategoryRail: View {
                 withAnimation(.easeInOut(duration: 0.25)) {
                     proxy.scrollTo(newID, anchor: .center)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var railRows: some View {
+        if #available(iOS 26.0, *), metrics == .rail {
+            // Il contenitore coordina i glass effect e consente alla pillola
+            // identificata da `glassEffectID` di morphare tra le selezioni.
+            GlassEffectContainer(spacing: max(40, metrics.rowHeight)) {
+                rowsStack
+            }
+        } else {
+            rowsStack
+        }
+    }
+
+    private var rowsStack: some View {
+        LazyVStack(spacing: metrics.spacing) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                // Filo fra le voci fisse ("Preferiti", "Tutti") e i gruppi.
+                if index > 0,
+                   !CategoryRailKey.isPinned(item.id),
+                   CategoryRailKey.isPinned(items[index - 1].id) {
+                    Divider()
+                        .overlay(Color.white.opacity(0.14))
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 7)
+                }
+
+                CategoryRailTile(
+                    id: item.id,
+                    name: item.name,
+                    isSelected: item.id == selectedID,
+                    metrics: metrics,
+                    isTransparent: isTransparent,
+                    glassNamespace: selectionLensNamespace
+                ) {
+                    onSelect(item.id)
+                }
+                .equatable()
+                .id(item.id)
             }
         }
     }
