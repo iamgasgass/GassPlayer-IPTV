@@ -1467,13 +1467,15 @@ struct ChannelGridView: View {
                     Label("UI Gruppi", systemImage: "rectangle.grid.1x2")
                 }
 
-                Menu {
-                    Picker("UI Rail", selection: $categoryRailStyle) {
-                        Text("Accent").tag("accent")
-                        Text("Glass").tag("glass")
+                if groupUIStyle == "categorie_tv" {
+                    Menu {
+                        Picker("UI Rail", selection: $categoryRailStyle) {
+                            Text("Accent").tag("accent")
+                            Text("Glass").tag("glass")
+                        }
+                    } label: {
+                        Label("UI Rail", systemImage: "paintbrush")
                     }
-                } label: {
-                    Label("UI Rail", systemImage: "square.split.2x1")
                 }
 
                 Button {
