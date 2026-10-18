@@ -102,11 +102,21 @@ struct CategoryRailTile: View, Equatable {
                     // la selezione mobile sarebbe praticamente indistinguibile.
                     .modifier(CategoryRailInactiveSurface(cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
 
+                // La lente deve avere una superficie reale: applicare Liquid Glass
+                // a una RoundedRectangle completamente clear può renderla invisibile
+                // (in particolare sopra il pannello già vetroso della rail). Il fill
+                // neutro e il bordo rendono la selezione distinguibile; il vetro
+                // nativo resta lo stesso della barra inferiore e la geometria segue
+                // il cambio di gruppo tramite matchedGeometryEffect.
                 if isSelected {
                     RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
-                        .fill(.clear)
+                        .fill(Color.white.opacity(isTransparent ? 0.15 : 0.12))
                         .modifier(CategoryRailSelectionLens(cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
-                        .matchedGeometryEffect(id: "category-rail-selection-lens", in: selectionNamespace)
+                        .matchedGeometryEffect(
+                            id: "category-rail-selection-lens",
+                            in: selectionNamespace,
+                            isSource: true
+                        )
                         .zIndex(1)
                 }
 
@@ -268,17 +278,19 @@ private struct CategoryRailSelectionLens: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         if #available(iOS 26.0, *) {
-            // Anche nel rail trasparente del player la selezione deve essere
-            // visibile: la lente mantiene il Liquid Glass REGULAR e neutro.
-            content.glassEffect(.regular.interactive(), in: shape)
+            // La base non è più trasparente: il vetro ha una superficie su cui
+            // rifrangere e il bordo neutro mantiene la lente leggibile anche su
+            // contenuti scuri o sopra un altro pannello Liquid Glass.
+            content
+                .glassEffect(.regular.interactive(), in: shape)
+                .overlay {
+                    shape.strokeBorder(Color.white.opacity(isTransparent ? 0.34 : 0.30), lineWidth: 0.8)
+                }
         } else {
             content
-                .background(
-                    isTransparent ? Color.white.opacity(0.12) : Color.white.opacity(0.10),
-                    in: shape
-                )
+                .background(.ultraThinMaterial, in: shape)
                 .overlay {
-                    shape.strokeBorder(Color.white.opacity(0.28), lineWidth: 0.75)
+                    shape.strokeBorder(Color.white.opacity(isTransparent ? 0.34 : 0.30), lineWidth: 0.8)
                 }
         }
     }
