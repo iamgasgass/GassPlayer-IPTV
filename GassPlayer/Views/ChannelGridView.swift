@@ -668,11 +668,69 @@ struct ChannelGridView: View {
             CategoryRailItem(
                 id: $0.categoryId,
                 name: $0.categoryName,
-                icon: "folder.fill",
+                icon: categoryRailIcon(for: $0.categoryName, kind: kind),
                 count: catalogIndex.categoryCounts[$0.categoryId] ?? 0
             )
         }
         return items
+    }
+
+    /// Associa a ogni gruppo un'icona semantica, come nelle sezioni Android:
+    /// Film/Cinema usa il simbolo film, sport usa sportscourt, news newspaper,
+    /// kids gamecontroller, ecc. I gruppi generici ereditano l'icona del tipo
+    /// di catalogo invece di mostrare tutti la stessa cartella.
+    private func categoryRailIcon(for groupName: String, kind: XtreamStreamKind) -> String {
+        let name = groupName
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+
+        func matches(_ keywords: [String]) -> Bool {
+            keywords.contains { name.contains($0) }
+        }
+
+        if matches([
+            "sport", "calcio", "football", "soccer", "tennis", "basket", "basketball",
+            "motori", "racing", "formula 1", "f1", "rugby", "golf", "boxing", "boxe",
+            "fight", "dazn", "eurosport", "nba", "nfl", "nhl", "ufc", "wwe"
+        ]) { return "sportscourt" }
+
+        if matches(["news", "notizie", "informazione", "telegiornale", "tg "]) || name.hasPrefix("tg") {
+            return "newspaper"
+        }
+
+        if matches(["film", "movie", "cinema", "vod", "pellicole", "blockbuster"]) {
+            return "film"
+        }
+
+        if matches(["kids", "kid", "bambini", "bimbo", "bimbi", "cartoon", "cartoons", "animazione", "animation", "junior"]) {
+            return "gamecontroller"
+        }
+
+        if matches(["music", "musica", "radio", "concerti", "concert", "hits", "mtv"]) {
+            return "music.note"
+        }
+
+        if matches(["documentari", "documentario", "documentary", "documentaries", "natura", "nature", "history", "storia", "discovery", "national geographic"]) {
+            return "video"
+        }
+
+        if matches(["relig", "religion", "religione", "chiesa", "christian", "islam", "gospel"]) {
+            return "building.columns"
+        }
+
+        if matches(["adult", "adulti", "xxx", "+18", "18+", "erot", "porn"]) {
+            return "eye.slash"
+        }
+
+        if matches(["serie", "series", "fiction", "serial", "telefilm", "tv show", "anime", "soap"]) {
+            return "tv"
+        }
+
+        switch kind {
+        case .live: return "tv"
+        case .movie: return "film"
+        case .series: return "tv"
+        }
     }
 
     /// Come `items.countIds(favoriteIds)` su Android: conta solo i preferiti

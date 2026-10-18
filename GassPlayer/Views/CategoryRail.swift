@@ -93,27 +93,31 @@ struct CategoryRailTile: View, Equatable {
             }
         } label: {
             ZStack {
-                // La riga selezionata contiene SOLO la lente Regular; le righe
-                // inattive usano Clear. Evita due superfici Liquid Glass sovrapposte
-                // nella riga attiva, che rendevano la selezione indistinguibile.
+                // Ogni riga mantiene il vetro neutro; la lente selezionata
+                // è un'unica superficie condivisa che si sposta tra le righe.
+                RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
+                    .fill(.clear)
+                    // Le righe non selezionate usano vetro CLEAR, non REGULAR:
+                    // se avessero tutte lo stesso vetro della lente attiva,
+                    // la selezione mobile sarebbe praticamente indistinguibile.
+                    .modifier(CategoryRailInactiveSurface(cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
+
+                // La lente deve avere una superficie reale: applicare Liquid Glass
+                // a una RoundedRectangle completamente clear può renderla invisibile
+                // (in particolare sopra il pannello già vetroso della rail). Il fill
+                // neutro e il bordo rendono la selezione distinguibile; il vetro
+                // nativo resta lo stesso della barra inferiore e la geometria segue
+                // il cambio di gruppo tramite matchedGeometryEffect.
                 if isSelected {
                     RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
-                        .fill(.clear)
-                        .modifier(CategoryRailSelectionLens(
-                            cornerRadius: metrics.cornerRadius,
-                            isTransparent: isTransparent,
-                            selectionNamespace: selectionNamespace
-                        ))
+                        .fill(Color.white.opacity(isTransparent ? 0.15 : 0.12))
+                        .modifier(CategoryRailSelectionLens(cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
                         .matchedGeometryEffect(
                             id: "category-rail-selection-lens",
                             in: selectionNamespace,
                             isSource: true
                         )
                         .zIndex(1)
-                } else {
-                    RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
-                        .fill(.clear)
-                        .modifier(CategoryRailInactiveSurface(cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
                 }
 
                 HStack(spacing: 9) {
@@ -194,16 +198,36 @@ struct CategoryRail: View {
     private var list: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
-                // Il selettore usa il medesimo effetto Liquid Glass nativo della
-                // barra inferiore. Il container permette al vetro di interpolare
-                // fra una riga e l'altra anziché ricreare una pillola indipendente.
-                if #available(iOS 26.0, *) {
-                    GlassEffectContainer(spacing: 0) {
-                        railRows
+                // `LazyVStack`: con centinaia di gruppi solo le righe visibili
+                // creano il proprio vetro Liquid Glass.
+                LazyVStack(spacing: metrics.spacing) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        // Filo fra le voci fisse ("Preferiti", "Tutti") e i gruppi.
+                        if index > 0,
+                           !CategoryRailKey.isPinned(item.id),
+                           CategoryRailKey.isPinned(items[index - 1].id) {
+                            Divider()
+                                .overlay(Color.white.opacity(0.14))
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, 7)
+                        }
+
+                        CategoryRailTile(
+                            name: item.name,
+                            icon: item.icon,
+                            count: item.count,
+                            isSelected: item.id == selectedID,
+                            metrics: metrics,
+                            selectionNamespace: selectionNamespace,
+                            isTransparent: isTransparent
+                        ) {
+                            onSelect(item.id)
+                        }
+                        .equatable()
+                        .id(item.id)
                     }
-                } else {
-                    railRows
                 }
+                .padding(.vertical, 2)
             }
             // Il gruppo selezionato è sempre visibile all'apertura e dopo
             // ogni cambio (anche se scelto altrove, es. dal player).
@@ -211,45 +235,12 @@ struct CategoryRail: View {
                 proxy.scrollTo(selectedID, anchor: .center)
             }
             .onChange(of: selectedID) { _, newID in
-                withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) {
+                withAnimation(.easeInOut(duration: 0.25)) {
                     proxy.scrollTo(newID, anchor: .center)
                 }
             }
         }
     }
-
-    @ViewBuilder
-    private var railRows: some View {
-        LazyVStack(spacing: metrics.spacing) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                // Filo fra le voci fisse ("Preferiti", "Tutti") e i gruppi.
-                if index > 0,
-                   !CategoryRailKey.isPinned(item.id),
-                   CategoryRailKey.isPinned(items[index - 1].id) {
-                    Divider()
-                        .overlay(Color.white.opacity(0.14))
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 7)
-                }
-
-                CategoryRailTile(
-                    name: item.name,
-                    icon: item.icon,
-                    count: item.count,
-                    isSelected: item.id == selectedID,
-                    metrics: metrics,
-                    selectionNamespace: selectionNamespace,
-                    isTransparent: isTransparent
-                ) {
-                    onSelect(item.id)
-                }
-                .equatable()
-                .id(item.id)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
 }
 
 /// Superficie delle righe non selezionate: vetro CLEAR per rendere distinguibile
@@ -282,28 +273,24 @@ private struct CategoryRailInactiveSurface: ViewModifier {
 private struct CategoryRailSelectionLens: ViewModifier {
     let cornerRadius: CGFloat
     var isTransparent = false
-    let selectionNamespace: Namespace.ID
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         if #available(iOS 26.0, *) {
-            // Stesso vetro non colorato usato dalla selezione della barra inferiore.
-            // L'identità Liquid Glass, insieme a matchedGeometryEffect, permette
-            // alla stessa lente di trasferirsi tra i gruppi selezionati.
+            // La base non è più trasparente: il vetro ha una superficie su cui
+            // rifrangere e il bordo neutro mantiene la lente leggibile anche su
+            // contenuti scuri o sopra un altro pannello Liquid Glass.
             content
                 .glassEffect(.regular.interactive(), in: shape)
-                .glassEffectID("category-rail-selection-lens", in: selectionNamespace)
+                .overlay {
+                    shape.strokeBorder(Color.white.opacity(isTransparent ? 0.34 : 0.30), lineWidth: 0.8)
+                }
         } else {
-            // Fallback per iOS 17–25; il comportamento Liquid Glass nativo è
-            // disponibile su iOS 26 e successivi.
             content
                 .background(.ultraThinMaterial, in: shape)
                 .overlay {
-                    shape.strokeBorder(
-                        Color.white.opacity(isTransparent ? 0.24 : 0.20),
-                        lineWidth: 0.6
-                    )
+                    shape.strokeBorder(Color.white.opacity(isTransparent ? 0.34 : 0.30), lineWidth: 0.8)
                 }
         }
     }
