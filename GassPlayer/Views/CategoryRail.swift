@@ -5,17 +5,20 @@ import SwiftUI
 /// "Categorie TV" (menu "…" → "UI Gruppi", come nel progetto Android): i
 /// gruppi della playlist, che prima erano la sezione "Categorie" di
 /// "Modifica", diventano un rail verticale a sinistra dei contenuti. Il rail
-/// è ESATTAMENTE la vecchia sezione "Categorie" (intestazione grigia, tessere
-/// Liquid Glass `CategoryGlassTile` con nome in grassetto, tinta d'accento
-/// quando selezionata) su un pannello con lo STESSO vetro Liquid Glass delle
-/// tessere, con le dimensioni attuali
-/// del rail: largo 236 pt, righe alte 48 pt, raggio 14, margine orizzontale
-/// 11, testo 14 pt, spaziatura 5. In cima, come su Android, "Preferiti" e
+/// usa righe con icona, nome e conteggio dei contenuti, come la rail Android;
+/// la selezione riprende la pillola Liquid Glass interattiva della barra
+/// inferiore di File: unica, neutra e animata tra le voci, senza tinta accent.
+/// Il pannello mantiene il layout verticale necessario alla rail. In cima,
+/// come su Android, "Preferiti" e
 /// "Tutti", poi "Senza categoria" se serve e i gruppi nell'ordine della
 /// playlist.
 struct CategoryRailItem: Identifiable, Hashable {
     let id: String
     let name: String
+    /// Stessa semantica delle icone della rail Android: preferiti, tutti e gruppi.
+    let icon: String
+    /// Contenuti effettivi della playlist appartenenti a questa voce.
+    let count: Int
 }
 
 /// Chiavi riservate delle voci fisse del rail (non collidono con i
@@ -32,10 +35,10 @@ enum CategoryRailKey {
     }
 }
 
-/// Misure delle righe del rail, prese 1:1 dal progetto Android.
+/// Misure di contenuto della rail; la selezione usa la pillola Capsule della
+/// barra inferiore di File, indipendentemente dall'altezza della riga.
 struct CategoryRailMetrics: Equatable {
     var rowHeight: CGFloat
-    var cornerRadius: CGFloat
     var horizontalPadding: CGFloat
     var fontSize: CGFloat
     var spacing: CGFloat
@@ -43,7 +46,6 @@ struct CategoryRailMetrics: Equatable {
     /// `TvCategoryRail` (Live TV / VOD / Serie TV / Guida).
     static let rail = CategoryRailMetrics(
         rowHeight: 48,
-        cornerRadius: 14,
         horizontalPadding: 11,
         fontSize: 14,
         spacing: 5
@@ -53,7 +55,6 @@ struct CategoryRailMetrics: Equatable {
     static func playerGroups(compact: Bool) -> CategoryRailMetrics {
         CategoryRailMetrics(
             rowHeight: compact ? 40 : 44,
-            cornerRadius: 12,
             horizontalPadding: 8,
             fontSize: compact ? 10 : 12,
             spacing: 4
@@ -61,37 +62,72 @@ struct CategoryRailMetrics: Equatable {
     }
 }
 
-/// Riga del rail: stessa tessera della sezione "Categorie" (testo in
-/// grassetto, colore primario, vetro `CategoryGlassTile`), misure del rail.
+/// Riga del rail nello stile della barra inferiore di File: le voci inattive
+/// non hanno una pillola propria; l'unica lente Liquid Glass è condivisa e
+/// migra alla voce selezionata usando l'identità nativa degli effetti glass.
 struct CategoryRailTile: View, Equatable {
     let name: String
+    let icon: String
+    let count: Int
     let isSelected: Bool
     let metrics: CategoryRailMetrics
-    /// Vetro trasparente (rail del player, come Android).
+    let selectionNamespace: Namespace.ID
+    /// Vetro leggero per rail sovrapposti al player.
     var isTransparent = false
     let action: () -> Void
 
-    // Le closure non entrano nel confronto: la riga si ridisegna solo se
-    // cambiano nome, selezione, misure o vetro.
     static func == (lhs: CategoryRailTile, rhs: CategoryRailTile) -> Bool {
-        lhs.name == rhs.name && lhs.isSelected == rhs.isSelected
-            && lhs.metrics == rhs.metrics && lhs.isTransparent == rhs.isTransparent
+        lhs.name == rhs.name && lhs.icon == rhs.icon && lhs.count == rhs.count
+            && lhs.isSelected == rhs.isSelected && lhs.metrics == rhs.metrics
+            && lhs.isTransparent == rhs.isTransparent
     }
 
     var body: some View {
-        Button(action: action) {
-            Text(name)
-                .font(.system(size: metrics.fontSize, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
+        Button {
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) {
+                action()
+            }
+        } label: {
+            ZStack {
+                if isSelected {
+                    Capsule()
+                        .fill(.clear)
+                        .modifier(CategoryRailSelectionLens(
+                            selectionNamespace: selectionNamespace,
+                            isTransparent: isTransparent
+                        ))
+                        .zIndex(1)
+                }
+
+                HStack(spacing: 9) {
+                    Image(systemName: icon)
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.70))
+                        .frame(width: 18)
+                        .accessibilityHidden(true)
+
+                    Text(name)
+                        .font(.system(size: metrics.fontSize, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text("\(count)")
+                        .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
                 .padding(.horizontal, metrics.horizontalPadding)
                 .frame(maxWidth: .infinity, minHeight: metrics.rowHeight, maxHeight: metrics.rowHeight, alignment: .leading)
-                .contentShape(RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous))
+                .zIndex(2)
+            }
+            .frame(maxWidth: .infinity, minHeight: metrics.rowHeight, maxHeight: metrics.rowHeight)
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .modifier(CategoryGlassTile(isSelected: isSelected, cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
-        .accessibilityLabel(name)
+        .accessibilityLabel("\(name), \(count) contenuti")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
@@ -99,6 +135,7 @@ struct CategoryRailTile: View, Equatable {
 struct CategoryRail: View {
     let items: [CategoryRailItem]
     let selectedID: String
+    @Namespace private var selectionNamespace
     var width: CGFloat = 236
     /// Intestazione "Categorie TV" (stessa tipografia dell'intestazione
     /// "Categorie" della vecchia sezione). `false` nel player, dove sopra la
@@ -141,33 +178,18 @@ struct CategoryRail: View {
     private var list: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
-                // `LazyVStack`: con centinaia di gruppi solo le righe visibili
-                // creano il proprio vetro Liquid Glass.
-                LazyVStack(spacing: metrics.spacing) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        // Filo fra le voci fisse ("Preferiti", "Tutti") e i gruppi.
-                        if index > 0,
-                           !CategoryRailKey.isPinned(item.id),
-                           CategoryRailKey.isPinned(items[index - 1].id) {
-                            Divider()
-                                .overlay(Color.white.opacity(0.14))
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, 7)
-                        }
-
-                        CategoryRailTile(
-                            name: item.name,
-                            isSelected: item.id == selectedID,
-                            metrics: metrics,
-                            isTransparent: isTransparent
-                        ) {
-                            onSelect(item.id)
-                        }
-                        .equatable()
-                        .id(item.id)
+                // iOS 26 usa il contenitore nativo per far migrare la stessa
+                // superficie Liquid Glass fra le righe, come nella barra tab
+                // di File. Sui sistemi precedenti resta attivo il fallback.
+                if #available(iOS 26.0, *) {
+                    GlassEffectContainer(spacing: max(metrics.rowHeight + metrics.spacing, 56)) {
+                        railRows
                     }
+                    .padding(.vertical, 2)
+                } else {
+                    railRows
+                        .padding(.vertical, 2)
                 }
-                .padding(.vertical, 2)
             }
             // Il gruppo selezionato è sempre visibile all'apertura e dopo
             // ogni cambio (anche se scelto altrove, es. dal player).
@@ -179,6 +201,70 @@ struct CategoryRail: View {
                     proxy.scrollTo(newID, anchor: .center)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var railRows: some View {
+        LazyVStack(spacing: metrics.spacing) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                // Filo fra le voci fisse ("Preferiti", "Tutti") e i gruppi.
+                if index > 0,
+                   !CategoryRailKey.isPinned(item.id),
+                   CategoryRailKey.isPinned(items[index - 1].id) {
+                    Divider()
+                        .overlay(Color.white.opacity(0.14))
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 7)
+                }
+
+                CategoryRailTile(
+                    name: item.name,
+                    icon: item.icon,
+                    count: item.count,
+                    isSelected: item.id == selectedID,
+                    metrics: metrics,
+                    selectionNamespace: selectionNamespace,
+                    isTransparent: isTransparent
+                ) {
+                    onSelect(item.id)
+                }
+                .equatable()
+                .id(item.id)
+            }
+        }
+    }
+}
+
+/// Lente singola della rail: usa lo stesso materiale Liquid Glass interattivo
+/// della tab bar di sistema. `glassEffectID` è l'identità condivisa che consente
+/// a iOS 26 di trasformare/spostare la lente fra due voci, invece di ridisegnare
+/// capsule indipendenti per ogni riga.
+private struct CategoryRailSelectionLens: ViewModifier {
+    let selectionNamespace: Namespace.ID
+    var isTransparent = false
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .glassEffect(
+                    isTransparent ? .clear.interactive() : .regular.interactive(),
+                    in: Capsule()
+                )
+                .glassEffectID("category-rail-active-tab", in: selectionNamespace)
+                .glassEffectTransition(.matchedGeometry)
+        } else {
+            content
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule()
+                        .strokeBorder(Color.white.opacity(isTransparent ? 0.24 : 0.18), lineWidth: 0.6)
+                }
+                .matchedGeometryEffect(
+                    id: "category-rail-active-tab",
+                    in: selectionNamespace,
+                    isSource: true
+                )
         }
     }
 }
