@@ -65,8 +65,18 @@ struct CategoryRailMetrics: Equatable {
     }
 }
 
-/// Riga del rail: icona, nome e conteggio con lente Liquid Glass condivisa
-/// per la selezione e misure allineate alla rail Android.
+/// Stile visuale delle righe del rail Categorie TV. Glass è il comportamento
+/// attuale (lente Liquid Glass neutra); Accent riprende la tessera selezionata
+/// di CategoryRail2/CategoryGlassTile, mantenendo icona e conteggio.
+enum CategoryRailVisualStyle: String, CaseIterable, Identifiable {
+    case accent
+    case glass
+
+    var id: String { rawValue }
+}
+
+/// Riga del rail: icona, nome e conteggio; la presentazione può essere quella
+/// Accent (CategoryGlassTile) oppure la lente Liquid Glass condivisa (Glass).
 struct CategoryRailTile: View, Equatable {
     let name: String
     let icon: String
@@ -76,38 +86,78 @@ struct CategoryRailTile: View, Equatable {
     let selectionNamespace: Namespace.ID
     /// Vetro trasparente (rail del player, come Android).
     var isTransparent = false
+    var style: CategoryRailVisualStyle = .glass
     let action: () -> Void
 
     // Le closure e la namespace non entrano nel confronto: la riga si ridisegna
-    // quando cambiano dati, selezione, misure o superficie.
+    // quando cambiano dati, selezione, misure, superficie o stile visuale.
     static func == (lhs: CategoryRailTile, rhs: CategoryRailTile) -> Bool {
         lhs.name == rhs.name && lhs.icon == rhs.icon && lhs.count == rhs.count
             && lhs.isSelected == rhs.isSelected && lhs.metrics == rhs.metrics
-            && lhs.isTransparent == rhs.isTransparent
+            && lhs.isTransparent == rhs.isTransparent && lhs.style == rhs.style
     }
 
     var body: some View {
+        Group {
+            if style == .accent {
+                accentButton
+            } else {
+                glassButton
+            }
+        }
+    }
+
+    /// Variante Accent: stessa superficie selezionata usata dalle tessere
+    /// della sezione Categorie in CategoryRail2.swift.
+    private var accentButton: some View {
+        Button {
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) {
+                action()
+            }
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.70))
+                    .frame(width: 18)
+                    .accessibilityHidden(true)
+
+                Text(name)
+                    .font(.system(size: metrics.fontSize, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("\(count)")
+                    .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            .padding(.horizontal, metrics.horizontalPadding)
+            .frame(maxWidth: .infinity, minHeight: metrics.rowHeight, maxHeight: metrics.rowHeight, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .modifier(CategoryGlassTile(isSelected: isSelected, cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
+        .accessibilityLabel("\(name), \(count) contenuti")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    /// Variante Glass: invariata rispetto alla rail attuale, con un'unica
+    /// lente Liquid Glass neutra che segue la selezione.
+    private var glassButton: some View {
         Button {
             withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) {
                 action()
             }
         } label: {
             ZStack {
-                // Ogni riga mantiene il vetro neutro; la lente selezionata
-                // è un'unica superficie condivisa che si sposta tra le righe.
                 RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
                     .fill(.clear)
-                    // Le righe non selezionate usano vetro CLEAR, non REGULAR:
-                    // se avessero tutte lo stesso vetro della lente attiva,
-                    // la selezione mobile sarebbe praticamente indistinguibile.
                     .modifier(CategoryRailInactiveSurface(cornerRadius: metrics.cornerRadius, isTransparent: isTransparent))
 
-                // La lente deve avere una superficie reale: applicare Liquid Glass
-                // a una RoundedRectangle completamente clear può renderla invisibile
-                // (in particolare sopra il pannello già vetroso della rail). Il fill
-                // neutro e il bordo rendono la selezione distinguibile; il vetro
-                // nativo resta lo stesso della barra inferiore e la geometria segue
-                // il cambio di gruppo tramite matchedGeometryEffect.
                 if isSelected {
                     RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
                         .fill(Color.white.opacity(isTransparent ? 0.15 : 0.12))
@@ -167,6 +217,8 @@ struct CategoryRail: View {
     var metrics: CategoryRailMetrics = .rail
     /// Tessere in vetro trasparente (rail del player).
     var isTransparent = false
+    /// Aspetto delle righe; Glass conserva il comportamento esistente.
+    var style: CategoryRailVisualStyle = .glass
     let onSelect: (String) -> Void
 
     var body: some View {
@@ -219,7 +271,8 @@ struct CategoryRail: View {
                             isSelected: item.id == selectedID,
                             metrics: metrics,
                             selectionNamespace: selectionNamespace,
-                            isTransparent: isTransparent
+                            isTransparent: isTransparent,
+                            style: style
                         ) {
                             onSelect(item.id)
                         }

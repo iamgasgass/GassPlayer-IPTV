@@ -327,8 +327,6 @@ struct EPGGridView: View {
     @State private var selectedGroupID: String?
     @State private var selectedProgram: SelectedProgram?
     @State private var reminderToast: String?
-    /// "Aggiorna Live TV" (Categorie TV) in corso: il pulsante resta disattivato fino alla fine.
-    @State private var isRefreshingLive = false
     @State private var catchupPlayback: CatchupPlayback?
     @State private var livePlayback: LivePlaybackItem?
     @State private var renderLimit = 32
@@ -341,6 +339,11 @@ struct EPGGridView: View {
 
     /// Stessa preferenza del menu "…" → "UI Gruppi" della Live TV.
     @AppStorage("gassplayer.grid.groupUIStyle") private var groupUIStyle = "scorrevole"
+    /// Stile delle righe del rail Categorie TV, condiviso con Live TV/VOD/Serie.
+    @AppStorage("gassplayer.grid.categoryRailStyle") private var categoryRailStyle = "glass"
+    private var activeCategoryRailStyle: CategoryRailVisualStyle {
+        CategoryRailVisualStyle(rawValue: categoryRailStyle) ?? .glass
+    }
     /// Canale mostrato nel pannello di anteprima (Android `previewChannelId`).
     @State private var previewStreamID: Int?
     /// Larghezza della schermata: sotto 700 pt layout "telefono" (Android
@@ -1936,23 +1939,9 @@ struct EPGGridView: View {
 
                 Button {
                     reminderToast = "Aggiornamento guida in corso…"
-                    Task {
-                        // In Categorie TV l'aggiornamento dei canali ha la sua voce ("Aggiorna Live TV"): qui si
-                        // riscarica SOLO la guida, senza riscaricare la playlist.
-                        if isCategoryTVMode { await refreshGuideOnly() } else { await refreshAll() }
-                    }
+                    Task { await refreshAll() }
                 } label: {
                     Label("Aggiorna guida", systemImage: "arrow.clockwise")
-                }
-
-                if isCategoryTVMode {
-                    Button {
-                        reminderToast = "Aggiornamento Live TV in corso…"
-                        Task { await refreshLiveTV() }
-                    } label: {
-                        Label(isRefreshingLive ? "Aggiornamento Live TV…" : "Aggiorna Live TV", systemImage: "tv")
-                    }
-                    .disabled(isRefreshingLive)
                 }
 
                 Button {
@@ -2157,44 +2146,6 @@ struct EPGGridView: View {
         ReminderService.shared.scheduleReminder(for: program, minutesBefore: 5)
         reminderToast = "Promemoria impostato per \"\(program.title)\""
         selectedProgram = nil
-    }
-
-    /// "Aggiorna Live TV": riscarica SOLO i canali live (Xtream: `refresh(kind: .live)`, Film e Serie restano dalla
-    /// cache; M3U: la playlist). La guida poi si rilegge per i canali visibili usando la cache già valida (nessun
-    /// download forzato dell'EPG: per quello c'è "Aggiorna guida").
-    private func refreshLiveTV() async {
-        guard !isRefreshingLive else { return }
-        isRefreshingLive = true
-        defer { isRefreshingLive = false }
-
-        var failure: String?
-        if let m3uSource {
-            await m3uSource.store.reload(url: m3uSource.playlistURL)
-            self.m3uSource = EPGGridM3USource(store: m3uSource.store, playlistURL: m3uSource.playlistURL)
-            failure = m3uSource.store.errorMessage
-        } else if let credentials {
-            await xtreamCatalog.refresh(credentials: credentials, kind: .live)
-            if case .failed(let message) = xtreamCatalog.state { failure = message }
-        } else {
-            return
-        }
-
-        scheduleReload()
-        if let failure, !failure.isEmpty {
-            reminderToast = "Aggiornamento Live TV non riuscito: \(failure)"
-        } else {
-            reminderToast = "Live TV aggiornata"
-        }
-    }
-
-    /// Solo la guida (EPG), senza riscaricare la playlist.
-    private func refreshGuideOnly() async {
-        if let m3uSource, m3uSource.store.hasEPGSource {
-            // L'XMLTV si riscarica in background; `epgRevision` fa rileggere la guida a fine download.
-            m3uSource.store.refreshEPG()
-            return
-        }
-        await reloadEPG(forceRefresh: true)
     }
 
     private func refreshAll() async {
@@ -2549,7 +2500,7 @@ extension EPGGridView {
             ZStack(alignment: .topLeading) {
                 HStack(alignment: .top, spacing: compact ? 0 : 12) {
                     if !compact {
-                        CategoryRail(items: railItems, selectedID: selectedCategoryRailID, width: 236) { id in
+                        CategoryRail(items: railItems, selectedID: selectedCategoryRailID, width: 236, style: activeCategoryRailStyle) { id in
                             selectCategoryRailItem(id)
                         }
                         .padding(.leading, 8)
@@ -2578,7 +2529,8 @@ extension EPGGridView {
                         items: railItems,
                         selectedID: selectedCategoryRailID,
                         width: min(236, max(160, geo.size.width - 136)),
-                        showsPanel: true
+                        showsPanel: true,
+                        style: activeCategoryRailStyle
                     ) { id in
                         selectCategoryRailItem(id)
                     }
@@ -2744,6 +2696,15 @@ extension EPGGridView {
                     }
                 } label: {
                     Label("UI Gruppi", systemImage: "rectangle.grid.1x2")
+                }
+
+                Menu {
+                    Picker("UI Rail", selection: $categoryRailStyle) {
+                        Text("Accent").tag("accent")
+                        Text("Glass").tag("glass")
+                    }
+                } label: {
+                    Label("UI Rail", systemImage: "square.split.2x1")
                 }
 
                 Divider()

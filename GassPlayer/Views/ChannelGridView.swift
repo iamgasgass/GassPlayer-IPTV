@@ -293,6 +293,14 @@ struct ChannelGridView: View {
     @AppStorage("gassplayer.grid.groupUIStyle")
     private var groupUIStyle = "scorrevole"
 
+    /// Stile delle righe nel rail Categorie TV; Glass conserva il comportamento attuale.
+    @AppStorage("gassplayer.grid.categoryRailStyle")
+    private var categoryRailStyle = "glass"
+
+    private var activeCategoryRailStyle: CategoryRailVisualStyle {
+        CategoryRailVisualStyle(rawValue: categoryRailStyle) ?? .glass
+    }
+
     @State private var selectedCategory: CategorySelection = .all
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -796,7 +804,7 @@ struct ChannelGridView: View {
         } else if horizontalSizeClass == .regular {
             HStack(alignment: .top, spacing: 12) {
                 // Pannello Liquid Glass 236 pt (Android `TvCategoryRail`).
-                CategoryRail(items: categoryRailItems, selectedID: selectedRailID, width: 236) { id in
+                CategoryRail(items: categoryRailItems, selectedID: selectedRailID, width: 236, style: activeCategoryRailStyle) { id in
                     selectRailItem(id)
                 }
                 .padding(.leading, 16)
@@ -818,7 +826,7 @@ struct ChannelGridView: View {
                         }
                         .transition(.opacity)
 
-                    CategoryRail(items: categoryRailItems, selectedID: selectedRailID, width: compactCategoryRailWidth, showsPanel: true) { id in
+                    CategoryRail(items: categoryRailItems, selectedID: selectedRailID, width: compactCategoryRailWidth, showsPanel: true, style: activeCategoryRailStyle) { id in
                         selectRailItem(id)
                     }
                     .padding(.leading, 8)
@@ -1457,6 +1465,15 @@ struct ChannelGridView: View {
                     }
                 } label: {
                     Label("UI Gruppi", systemImage: "rectangle.grid.1x2")
+                }
+
+                Menu {
+                    Picker("UI Rail", selection: $categoryRailStyle) {
+                        Text("Accent").tag("accent")
+                        Text("Glass").tag("glass")
+                    }
+                } label: {
+                    Label("UI Rail", systemImage: "square.split.2x1")
                 }
 
                 Button {
